@@ -18,8 +18,8 @@ class Settings(BaseModel):
     port_min: int = 8000
     port_max: int = 8999
 
-    # WebUI 自身端口
-    webui_port: int = 9000
+    # WebUI 自身端口（NUC12 上 9000 被 portainer 占用，用 9100）
+    webui_port: int = 9100
 
     # 是否允许 GPU 热切换（多卡时指定设备）
     gpu_devices: list[str] = ["/dev/dri/card1", "/dev/dri/renderD129"]
