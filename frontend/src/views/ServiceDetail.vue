@@ -21,6 +21,9 @@
                 </el-select>
                 <el-button size="small" @click="saveAsTemplate">存模板</el-button>
                 <el-button size="small" type="primary" @click="save">保存</el-button>
+                <el-tooltip content="保存参数并重启服务（运行中才会显示）" placement="top">
+                  <el-button v-if="service?.status === 'running'" size="small" type="warning" :loading="savingRestart" @click="saveAndRestart">保存并重启</el-button>
+                </el-tooltip>
               </div>
 
               <el-form :model="args" label-width="160px" size="small">
@@ -219,6 +222,7 @@ const sid = route.params.id
 const service = ref(null)
 const args = ref({})
 const loading = ref(true)
+const savingRestart = ref(false)
 const logs = ref('')
 const templates = ref([])
 const selectedTemplate = ref(null)
@@ -276,7 +280,37 @@ function applyCommand() {
 
 async function save() {
   await updateService(sid, { args: args.value })
-  ElMessage.success('参数已保存（重启服务生效）')
+  if (service.value?.status === 'running') {
+    // 运行中：询问是否重启生效
+    try {
+      await ElMessageBox.confirm(
+        '参数已保存，但需要重启服务才能生效。是否立即重启？',
+        '重启确认',
+        { confirmButtonText: '重启', cancelButtonText: '稍后重启', type: 'warning' }
+      )
+      await doRestart()
+    } catch (e) {
+      if (e !== 'cancel') return
+      ElMessage.success('参数已保存，重启服务后生效')
+    }
+  } else {
+    ElMessage.success('参数已保存')
+  }
+}
+
+async function saveAndRestart() {
+  savingRestart.value = true
+  try {
+    await updateService(sid, { args: args.value })
+    ElMessage.success('参数已保存，正在重启...')
+    await restartService(sid)
+    ElMessage.success('重启中（模型加载约需 1 分钟）')
+    setTimeout(load, 3000)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存/重启失败')
+  } finally {
+    savingRestart.value = false
+  }
 }
 
 async function saveAsTemplate() {
