@@ -363,6 +363,22 @@ const chatView = ref(null)
 
 const canChat = computed(() => service.value?.status === 'running')
 
+// 剥掉 <think>...</think> 标签（含空标签），只保留正文
+function stripThink(text) {
+  if (!text) return text
+  return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
+}
+
+// 把原始输出拆成 thinking + content（兼容流式未闭合的 <think>）
+function splitThink(raw) {
+  const m = raw.match(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/i)
+  if (!m) return { thinking: '', content: raw }
+  const after = raw.slice(m.index + m[0].length)
+  // 如果 think 标签还没闭合，content 里不应该显示任何东西
+  const closed = /<\/think>/i.test(m[0])
+  return { thinking: m[1] || '', content: closed ? after.replace(/^\s*/, '') : '' }
+}
+
 async function sendChat() {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value) return
@@ -375,7 +391,13 @@ async function sendChat() {
   scrollChat()
   try {
     const payload = {
-      messages: messages.value.filter(m => m.role !== 'thinking').map(m => ({ role: m.role, content: m.content })),
+      messages: messages.value
+        .filter(m => m.role !== 'thinking')
+        .map(m => ({
+          role: m.role,
+          // 剥掉历史 assistant 消息里的 <think> 标签，避免诱导模型继续思考
+          content: m.role === 'assistant' ? stripThink(m.content) : m.content,
+        })),
       max_tokens: chatMaxTokens.value,
       temperature: 0.7,
       stream: true,
@@ -411,8 +433,14 @@ async function sendChat() {
         try {
           const chunk = JSON.parse(data)
           const delta = chunk.choices?.[0]?.delta || {}
-          if (delta.content) aiMsg.content += delta.content
           if (delta.reasoning_content) aiMsg.thinking += delta.reasoning_content
+          if (delta.content) {
+            // 流式分块：实时把 <think> 内容路由到 thinking 字段
+            aiMsg.rawContent = (aiMsg.rawContent || '') + delta.content
+            const parsed = splitThink(aiMsg.rawContent)
+            aiMsg.thinking = parsed.thinking
+            aiMsg.content = parsed.content
+          }
           scrollChat()
         } catch (e) { /* 忽略解析错误 */ }
       }

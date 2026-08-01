@@ -10,6 +10,7 @@ export const updateService = (id, data) => api.put(`/services/${id}`, data).then
 export const startService = (id) => api.post(`/services/${id}/start`).then(r => r.data)
 export const stopService = (id) => api.post(`/services/${id}/stop`).then(r => r.data)
 export const restartService = (id) => api.post(`/services/${id}/restart`).then(r => r.data)
+export const cloneService = (id, name) => api.post(`/services/${id}/clone`, null, { params: { name } }).then(r => r.data)
 export const deleteService = (id) => api.delete(`/services/${id}`).then(r => r.data)
 export const getServiceLogs = (id, tail = 200) => api.get(`/services/${id}/logs`, { params: { tail } }).then(r => r.data)
 export const getParamSchema = () => api.get('/services/params/schema').then(r => r.data)

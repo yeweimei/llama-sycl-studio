@@ -22,6 +22,9 @@ class ServiceCreate(BaseModel):
 class ServiceUpdate(BaseModel):
     args: Optional[dict] = None
     api_key: Optional[str] = None
+    name: Optional[str] = None
+    model_path: Optional[str] = None
+    port: Optional[int] = None
 
 
 @router.get("")
@@ -58,14 +61,52 @@ def update_service(sid: int, body: ServiceUpdate):
     svc = docker_mgr.get_service(sid)
     if not svc:
         raise HTTPException(404, "服务不存在")
+    if svc["status"] == "running" and (body.name or body.model_path or body.port):
+        raise HTTPException(400, "请先停止服务再修改名称/模型/端口")
+
     args = svc["args"] if body.args is None else body.args
     api_key = svc["api_key"] if body.api_key is None else body.api_key
+    name = svc["name"] if body.name is None else body.name
+    model_path = svc["model_path"] if body.model_path is None else body.model_path
+    port = svc["port"] if body.port is None else body.port
+
+    # 校验重名和端口冲突
+    with get_conn() as conn:
+        dup = conn.execute(
+            "SELECT id FROM services WHERE (name=? OR port=?) AND id!=?", (name, port, sid)
+        ).fetchone()
+    if dup:
+        raise HTTPException(400, "服务名或端口已被占用")
+
     with get_conn() as conn:
         conn.execute(
-            "UPDATE services SET args=?, api_key=?, updated_at=? WHERE id=?",
-            (json.dumps(args), api_key, now(), sid),
+            "UPDATE services SET name=?, model_path=?, port=?, args=?, api_key=?, updated_at=? WHERE id=?",
+            (name, model_path, port, json.dumps(args), api_key, now(), sid),
         )
     return docker_mgr.get_service(sid)
+
+
+@router.post("/{sid}/clone")
+def clone_service(sid: int, name: Optional[str] = None):
+    """克隆服务：复制配置为新服务（新端口，不启动）"""
+    svc = docker_mgr.get_service(sid)
+    if not svc:
+        raise HTTPException(404, "服务不存在")
+    new_name = name or f"{svc['name']}-copy"
+    # 检查重名
+    with get_conn() as conn:
+        dup = conn.execute("SELECT id FROM services WHERE name=?", (new_name,)).fetchone()
+    if dup:
+        raise HTTPException(400, f"服务名 {new_name} 已存在")
+    try:
+        return docker_mgr.create_service(
+            name=new_name,
+            model_path=svc["model_path"],
+            args=svc["args"],
+            api_key=svc.get("api_key"),
+        )
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/{sid}/start")
