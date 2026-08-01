@@ -20,17 +20,20 @@ rsync -a --delete \
   --exclude frontend/node_modules \
   "$ROOT/" "${TARGET}:~/projects/llama-sycl-studio/"
 
-# 3. NUC12 安装后端依赖（如 venv 不存在）
+# 3. NUC12 安装后端依赖（如 venv 不存在，走本机代理）
 echo "[3/4] NUC12 安装后端依赖..."
 ssh "$TARGET" 'cd ~/projects/llama-sycl-studio/backend && \
   [ -d venv ] || python3 -m venv venv; \
-  source venv/bin/activate && pip install -q -r requirements.txt'
+  source venv/bin/activate && pip install -q -r requirements.txt \
+    --proxy http://192.168.3.232:7897 || \
+  pip install -q -r requirements.txt'
 
 # 4. 重启服务
+PIP_CMD=""
 echo "[4/4] 重启 WebUI..."
 ssh "$TARGET" 'pkill -f "python run.py" 2>/dev/null || true; sleep 1; \
   cd ~/projects/llama-sycl-studio/backend && \
-  nohup source venv/bin/activate && python run.py > /tmp/studio.log 2>&1 & \
-  echo "WebUI 启动: http://$(hostname -I | awk "{print \$1}"):9000"'
+  bash -c "source venv/bin/activate && nohup python run.py > /tmp/studio.log 2>&1 &" && \
+  sleep 3 && echo "WebUI 启动: http://$(hostname -I | awk \"{print \$1}\"):9000"'
 
 echo "✅ 部署完成"

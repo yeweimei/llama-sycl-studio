@@ -14,7 +14,9 @@ GGUF_MAGIC = b"GGUF"
 
 
 def parse_gguf_meta(path: Path) -> dict:
-    """解析 GGUF 文件头，提取元信息（架构、量化、参数量）"""
+    """解析 GGUF 文件头，提取元信息（架构、量化、参数量）
+    优化：只读前 16 个 KV（架构/名称/文件类型通常在最前），
+    array 类型只读长度不读内容，避免 tokenizer 大数组卡死"""
     try:
         with open(path, "rb") as f:
             magic = f.read(4)
@@ -25,21 +27,19 @@ def parse_gguf_meta(path: Path) -> dict:
             n_kv = struct.unpack("<Q", f.read(8))[0]
 
             kv = {}
-            for _ in range(min(n_kv, 512)):  # 限制解析量
+            for _ in range(min(n_kv, 16)):  # 架构/名称/类型在最前，16 个足够
                 try:
                     k = _read_string(f)
                     v_type = struct.unpack("<I", f.read(4))[0]
                     val = _read_value(f, v_type)
                     if k in ("general.architecture", "general.name", "general.file_type",
-                             "general.quantization_version", "llama.vocab_size",
-                             "general.size_label"):
+                             "general.quantization_version", "general.size_label"):
                         kv[k] = val
                 except Exception:
                     break
 
             ftype = kv.get("general.file_type")
             quant = _file_type_name(ftype) if ftype is not None else ""
-            # 从文件名推断量化（更直观）
             name_quant = _quant_from_filename(path.name)
             return {
                 "architecture": kv.get("general.architecture", ""),
@@ -54,6 +54,9 @@ def parse_gguf_meta(path: Path) -> dict:
 
 def _read_string(f) -> str:
     ln = struct.unpack("<Q", f.read(8))[0]
+    if ln > 1_000_000:  # 防错位后读到超长字符串
+        f.seek(ln, 1)
+        return ""
     return f.read(ln).decode("utf-8", errors="replace")
 
 
@@ -71,11 +74,13 @@ def _read_value(f, vtype: int):
         return _read_string(f)
     if vtype == 12:
         return struct.unpack("<d", f.read(8))[0]
-    if vtype == 9:  # array
+    if vtype == 9:  # array：只读元素数和类型，跳过内容（避免超大数组卡死）
         elem_type = struct.unpack("<I", f.read(4))[0]
         n = struct.unpack("<Q", f.read(8))[0]
+        if n > 1024:  # 大数组直接跳过
+            return None
         vals = []
-        for _ in range(min(n, 64)):
+        for _ in range(n):
             vals.append(_read_value(f, elem_type))
         return vals
     return None
@@ -106,7 +111,7 @@ def _quant_from_filename(name: str) -> str:
 
 
 def _scan_models():
-    """扫描模型目录"""
+    """扫描模型目录（优化版：跳过 HF 目录深统计，GGUF 头只读前 512KB）"""
     models = []
     base = Path(settings.model_dir)
     if not base.exists():
@@ -118,7 +123,7 @@ def _scan_models():
         size = f.stat().st_size
         models.append({
             "name": f.name,
-            "path": f"/models/{f.name}",       # 容器内路径
+            "path": f"/models/{f.name}",
             "local_path": str(f),
             "kind": "gguf",
             "size_bytes": size,
@@ -126,13 +131,16 @@ def _scan_models():
             **meta,
         })
 
-    # 2) 子目录中的 gguf / HF 目录
+    # 2) 子目录：只列顶层 gguf，HF 目录不做深统计（标注即可）
     for d in sorted(base.iterdir()):
         if not d.is_dir():
             continue
-        ggufs = list(d.glob("*.gguf"))
+        try:
+            ggufs = list(d.glob("*.gguf"))
+        except (PermissionError, OSError):
+            continue
         if ggufs:
-            for f in ggufs:
+            for f in ggufs[:3]:  # 每目录最多 3 个 gguf，避免大目录卡死
                 meta = parse_gguf_meta(f)
                 size = f.stat().st_size
                 models.append({
@@ -145,14 +153,14 @@ def _scan_models():
                     **meta,
                 })
         elif (d / "config.json").exists():
-            # HF 格式目录（llama.cpp 不直接支持，标注用途）
+            # HF 格式目录：不递归统计（慢），只标类型
             models.append({
                 "name": d.name + "/",
                 "path": f"/models/{d.name}",
                 "local_path": str(d),
                 "kind": "hf-dir",
-                "size_bytes": _dir_size(d),
-                "size_human": _human_size(_dir_size(d)),
+                "size_bytes": 0,
+                "size_human": "HF 格式",
                 "architecture": "HF format (needs convert)",
             })
     return models
