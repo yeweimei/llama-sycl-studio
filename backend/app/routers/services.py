@@ -104,6 +104,6 @@ def service_logs(sid: int, tail: int = 200):
 def param_schema():
     """返回参数白名单（前端表单渲染用）"""
     return {
-        "map": {k: {"flag": v[0], "type": v[1].__name__} for k, v in docker_mgr.PARAM_MAP.items()},
+        "map": {k: {"flag": v[0], "type": (v[1].__name__ if hasattr(v[1], "__name__") else str(v[1]))} for k, v in docker_mgr.PARAM_MAP.items()},
         "defaults": docker_mgr.DEFAULT_ARGS,
     }
