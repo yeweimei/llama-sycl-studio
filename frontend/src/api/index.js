@@ -13,6 +13,8 @@ export const restartService = (id) => api.post(`/services/${id}/restart`).then(r
 export const deleteService = (id) => api.delete(`/services/${id}`).then(r => r.data)
 export const getServiceLogs = (id, tail = 200) => api.get(`/services/${id}/logs`, { params: { tail } }).then(r => r.data)
 export const getParamSchema = () => api.get('/services/params/schema').then(r => r.data)
+export const chatProxy = (id, data) => api.post(`/services/${id}/chat`, data).then(r => r.data)
+export const clientConfig = (id) => api.get(`/services/${id}/client-config`).then(r => r.data)
 
 // ---------- 模型 ----------
 export const listModels = () => api.get('/models').then(r => r.data)
