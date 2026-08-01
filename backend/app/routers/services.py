@@ -17,6 +17,7 @@ class ServiceCreate(BaseModel):
     args: dict = {}
     api_key: Optional[str] = None
     port: Optional[int] = None
+    gpu_devices: Optional[list[str]] = None
 
 
 class ServiceUpdate(BaseModel):
@@ -25,12 +26,19 @@ class ServiceUpdate(BaseModel):
     name: Optional[str] = None
     model_path: Optional[str] = None
     port: Optional[int] = None
+    gpu_devices: Optional[list[str]] = None
 
 
 @router.get("")
 def list_services():
     docker_mgr.sync_status()
     return docker_mgr.list_services()
+
+
+@router.get("/gpu/options")
+def gpu_options():
+    """检测宿主机可用显卡（编辑对话框渲染用）"""
+    return {"gpus": docker_mgr.detect_gpus()}
 
 
 @router.post("")
@@ -42,6 +50,7 @@ def create_service(body: ServiceCreate):
             args=body.args or docker_mgr.DEFAULT_ARGS,
             api_key=body.api_key,
             port=body.port,
+            gpu_devices=body.gpu_devices,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e))
@@ -69,6 +78,7 @@ def update_service(sid: int, body: ServiceUpdate):
     name = svc["name"] if body.name is None else body.name
     model_path = svc["model_path"] if body.model_path is None else body.model_path
     port = svc["port"] if body.port is None else body.port
+    gpu_devices = svc.get("gpu_devices") or [] if body.gpu_devices is None else body.gpu_devices
 
     # 校验重名和端口冲突
     with get_conn() as conn:
@@ -80,8 +90,8 @@ def update_service(sid: int, body: ServiceUpdate):
 
     with get_conn() as conn:
         conn.execute(
-            "UPDATE services SET name=?, model_path=?, port=?, args=?, api_key=?, updated_at=? WHERE id=?",
-            (name, model_path, port, json.dumps(args), api_key, now(), sid),
+            "UPDATE services SET name=?, model_path=?, port=?, args=?, gpu_devices=?, api_key=?, updated_at=? WHERE id=?",
+            (name, model_path, port, json.dumps(args), json.dumps(gpu_devices), api_key, now(), sid),
         )
     return docker_mgr.get_service(sid)
 
@@ -104,6 +114,7 @@ def clone_service(sid: int, name: Optional[str] = None):
             model_path=svc["model_path"],
             args=svc["args"],
             api_key=svc.get("api_key"),
+            gpu_devices=svc.get("gpu_devices") or None,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e))

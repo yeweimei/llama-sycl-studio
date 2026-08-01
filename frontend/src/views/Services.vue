@@ -87,8 +87,8 @@
     </el-dialog>
 
     <!-- 编辑服务对话框 -->
-    <el-dialog v-model="editVisible" title="编辑服务" width="720px">
-      <el-form :model="editForm" label-width="110px">
+    <el-dialog v-model="editVisible" title="编辑服务" width="760px" top="5vh">
+      <el-form :model="editForm" label-width="130px">
         <el-form-item label="服务名" required>
           <el-input v-model="editForm.name" />
         </el-form-item>
@@ -102,6 +102,15 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="推理显卡">
+          <el-select v-model="editForm.gpu_id" style="width:100%">
+            <el-option v-for="g in gpus" :key="g.id" :label="g.name" :value="g.id">
+              <span>{{ g.name }}</span>
+              <span style="float:right;color:#909399;font-size:12px">{{ g.id }}</span>
+            </el-option>
+          </el-select>
+          <div class="form-tip">A770M 独显性能最强；Iris Xe 核显可用于轻量任务或腾出独显</div>
+        </el-form-item>
         <el-form-item label="API Key">
           <el-input v-model="editForm.api_key" placeholder="留空则不鉴权" />
           <div class="form-tip">修改后需重启服务生效</div>
@@ -110,6 +119,53 @@
           <el-input-number v-model="editForm.port" :min="8000" :max="8999" />
           <div class="form-tip">端口修改会重建容器，请先停止服务</div>
         </el-form-item>
+
+        <el-divider content-position="left">推理参数</el-divider>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="GPU 层数">
+              <el-input-number v-model="editForm.args.n_gpu_layers" :min="0" :max="999" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="上下文长度">
+              <el-input-number v-model="editForm.args.ctx_size" :min="512" :max="262144" :step="1024" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="批大小">
+              <el-input-number v-model="editForm.args.batch_size" :min="32" :max="8192" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="并发槽位">
+              <el-input-number v-model="editForm.args.parallel" :min="1" :max="64" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Flash Attention">
+              <el-switch v-model="editForm.args.flash_attn" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="KV 缓存类型">
+              <el-select v-model="editForm.args.cache_type_k" style="width:100%">
+                <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Jinja 模板">
+              <el-switch v-model="editForm.args.jinja" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="温度">
+              <el-slider v-model="editForm.args.temp" :min="0" :max="2" :step="0.1" show-input />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <div class="form-tip" style="color:#e6a23c">⚠️ 修改推理参数需重启服务生效；更多参数（Top-K/Top-P/重复惩罚等）可在服务详情页调整</div>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -125,18 +181,23 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import {
   listServices, createService, updateService, startService, stopService,
-  restartService, cloneService, deleteService, listModels,
+  restartService, cloneService, deleteService, listModels, gpuOptions,
 } from '../api'
 
 const services = ref([])
 const models = ref([])
+const gpus = ref([])
 const loading = ref(false)
 const createVisible = ref(false)
 const creating = ref(false)
 const editVisible = ref(false)
 const saving = ref(false)
+const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const form = ref({ name: '', model_path: '', api_key: '', port: null })
-const editForm = ref({ id: null, name: '', model_path: '', api_key: '', port: null })
+const editForm = ref({
+  id: null, name: '', model_path: '', api_key: '', port: null,
+  gpu_id: '', args: { n_gpu_layers: 99, ctx_size: 32768, batch_size: 2048, parallel: 4, flash_attn: true, cache_type_k: 'q8_0', jinja: true, temp: 0.7 },
+})
 
 const statusText = (s) => ({ running: '运行中', stopped: '已停止', error: '异常' }[s] || s)
 
@@ -145,6 +206,7 @@ async function refresh() {
   try {
     services.value = await listServices()
     models.value = await listModels()
+    try { gpus.value = (await gpuOptions()).gpus } catch (e) { gpus.value = [] }
   } finally {
     loading.value = false
   }
@@ -175,12 +237,21 @@ async function doCreate() {
 
 // ---------- 编辑 ----------
 function openEdit(row) {
+  // 根据 gpu_devices 反推 gpu_id（设备列表第一项对应 cardX）
+  let gpu_id = ''
+  const devs = row.gpu_devices || []
+  if (devs.length) {
+    const m = devs[0].match(/card(\d+)/)
+    if (m) gpu_id = `card${m[1]}`
+  }
   editForm.value = {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
     api_key: row.api_key || '',
     port: row.port,
+    gpu_id,
+    args: { ...(row.args || {}) },
   }
   editVisible.value = true
 }
@@ -192,13 +263,18 @@ async function doSaveEdit() {
   }
   saving.value = true
   try {
-    await updateService(editForm.value.id, {
+    // gpu_id -> devices 列表
+    const gpu = gpus.value.find(g => g.id === editForm.value.gpu_id)
+    const payload = {
       name: editForm.value.name,
       model_path: editForm.value.model_path,
       api_key: editForm.value.api_key || null,
       port: editForm.value.port,
-    })
-    ElMessage.success('已保存')
+      args: editForm.value.args,
+    }
+    if (gpu) payload.gpu_devices = gpu.devices
+    await updateService(editForm.value.id, payload)
+    ElMessage.success('已保存（重启服务生效）')
     editVisible.value = false
     refresh()
   } catch (e) {

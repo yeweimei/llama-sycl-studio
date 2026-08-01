@@ -54,6 +54,64 @@ def _client() -> docker.DockerClient:
         return docker.DockerClient(base_url="unix://var/run/docker.sock")
 
 
+def detect_gpus() -> list[dict]:
+    """检测宿主机可用显卡（从 /dev/dri 设备推断）
+    返回真实设备路径（cardX / renderDXXX），供 docker 挂载"""
+    import glob
+    import re
+    import os
+
+    gpus = []
+    # by-path 链接 -> 真实设备名（card0/renderD128）
+    links = {}
+    for p in glob.glob("/dev/dri/by-path/*"):
+        try:
+            real = os.path.realpath(p)
+            base = real.split("/")[-1]
+            if "card" in base:
+                links[base] = p  # 如 card0 -> pci-0000:03:00.0-card
+        except Exception:
+            continue
+
+    # 读 lspci 获取显卡名称（PCI 地址 -> 名称）
+    names = {}
+    try:
+        import subprocess
+        import shutil
+        lspci = shutil.which("lspci")
+        if lspci:
+            out = subprocess.run([lspci], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                # 00:02.0 VGA compatible controller: Intel ... [Iris Xe Graphics]
+                m = re.match(r"(\S+)\s+[^:]+controller: (.+)", line)
+                if m and ("VGA" in line or "Display" in line or "3D" in line):
+                    names[m.group(1)] = m.group(2).strip()
+    except Exception:
+        pass
+
+    for card in sorted(links.keys()):
+        # card0 -> renderD128, card1 -> renderD129
+        idx = re.search(r"(\d+)", card)
+        if not idx:
+            continue
+        render = f"renderD{128 + int(idx.group(1))}"
+        # 从 by-path 拿 PCI 地址（统一去掉 0000: 前缀，与 lspci 对齐）
+        pci = ""
+        m = re.search(r"pci-(\S+)-card", links[card])
+        if m:
+            pci = m.group(1)
+            pci = pci[5:] if pci.startswith("0000:") else pci
+        gpus.append({
+            "id": card,                      # card0 / card1
+            "name": names.get(pci, f"GPU {card}"),
+            "pci": pci,
+            "card": f"/dev/dri/{card}",
+            "render": f"/dev/dri/{render}",
+            "devices": [f"/dev/dri/{card}", f"/dev/dri/{render}"],
+        })
+    return gpus
+
+
 def find_free_port(preferred: Optional[int] = None) -> int:
     """找空闲端口（避开已占用）"""
     used = set()
@@ -100,7 +158,7 @@ def build_container_args(model_path: str, port: int, args: dict, api_key: Option
 
 
 def create_service(name: str, model_path: str, args: dict, api_key: Optional[str] = None,
-                   port: Optional[int] = None) -> dict:
+                   port: Optional[int] = None, gpu_devices: Optional[list[str]] = None) -> dict:
     """创建服务（注册到 DB，不启动容器）"""
     port = port or find_free_port()
     client = _client()
@@ -109,11 +167,14 @@ def create_service(name: str, model_path: str, args: dict, api_key: Optional[str
     except NotFound:
         raise RuntimeError(f"镜像 {settings.llama_image} 不存在，请先拉取")
 
+    # 默认显卡：第一个检测到的 dGPU（独显），兜底全局配置
+    gpu_list = gpu_devices or settings.gpu_devices
+
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO services (name, model_path, port, args, api_key, status, created_at, updated_at) "
-            "VALUES (?,?,?,?,?, 'stopped', ?, ?)",
-            (name, model_path, port, json.dumps(args), api_key, now(), now()),
+            "INSERT INTO services (name, model_path, port, args, gpu_devices, api_key, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?, 'stopped', ?, ?)",
+            (name, model_path, port, json.dumps(args), json.dumps(gpu_list), api_key, now(), now()),
         )
         sid = cur.lastrowid
     return get_service(sid)
@@ -136,10 +197,11 @@ def start_service(sid: int) -> dict:
 
     cmd = build_container_args(svc["model_path"], svc["port"], svc["args"], svc["api_key"])
 
-    # 挂载模型目录 + A770M 设备
+    # 挂载模型目录 + 显卡设备（用服务自己的配置）
     volumes = {settings.model_dir: {"bind": "/models", "mode": "ro"}}
+    gpu_list = svc.get("gpu_devices") or settings.gpu_devices
     devices = []
-    for d in settings.gpu_devices:
+    for d in gpu_list:
         devices.append(f"{d}:{d}")
 
     env = {
@@ -212,7 +274,11 @@ def get_service(sid: int) -> Optional[dict]:
     if not row:
         return None
     svc = dict(row)
-    svc["args"] = json.loads(svc["args"])
+    svc["args"] = json.loads(svc["args"] or "{}")
+    try:
+        svc["gpu_devices"] = json.loads(svc["gpu_devices"] or "[]")
+    except json.JSONDecodeError:
+        svc["gpu_devices"] = []
     return svc
 
 
@@ -222,7 +288,11 @@ def list_services() -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
-        d["args"] = json.loads(d["args"])
+        d["args"] = json.loads(d["args"] or "{}")
+        try:
+            d["gpu_devices"] = json.loads(d["gpu_devices"] or "[]")
+        except json.JSONDecodeError:
+            d["gpu_devices"] = []
         out.append(d)
     return out
 

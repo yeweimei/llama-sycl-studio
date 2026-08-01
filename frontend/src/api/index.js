@@ -5,6 +5,7 @@ const api = axios.create({ baseURL: '/api', timeout: 30000 })
 // ---------- 服务 ----------
 export const listServices = () => api.get('/services').then(r => r.data)
 export const getService = (id) => api.get(`/services/${id}`).then(r => r.data)
+export const gpuOptions = () => api.get('/services/gpu/options').then(r => r.data)
 export const createService = (data) => api.post('/services', data).then(r => r.data)
 export const updateService = (id, data) => api.put(`/services/${id}`, data).then(r => r.data)
 export const startService = (id) => api.post(`/services/${id}/start`).then(r => r.data)

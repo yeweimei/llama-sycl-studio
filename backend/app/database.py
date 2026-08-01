@@ -28,6 +28,7 @@ def init_db():
                 model_path TEXT NOT NULL,           -- 模型路径（容器内 /models/...）
                 port INTEGER UNIQUE NOT NULL,       -- 对外端口
                 args TEXT NOT NULL DEFAULT '{}',    -- JSON: llama-server 参数
+                gpu_devices TEXT NOT NULL DEFAULT '[]', -- JSON: 使用的显卡设备列表
                 api_key TEXT,                       -- OpenAI API key（可选）
                 status TEXT DEFAULT 'stopped',      -- running/stopped/error
                 container_id TEXT,
@@ -65,6 +66,10 @@ def init_db():
             );
             """
         )
+        # 旧库迁移：services 表补 gpu_devices 列
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()}
+        if "gpu_devices" not in cols:
+            conn.execute("ALTER TABLE services ADD COLUMN gpu_devices TEXT NOT NULL DEFAULT '[]'")
 
 
 def now() -> int:
