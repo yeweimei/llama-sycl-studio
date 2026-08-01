@@ -160,9 +160,12 @@ def start_service(sid: int) -> dict:
             entrypoint=None,
             restart_policy={"Name": "unless-stopped"},
             healthcheck={
-                "interval": 5000000000,
-                "timeout": 3000000000,
-                "retries": 5,
+                "test": ["CMD", "python3", "-c",
+                          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%d/health', timeout=5).status==200 else 1)" % svc["port"]],
+                "interval": 10000000000,
+                "timeout": 8000000000,
+                "retries": 6,
+                "start_period": 120000000000,
             },
         )
         with get_conn() as conn:

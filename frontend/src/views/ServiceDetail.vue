@@ -160,7 +160,7 @@
               </div>
             </div>
             <div v-if="chatLoading" class="chat-msg assistant">
-              <div class="chat-bubble"><div class="chat-label" style="color:#409eff">助手</div><div class="chat-content">思考中...</div></div>
+              <div class="chat-bubble"><div class="chat-label" style="color:#409eff">助手</div><div class="chat-streaming">▋</div></div>
             </div>
           </div>
           <div class="chat-controls">
@@ -369,23 +369,59 @@ async function sendChat() {
   messages.value.push({ role: 'user', content: text })
   chatInput.value = ''
   chatLoading.value = true
+  // 先插入一个空的 assistant 消息，流式填充
+  messages.value.push({ role: 'assistant', content: '', thinking: '' })
+  const aiMsg = messages.value[messages.value.length - 1]
   scrollChat()
   try {
     const payload = {
       messages: messages.value.filter(m => m.role !== 'thinking').map(m => ({ role: m.role, content: m.content })),
       max_tokens: chatMaxTokens.value,
       temperature: 0.7,
+      stream: true,
     }
     if (chatThinking.value) payload.chat_template_kwargs = { enable_thinking: true }
     else payload.chat_template_kwargs = { enable_thinking: false }
 
-    const r = await chatProxy(sid, payload)
-    const msg = r.choices?.[0]?.message || {}
-    const content = msg.content || ''
-    const thinking = msg.reasoning_content || ''
-    messages.value.push({ role: 'assistant', content: content || '（无输出，可能思考中或截断）', thinking: thinking || '' })
+    // 用 fetch 读 SSE 流
+    const resp = await fetch(`/api/services/${sid}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      // 按行解析 SSE
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const data = trimmed.slice(5).trim()
+        if (data === '[DONE]') continue
+        try {
+          const chunk = JSON.parse(data)
+          const delta = chunk.choices?.[0]?.delta || {}
+          if (delta.content) aiMsg.content += delta.content
+          if (delta.reasoning_content) aiMsg.thinking += delta.reasoning_content
+          scrollChat()
+        } catch (e) { /* 忽略解析错误 */ }
+      }
+    }
+    if (!aiMsg.content && !aiMsg.thinking) {
+      aiMsg.content = '（无输出，可能思考中或已截断）'
+    }
   } catch (e) {
-    messages.value.push({ role: 'assistant', content: `❌ 调用失败: ${e.response?.data?.detail || e.message}` })
+    aiMsg.content = `❌ 调用失败: ${e.message || e}`
   } finally {
     chatLoading.value = false
     scrollChat()
@@ -493,5 +529,9 @@ function onGlobalKey(e) {
   background: #fdf6ec; border-radius: 6px; padding: 6px 8px;
   border: 1px dashed #e6a23c; max-height: 120px; overflow-y: auto;
 }
+.chat-streaming {
+  color: #409eff; font-size: 18px; animation: blink 1s infinite;
+}
+@keyframes blink { 50% { opacity: 0.2; } }
 .chat-controls { display: flex; align-items: center; gap: 8px; }
 </style>
