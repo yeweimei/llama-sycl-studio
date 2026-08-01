@@ -45,7 +45,19 @@ def health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-# 前端构建产物（生产模式挂载）
+# 前端构建产物（生产模式挂载，SPA history fallback）
 _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        """SPA history 路由 fallback：非 API 路径都返回 index.html"""
+        from fastapi.responses import FileResponse
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException as _HE
+            raise _HE(404)
+        f = _frontend_dist / "index.html"
+        if f.exists():
+            return FileResponse(str(f))
+        return {"detail": "前端未构建"}
