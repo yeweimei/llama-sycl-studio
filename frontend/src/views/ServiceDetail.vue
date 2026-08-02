@@ -26,84 +26,7 @@
                 </el-tooltip>
               </div>
 
-              <el-form :model="args" label-width="160px" size="small">
-                <el-row :gutter="12">
-                  <el-col :span="12">
-                    <el-form-item label="GPU 层数 (-ngl)">
-                      <el-input-number v-model="args.n_gpu_layers" :min="0" :max="999" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="上下文长度 (-c)">
-                      <el-input-number v-model="args.ctx_size" :min="512" :max="262144" :step="1024" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="批大小 (-b)">
-                      <el-input-number v-model="args.batch_size" :min="32" :max="8192" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="微批大小 (--ubatch-size)">
-                      <el-input-number v-model="args.ubatch_size" :min="16" :max="4096" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="并发槽位 (-np)">
-                      <el-input-number v-model="args.parallel" :min="1" :max="64" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="Flash Attention">
-                      <el-switch v-model="args.flash_attn" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="KV 缓存类型 K">
-                      <el-select v-model="args.cache_type_k" style="width:100%">
-                        <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
-                      </el-select>
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="KV 缓存类型 V">
-                      <el-select v-model="args.cache_type_v" style="width:100%">
-                        <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
-                      </el-select>
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="Jinja 模板">
-                      <el-switch v-model="args.jinja" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="温度 (--temp)">
-                      <el-slider v-model="args.temp" :min="0" :max="2" :step="0.1" show-input />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="Top-K">
-                      <el-input-number v-model="args.top_k" :min="1" :max="100" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="Top-P">
-                      <el-slider v-model="args.top_p" :min="0.1" :max="1" :step="0.05" show-input />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="重复惩罚">
-                      <el-slider v-model="args.repeat_penalty" :min="1" :max="2" :step="0.05" show-input />
-                    </el-form-item>
-                  </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="线程数 (-t)">
-                      <el-input-number v-model="args.threads" :min="1" :max="32" style="width:100%" />
-                    </el-form-item>
-                  </el-col>
-                </el-row>
-              </el-form>
+              <ParamForm v-model="args" />
             </el-card>
           </el-col>
 
@@ -211,6 +134,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ParamForm from '../components/ParamForm.vue'
 import {
   getService, updateService, startService, stopService, restartService,
   getServiceLogs, getParamSchema, listTemplates, createTemplate,
@@ -226,7 +150,6 @@ const savingRestart = ref(false)
 const logs = ref('')
 const templates = ref([])
 const selectedTemplate = ref(null)
-const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const activeTab = ref('params')
 
 // ---------- 命令行 ----------

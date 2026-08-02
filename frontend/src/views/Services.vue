@@ -57,7 +57,7 @@
     </el-card>
 
     <!-- 新建服务对话框 -->
-    <el-dialog v-model="createVisible" title="新建推理服务" width="720px">
+    <el-dialog v-model="createVisible" title="新建推理服务" width="860px" top="5vh">
       <el-form :model="form" label-width="110px">
         <el-form-item label="服务名" required>
           <el-input v-model="form.name" placeholder="如 qwen3.5-9b，将用作容器名" />
@@ -88,6 +88,9 @@
         <el-form-item label="端口">
           <el-input-number v-model="form.port" :min="8000" :max="8999" placeholder="留空自动分配" />
         </el-form-item>
+
+        <el-divider content-position="left">推理参数</el-divider>
+        <ParamForm v-model="form.args" />
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -130,51 +133,8 @@
         </el-form-item>
 
         <el-divider content-position="left">推理参数</el-divider>
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="GPU 层数">
-              <el-input-number v-model="editForm.args.n_gpu_layers" :min="0" :max="999" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="上下文长度">
-              <el-input-number v-model="editForm.args.ctx_size" :min="512" :max="262144" :step="1024" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="批大小">
-              <el-input-number v-model="editForm.args.batch_size" :min="32" :max="8192" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="并发槽位">
-              <el-input-number v-model="editForm.args.parallel" :min="1" :max="64" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="Flash Attention">
-              <el-switch v-model="editForm.args.flash_attn" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="KV 缓存类型">
-              <el-select v-model="editForm.args.cache_type_k" style="width:100%">
-                <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="Jinja 模板">
-              <el-switch v-model="editForm.args.jinja" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="温度">
-              <el-slider v-model="editForm.args.temp" :min="0" :max="2" :step="0.1" show-input />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <div class="form-tip" style="color:#e6a23c">⚠️ 修改推理参数需重启服务生效；更多参数（Top-K/Top-P/重复惩罚等）可在服务详情页调整</div>
+        <ParamForm v-model="editForm.args" />
+        <div class="form-tip" style="color:#e6a23c">⚠️ 修改推理参数需重启服务生效</div>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -188,6 +148,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
+import ParamForm from '../components/ParamForm.vue'
 import {
   listServices, createService, updateService, startService, stopService,
   restartService, cloneService, deleteService, listModels, gpuOptions,
@@ -201,11 +162,10 @@ const createVisible = ref(false)
 const creating = ref(false)
 const editVisible = ref(false)
 const saving = ref(false)
-const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
-const form = ref({ name: '', model_path: '', api_key: '', port: null })
+const form = ref({ name: '', model_path: '', api_key: '', port: null, args: {} })
 const editForm = ref({
   id: null, name: '', model_path: '', api_key: '', port: null,
-  gpu_id: '', args: { n_gpu_layers: 99, ctx_size: 32768, batch_size: 2048, parallel: 4, flash_attn: true, cache_type_k: 'q8_0', jinja: true, temp: 0.7 },
+  gpu_id: '', args: {},
 })
 
 const statusText = (s) => ({ running: '运行中', stopped: '已停止', error: '异常' }[s] || s)
@@ -224,7 +184,7 @@ async function refresh() {
 function openCreate() {
   // 默认选独显（A770M），找不到则第一个
   const defaultGpu = gpus.value.find(g => g.name.includes('A770')) || gpus.value[0] || null
-  form.value = { name: '', model_path: '', api_key: '', port: null, gpu_id: defaultGpu?.id || '' }
+  form.value = { name: '', model_path: '', api_key: '', port: null, gpu_id: defaultGpu?.id || '', args: {} }
   createVisible.value = true
 }
 
@@ -239,6 +199,7 @@ async function doCreate() {
     const gpu = gpus.value.find(g => g.id === form.value.gpu_id)
     if (gpu) payload.gpu_devices = gpu.devices
     delete payload.gpu_id
+    // args 为空时后端会用默认参数
     await createService(payload)
     ElMessage.success('服务已创建')
     createVisible.value = false
