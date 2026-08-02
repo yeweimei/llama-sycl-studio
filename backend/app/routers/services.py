@@ -261,30 +261,103 @@ def delete_service(sid: int):
 
 
 @router.get("/{sid}/logs")
-def service_logs(sid: int, tail: int = 200):
-    """获取 router 日志（简化版：返回 router 状态摘要）"""
+def service_logs(sid: int, tail: int = 200, since: Optional[str] = None, until: Optional[str] = None):
+    """获取 llama-server 运行日志（读取 router.log 文件）"""
+    from pathlib import Path
+    from datetime import datetime, timezone
+    import re
+
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404, "模型不存在")
     d = dict(row)
-    healthy = router_client.health_check_sync()
-    loaded = router_client.get_loaded_models_sync() if healthy else []
-    # 找到当前模型的信息
-    model_info = ""
-    if isinstance(loaded, list):
-        for m in loaded:
-            if m.get("model", m.get("id", "")) == d["name"]:
-                model_info = json.dumps(m, indent=2, ensure_ascii=False)
-                break
-    logs = f"=== Router Health: {'OK' if healthy else 'UNREACHABLE'} ===\n"
-    logs += f"=== Router URL: {settings.router_url} ===\n"
-    logs += f"=== Model: {d['name']} ===\n"
-    if model_info:
-        logs += f"--- Loaded Info ---\n{model_info}\n"
+
+    log_file = Path(settings.data_dir) / "router.log"
+    if not log_file.exists():
+        return {"logs": "（日志文件不存在，模型未启动或未产生日志）", "total": 0, "file": str(log_file)}
+
+    try:
+        raw_lines = log_file.read_text(errors="replace").splitlines()
+    except Exception as e:
+        return {"logs": f"读取日志失败: {e}", "total": 0, "file": str(log_file)}
+
+    total = len(raw_lines)
+
+    # 时间过滤（如果提供了 since/until）
+    # llama.cpp 日志格式示例: "[  1] 12.345.678 I srv ..."  （相对时间，难以解析）
+    # 或带绝对时间的行（如果有）。策略：尝试匹配 ISO 时间戳前缀，否则按 mtime 粗略判断
+    filtered = raw_lines
+
+    if since or until:
+        since_dt = None
+        until_dt = None
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        if until:
+            try:
+                until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        # 尝试按行内时间戳过滤（匹配 HH:MM:SS 或 ISO 格式）
+        ts_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})')
+        time_only_pattern = re.compile(r'(\d{2}:\d{2}:\d{2})')
+
+        if since_dt or until_dt:
+            timed_lines = []
+            file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime, tz=timezone.utc)
+            for line in raw_lines:
+                m = ts_pattern.search(line)
+                if m:
+                    try:
+                        line_dt = datetime.fromisoformat(m.group(1))
+                    except ValueError:
+                        timed_lines.append(line)
+                        continue
+                else:
+                    m2 = time_only_pattern.search(line)
+                    if m2:
+                        # 只有时间没有日期，用文件 mtime 的日期
+                        try:
+                            line_dt = datetime.fromisoformat(
+                                file_mtime.strftime("%Y-%m-%d") + "T" + m2.group(1)
+                            )
+                        except ValueError:
+                            timed_lines.append(line)
+                            continue
+                    else:
+                        # 无时间戳行：保留（通常是多行日志的续行）
+                        timed_lines.append(line)
+                        continue
+
+                # 统一时区比较
+                if line_dt.tzinfo is None:
+                    line_dt = line_dt.replace(tzinfo=timezone.utc)
+
+                if since_dt and line_dt < since_dt:
+                    continue
+                if until_dt and line_dt > until_dt:
+                    continue
+                timed_lines.append(line)
+            filtered = timed_lines
+
+    # tail 截取
+    if tail and tail > 0:
+        result_lines = filtered[-tail:]
     else:
-        logs += "(模型未加载或无信息)\n"
-    return {"logs": logs}
+        result_lines = filtered
+
+    logs_text = "\n".join(result_lines) if result_lines else "（无匹配日志）"
+
+    return {
+        "logs": logs_text,
+        "total": len(result_lines),
+        "file": str(log_file),
+    }
 
 
 @router.get("/params/schema")

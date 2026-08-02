@@ -58,9 +58,15 @@ if [ -f "${MODELS_DIR}/config.ini" ]; then
     ROUTER_ARGS+=(--models-preset "${MODELS_DIR}/config.ini")
 fi
 
-"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" &
+DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
+LOG_FILE="${DATA_DIR}/router.log"
+mkdir -p "${DATA_DIR}"
+
+# 启动 llama-server，stdout/stderr 重定向到 router.log
+"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > "${LOG_FILE}" 2>&1 &
 ROUTER_PID=$!
 echo "  Router PID: ${ROUTER_PID}"
+echo "  Log file:   ${LOG_FILE}"
 
 # 等待 router 就绪
 echo "⬢ 等待 router 就绪..."

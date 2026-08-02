@@ -163,6 +163,7 @@ const listingFiles = ref(false)
 const downloadingFile = ref('')
 const tasks = ref([])
 const showHot = ref(true)
+const isAuthed = ref(true)
 let pollTimer = null
 
 // 热门模型快捷入口
@@ -222,13 +223,13 @@ async function doDownload(row) {
 }
 
 async function loadTasks() {
+  if (!isAuthed.value) return
   try {
     tasks.value = await listTasks()
   } catch (e) {
-    // 401：未登录，停止轮询避免刷日志（登录后重新挂载会恢复）
-    if (e.response?.status === 401 && pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
+    if (e.response?.status === 401) {
+      isAuthed.value = false
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
     }
     return
   }
@@ -238,10 +239,12 @@ async function loadTasks() {
         const p = await taskProgress(t.id)
         t.progress = p.progress
         t.status = p.status
-        if (p.status === 'done') loadTasks()
+        if (p.status === 'done' && isAuthed.value) loadTasks()
       } catch (e) {
-        // 404：任务已丢失，标记失败避免死循环轮询
-        if (e.response?.status === 404) {
+        if (e.response?.status === 401) {
+          isAuthed.value = false
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+        } else if (e.response?.status === 404) {
           t.status = 'error'
         }
       }
@@ -350,9 +353,9 @@ function statusType(s) {
 onMounted(async () => {
   sources.value = await listSources()
   loadTasks()
-  pollTimer = setInterval(loadTasks, 3000)
+  pollTimer = setInterval(() => { if (isAuthed.value) loadTasks() }, 3000)
 })
-onUnmounted(() => clearInterval(pollTimer))
+onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } })
 </script>
 
 <style scoped>

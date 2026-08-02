@@ -11,15 +11,20 @@ api.interceptors.request.use(config => {
   return config
 })
 
-// ---------- 响应拦截器：401 跳登录 ----------
+// ---------- 响应拦截器：401 跳登录（带防抖守卫） ----------
+let redirecting = false
 api.interceptors.response.use(
   res => res,
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('auth_token')
-      if (window.location.pathname !== '/login') {
+      // 防抖：避免多个并发请求同时触发跳转
+      if (!redirecting && window.location.pathname !== '/login') {
+        redirecting = true
         window.location.href = '/login'
       }
+      // 额外延迟重置，防止跳转过程中排队的请求再次触发
+      setTimeout(() => { redirecting = false }, 2000)
     }
     return Promise.reject(err)
   }
@@ -40,7 +45,12 @@ export const updateService = (id, data) => api.put(`/services/${id}`, data).then
 export const startService = (id) => api.post(`/services/${id}/start`).then(r => r.data)
 export const stopService = (id) => api.post(`/services/${id}/stop`).then(r => r.data)
 export const deleteService = (id) => api.delete(`/services/${id}`).then(r => r.data)
-export const getServiceLogs = (id, tail = 200) => api.get(`/services/${id}/logs`, { params: { tail } }).then(r => r.data)
+export const getServiceLogs = (id, tail = 200, since = null, until = null) => {
+  const params = { tail }
+  if (since) params.since = since
+  if (until) params.until = until
+  return api.get(`/services/${id}/logs`, { params }).then(r => r.data)
+}
 export const getParamSchema = () => api.get('/services/params/schema').then(r => r.data)
 export const chatProxy = (id, data) => api.post(`/services/${id}/chat`, data).then(r => r.data)
 export const clientConfig = (id) => api.get(`/services/${id}/client-config`).then(r => r.data)

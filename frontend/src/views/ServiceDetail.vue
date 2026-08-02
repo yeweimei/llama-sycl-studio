@@ -45,9 +45,30 @@
       <!-- ================= 运行日志 ================= -->
       <el-tab-pane label="📋 运行日志" name="logs">
         <div class="log-toolbar">
-          <el-button size="small" @click="refreshLogs">刷新</el-button>
+          <el-button size="small" @click="refreshLogs" :loading="logsLoading">刷新</el-button>
+          <el-select v-model="logTail" size="small" style="width:130px; margin-left:8px" @change="refreshLogs">
+            <el-option :value="50" label="最近 50 条" />
+            <el-option :value="100" label="最近 100 条" />
+            <el-option :value="200" label="最近 200 条" />
+            <el-option :value="500" label="最近 500 条" />
+          </el-select>
+          <span style="margin-left:12px;font-size:13px;color:#909399">自动刷新</span>
+          <el-switch v-model="logAutoRefresh" size="small" style="margin-left:4px" />
+          <el-divider direction="vertical" />
+          <span style="font-size:13px;color:#909399">导出</span>
+          <el-date-picker
+            v-model="logExportRange"
+            type="datetimerange"
+            size="small"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            format="YYYY-MM-DD HH:mm"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            style="width:360px; margin-left:4px"
+          />
+          <el-button size="small" type="primary" @click="exportLogs" :disabled="!logExportRange">导出日志</el-button>
         </div>
-        <pre class="log-view">{{ logs || '（无日志，加载模型后显示）' }}</pre>
+        <pre class="log-view" v-loading="logsLoading">{{ logs || '（无日志，加载模型后显示）' }}</pre>
       </el-tab-pane>
 
       <!-- ================= 聊天测试台 ================= -->
@@ -60,7 +81,13 @@
                 <div v-if="m.role === 'user'" class="chat-label">你</div>
                 <div v-else class="chat-label" style="color:#409eff">助手</div>
                 <div class="chat-content" style="white-space:pre-wrap">{{ m.content }}</div>
-                <div v-if="m.thinking" class="chat-thinking">🤔 {{ m.thinking }}</div>
+                <div v-if="m.thinking" class="chat-thinking">
+                  <div class="thinking-header" @click="toggleThinking(i)">
+                    <span>🤔 思考过程</span>
+                    <el-icon class="thinking-arrow" :class="{ collapsed: !thinkingExpanded[i] }"><ArrowDown /></el-icon>
+                  </div>
+                  <div v-show="thinkingExpanded[i]" class="thinking-body">{{ m.thinking }}</div>
+                </div>
               </div>
             </div>
             <div v-if="chatLoading" class="chat-msg assistant">
@@ -109,9 +136,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
   chatProxy, clientConfig,
@@ -135,13 +163,61 @@ function formatSize(bytes) {
 
 // ---------- 日志 ----------
 const logView = ref(null)
+const logsLoading = ref(false)
+const logTail = ref(200)
+const logAutoRefresh = ref(true)
+const logExportRange = ref(null)
+let logPollTimer = null
 
 async function refreshLogs() {
+  logsLoading.value = true
   try {
-    const d = await getServiceLogs(sid, 300)
+    const d = await getServiceLogs(sid, logTail.value)
     logs.value = d.logs
   } catch (e) {
     logs.value = '获取日志失败: ' + (e.response?.data?.detail || e.message)
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+function startLogPolling() {
+  stopLogPolling()
+  if (logAutoRefresh.value) {
+    logPollTimer = setInterval(refreshLogs, 5000)
+  }
+}
+
+function stopLogPolling() {
+  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null }
+}
+
+watch(logAutoRefresh, (v) => {
+  if (v && activeTab.value === 'logs') startLogPolling()
+  else stopLogPolling()
+})
+
+watch(activeTab, (v) => {
+  if (v === 'logs') { refreshLogs(); startLogPolling() }
+  else stopLogPolling()
+})
+
+async function exportLogs() {
+  if (!logExportRange.value || logExportRange.value.length !== 2) return
+  const [since, until] = logExportRange.value
+  try {
+    const d = await getServiceLogs(sid, 0, since, until)
+    const blob = new Blob([d.logs], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const modelName = service.value?.name || 'model'
+    a.href = url
+    a.download = `${modelName}-${since.replace(/[:]/g, '')}-${until.replace(/[:]/g, '')}.log`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${d.total} 条日志`)
+  } catch (e) {
+    ElMessage.error('导出失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -160,12 +236,11 @@ function stripThink(text) {
   return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
 }
 
-function splitThink(raw) {
-  const m = raw.match(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/i)
-  if (!m) return { thinking: '', content: raw }
-  const after = raw.slice(m.index + m[0].length)
-  const closed = /<\/think>/i.test(m[0])
-  return { thinking: m[1] || '', content: closed ? after.replace(/^\s*/, '') : '' }
+// thinking 折叠状态
+const thinkingExpanded = ref({})
+
+function toggleThinking(index) {
+  thinkingExpanded.value[index] = !thinkingExpanded.value[index]
 }
 
 async function sendChat() {
@@ -221,12 +296,22 @@ async function sendChat() {
         try {
           const chunk = JSON.parse(data)
           const delta = chunk.choices?.[0]?.delta || {}
-          if (delta.reasoning_content) aiMsg.thinking += delta.reasoning_content
+          if (delta.reasoning_content) {
+            aiMsg.thinking += delta.reasoning_content
+            // 流式过程中自动展开
+            const idx = messages.value.indexOf(aiMsg)
+            if (idx >= 0) thinkingExpanded.value[idx] = true
+          }
           if (delta.content) {
-            aiMsg.rawContent = (aiMsg.rawContent || '') + delta.content
-            const parsed = splitThink(aiMsg.rawContent)
-            aiMsg.thinking = parsed.thinking
-            aiMsg.content = parsed.content
+            aiMsg.content += delta.content
+            // 如果 content 里含 <think> 标签（某些模型兼容），解析出来
+            if (aiMsg.content.includes('<think')) {
+              const m = aiMsg.content.match(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/i)
+              if (m) {
+                if (!aiMsg.thinking) aiMsg.thinking = m[1] || ''
+                aiMsg.content = aiMsg.content.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/i, '').trim()
+              }
+            }
           }
           scrollChat()
         } catch (e) { /* 忽略解析错误 */ }
@@ -234,6 +319,12 @@ async function sendChat() {
     }
     if (!aiMsg.content && !aiMsg.thinking) {
       aiMsg.content = '（无输出，可能思考中或已截断）'
+    } else if (!aiMsg.content && aiMsg.thinking) {
+      aiMsg.content = '（模型仅返回了思考内容，未生成正式回答）'
+    } else {
+      // 流式结束后默认折叠思考内容
+      const idx = messages.value.indexOf(aiMsg)
+      if (idx >= 0 && aiMsg.thinking) thinkingExpanded.value[idx] = false
     }
   } catch (e) {
     aiMsg.content = `❌ 调用失败: ${e.message || e}`
@@ -245,6 +336,7 @@ async function sendChat() {
 
 function clearChat() {
   messages.value = []
+  thinkingExpanded.value = {}
 }
 
 function scrollChat() {
@@ -304,8 +396,12 @@ async function load() {
   loading.value = true
   try {
     service.value = await getService(sid)
-    await refreshLogs()
     await loadClientConfig()
+    // 日志由 tab watcher 自动加载
+    if (activeTab.value === 'logs') {
+      await refreshLogs()
+      startLogPolling()
+    }
   } finally {
     loading.value = false
   }
@@ -317,6 +413,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKey)
+  stopLogPolling()
 })
 
 function onGlobalKey(e) {
@@ -359,8 +456,20 @@ function onGlobalKey(e) {
 .chat-content { font-size: 14px; line-height: 1.6; }
 .chat-thinking {
   margin-top: 6px; font-size: 12px; color: #b88230;
-  background: #fdf6ec; border-radius: 6px; padding: 6px 8px;
-  border: 1px dashed #e6a23c; max-height: 120px; overflow-y: auto;
+  background: #fdf6ec; border-radius: 6px;
+  border: 1px dashed #e6a23c; overflow: hidden;
+}
+.thinking-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px; cursor: pointer; user-select: none;
+  font-weight: 600; font-size: 12px;
+}
+.thinking-header:hover { background: #faecd8; }
+.thinking-arrow { transition: transform 0.2s; font-size: 12px; }
+.thinking-arrow.collapsed { transform: rotate(-90deg); }
+.thinking-body {
+  padding: 6px 8px; max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; border-top: 1px dashed #e6a23c;
 }
 .chat-streaming {
   color: #409eff; font-size: 18px; animation: blink 1s infinite;
