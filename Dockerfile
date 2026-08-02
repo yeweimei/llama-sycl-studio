@@ -2,10 +2,13 @@
 # llama-server (router mode) + WebUI (FastAPI + Vue) 同容器
 FROM ghcr.io/ggml-org/llama.cpp:server-intel
 
-# 系统依赖
+# 系统依赖 + 设置 LD_LIBRARY_PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-venv curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# 保留原有 LD_LIBRARY_PATH（Intel oneAPI），追加分号 /app
+ENV LD_LIBRARY_PATH=/opt/intel/oneapi/tcm/1.4/lib:/opt/intel/oneapi/umf/1.0/lib:/opt/intel/oneapi/tbb/2022.3/env/../lib/intel64/gcc4.8:/opt/intel/oneapi/pti/0.16/lib:/opt/intel/oneapi/mpi/2021.17/opt/mpi/libfabric/lib:/opt/intel/oneapi/mpi/2021.17/lib:/opt/intel/oneapi/mkl/2025.3/lib:/opt/intel/oneapi/dnnl/2025.3/lib:/opt/intel/oneapi/debugger/2025.3/opt/debugger/lib:/opt/intel/oneapi/compiler/2025.3/opt/compiler/lib:/opt/intel/oneapi/compiler/2025.3/lib:/opt/intel/oneapi/ccl/2021.17/lib/:/app
 
 # 创建工作目录
 WORKDIR /app/studio
@@ -40,5 +43,6 @@ EXPOSE 9100
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -s http://127.0.0.1:9100/api/health || exit 1
 
-# 入口
-CMD ["/app/studio/entrypoint.sh"]
+# 入口（清除原镜像 ENTRYPOINT）
+ENTRYPOINT []
+CMD ["bash", "/app/studio/entrypoint.sh"]

@@ -13,6 +13,7 @@ STUDIO_DIR="/app/studio"
 # SYCL 环境变量
 export ZES_ENABLE_SYSMAN="${ZES_ENABLE_SYSMAN:-1}"
 export GGML_SYCL_ENABLE_FLASH_ATTN="${GGML_SYCL_ENABLE_FLASH_ATTN:-1}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/app}"
 
 # 代理（容器内 pip/下载用）
 if [ -n "$HTTP_PROXY" ] || [ -n "$http_proxy" ]; then
