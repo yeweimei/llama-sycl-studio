@@ -62,9 +62,10 @@ DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
 LOG_FILE="${DATA_DIR}/router.log"
 mkdir -p "${DATA_DIR}"
 
-# 启动 llama-server，stdout/stderr 经 awk 加 ISO 时间戳前缀后写入 router.log
+# 启动 llama-server，stdout/stderr 经 while read 加 ISO 时间戳前缀后写入 router.log
 # （llama.cpp 原生日志是相对时间戳 0.00.859.603，无法按时间过滤，加前缀后支持 since/until）
-"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > >(awk '{ print strftime("%Y-%m-%d %H:%M:%S"), $0; fflush() }' > "${LOG_FILE}") 2>&1 &
+# 注：用 while read 而非 awk —— mawk 对非 tty 输出全缓冲，fflush 不生效导致日志写不出去
+"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > >(while IFS= read -r line; do echo "$(date '+%Y-%m-%d %H:%M:%S') ${line}"; done > "${LOG_FILE}") 2>&1 &
 ROUTER_PID=$!
 echo "  Router PID: ${ROUTER_PID}"
 echo "  Log file:   ${LOG_FILE}"
