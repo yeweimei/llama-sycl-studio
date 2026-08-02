@@ -28,6 +28,15 @@ echo "  WebUI:     0.0.0.0:${WEBUI_PORT}"
 echo "  GPU:       $(ls /dev/dri/ 2>/dev/null || echo 'none')"
 echo "  MODELS_MAX: ${MODELS_MAX}"
 
+# ========== 启动前：从 DB 重建 config.ini（保证重启后预设生效）==========
+echo "⬢ 重建 config.ini（从 DB 预设）..."
+cd "${STUDIO_DIR}/backend"
+export PYTHONPATH="${STUDIO_DIR}/backend"
+export LLAMA_MODEL_DIR="${MODELS_DIR}"
+export LLAMA_STUDIO_DATA="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
+python3 -c "from app.presets import _write_config_ini; r = _write_config_ini(); print('  config.ini:', 'OK' if r.get('ok') else 'SKIP/ERR', r.get('path',''))" 2>&1 | tail -2
+cd "${STUDIO_DIR}"
+
 # ========== 启动 llama-server (router mode) ==========
 echo "⬢ 启动 llama-server router..."
 
@@ -71,6 +80,7 @@ echo "⬢ 启动 WebUI..."
 cd "${STUDIO_DIR}/backend"
 export LLAMA_MODEL_DIR="${MODELS_DIR}"
 export LLAMA_ROUTER_URL="http://127.0.0.1:${ROUTER_PORT}"
+export LLAMA_STUDIO_DATA="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
 export WEBUI_PORT="${WEBUI_PORT}"
 
 python3 run.py &

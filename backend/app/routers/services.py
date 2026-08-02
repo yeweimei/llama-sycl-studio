@@ -28,12 +28,12 @@ class ServiceUpdate(BaseModel):
 
 @router.get("")
 def list_services():
-    """列出模型池：合并 DB 注册的模型 + router 发现的模型"""
+    """列出模型池：合并 DB 注册的模型 + router 发现的模型（自动注册发现的新模型）"""
     # 从 router 获取实时状态
     router_models = router_client.list_models_sync()
     loaded_info = router_client.get_loaded_models_sync()
 
-    # 构建 loaded 模型的详情映射
+    # 构建 loaded 模型的详情映射（router /models 接口，data 数组）
     loaded_map = {}
     if isinstance(loaded_info, list):
         for m in loaded_info:
@@ -41,19 +41,33 @@ def list_services():
             if mid:
                 loaded_map[mid] = m
     elif isinstance(loaded_info, dict):
-        for m in loaded_info.get("models", []):
+        for m in loaded_info.get("data", []):
             mid = m.get("model", m.get("id", ""))
             if mid:
                 loaded_map[mid] = m
 
-    # 从 DB 获取注册的模型元信息
+    # 从 DB 获取注册的模型元信息，并自动注册 router 发现的新模型（按 name upsert）
     db_models = {}
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
-    for r in rows:
-        d = dict(r)
-        d["args"] = json.loads(d["args"] or "{}")
-        db_models[d["name"]] = d
+        for r in rows:
+            d = dict(r)
+            d["args"] = json.loads(d["args"] or "{}")
+            db_models[d["name"]] = d
+        # 自动注册 router 发现但 DB 没有的模型
+        for rm in router_models:
+            mid = rm["id"]
+            if mid not in db_models:
+                cur = conn.execute(
+                    "INSERT INTO services (name, model_path, args, api_key, status, created_at, updated_at) "
+                    "VALUES (?,?,?,?, 'unloaded', ?, ?)",
+                    (mid, f"/models/{mid}.gguf", "{}", None, now(), now()),
+                )
+                db_models[mid] = {
+                    "id": cur.lastrowid, "name": mid, "model_path": f"/models/{mid}.gguf",
+                    "args": {}, "api_key": None, "status": "unloaded",
+                    "created_at": now(), "updated_at": now(),
+                }
 
     # 合并：router 发现的所有模型 + DB 注册的模型
     result = []
@@ -63,7 +77,15 @@ def list_services():
         mid = rm["id"]
         seen.add(mid)
         db_info = db_models.get(mid, {})
-        is_loaded = rm.get("loaded", False) or mid in loaded_map
+        # 状态：优先 router /models 的 status.value，回退 /v1/models 的 status
+        state = rm.get("status", "unloaded")
+        if mid in loaded_map:
+            st = loaded_map[mid].get("status")
+            if isinstance(st, dict):
+                state = router_client._parse_status(st.get("value", ""))
+            elif isinstance(st, str):
+                state = router_client._parse_status(st)
+        is_loaded = state == "loaded"
         loaded_detail = loaded_map.get(mid, {})
         result.append({
             "id": db_info.get("id", 0),
@@ -71,7 +93,7 @@ def list_services():
             "model_path": db_info.get("model_path", f"/models/{mid}.gguf"),
             "args": db_info.get("args", {}),
             "api_key": db_info.get("api_key"),
-            "status": "loaded" if is_loaded else "unloaded",
+            "status": state,
             "loaded": is_loaded,
             "loaded_info": loaded_detail,
             "created_at": db_info.get("created_at"),
@@ -144,11 +166,23 @@ def get_service(sid: int):
             mid = m.get("model", m.get("id", ""))
             if mid:
                 loaded_map[mid] = m
+    elif isinstance(loaded_info, dict):
+        for m in loaded_info.get("data", []):
+            mid = m.get("model", m.get("id", ""))
+            if mid:
+                loaded_map[mid] = m
 
     rm = next((m for m in router_models if m["id"] == d["name"]), None)
     if rm:
-        d["loaded"] = rm.get("loaded", False)
-        d["status"] = "loaded" if d["loaded"] else "unloaded"
+        state = rm.get("status", "unloaded")
+        if d["name"] in loaded_map:
+            st = loaded_map[d["name"]].get("status")
+            if isinstance(st, dict):
+                state = router_client._parse_status(st.get("value", ""))
+            elif isinstance(st, str):
+                state = router_client._parse_status(st)
+        d["loaded"] = state == "loaded"
+        d["status"] = state
         d["loaded_info"] = loaded_map.get(d["name"], {})
     else:
         d["loaded"] = False
@@ -179,42 +213,40 @@ def update_service(sid: int, body: ServiceUpdate):
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router"""
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-    if not row:
-        raise HTTPException(404, "模型不存在")
-    d = dict(row)
-    model_name = d["name"]
-
+    """加载模型到 router（支持 DB id 或按名称）"""
+    model_name = _resolve_model_name(sid)
     try:
         result = router_client.load_model_sync(model_name)
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE id=?", (now(), sid))
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
         return {"ok": True, "status": "loaded", "detail": result}
     except RuntimeError as e:
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='error', updated_at=? WHERE id=?", (now(), sid))
+            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), model_name))
         raise HTTPException(400, str(e))
 
 
 @router.post("/{sid}/stop")
 def stop_service(sid: int):
-    """从 router 卸载模型"""
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-    if not row:
-        raise HTTPException(404, "模型不存在")
-    d = dict(row)
-    model_name = d["name"]
-
+    """从 router 卸载模型（支持 DB id 或按名称）"""
+    model_name = _resolve_model_name(sid)
     try:
         result = router_client.unload_model_sync(model_name)
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE id=?", (now(), sid))
+            conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE name=?", (now(), model_name))
         return {"ok": True, "status": "unloaded", "detail": result}
     except RuntimeError as e:
         raise HTTPException(400, str(e))
+
+
+def _resolve_model_name(sid) -> str:
+    """将 DB id 解析为模型名；若 DB 无记录则尝试直接按名称（router 发现模式）"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if row:
+        return dict(row)["name"]
+    # DB 无记录：sid 可能是模型名（字符串）？不，路由是 int。尝试用 router 发现列表匹配序号
+    raise HTTPException(404, "模型不存在，请先刷新模型列表")
 
 
 @router.delete("/{sid}")
