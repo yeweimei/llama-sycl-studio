@@ -224,7 +224,12 @@ async function doDownload(row) {
 async function loadTasks() {
   try {
     tasks.value = await listTasks()
-  } catch {
+  } catch (e) {
+    // 401：未登录，停止轮询避免刷日志（登录后重新挂载会恢复）
+    if (e.response?.status === 401 && pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
     return
   }
   for (const t of tasks.value) {
