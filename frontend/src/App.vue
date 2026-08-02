@@ -35,6 +35,10 @@
         <div class="header-right">
           <el-tag size="small" type="success">NUC12</el-tag>
           <span class="header-time">{{ now }}</span>
+          <el-button size="small" text @click="doLogout">
+            <el-icon><SwitchButton /></el-icon>
+            退出
+          </el-button>
         </div>
       </el-header>
       <el-main class="main">
@@ -46,10 +50,24 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { Service, Files, Download, Monitor, Setting } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
+import { Service, Files, Download, Monitor, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { authLogout } from './api'
 
+const router = useRouter()
 const now = ref(new Date().toLocaleString('zh-CN'))
 let timer = null
+
+async function doLogout() {
+  try {
+    await authLogout()
+  } catch {
+    // ignore
+  }
+  localStorage.removeItem('auth_token')
+  router.push('/login')
+}
+
 onMounted(() => { timer = setInterval(() => { now.value = new Date().toLocaleString('zh-CN') }, 1000) })
 onUnmounted(() => clearInterval(timer))
 </script>

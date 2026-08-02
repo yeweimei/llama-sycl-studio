@@ -37,10 +37,6 @@ def list_sources():
 @router.post("/search")
 def search_models(body: DownloadRequest):
     """搜索模型仓库（HF / ModelScope）"""
-    import urllib.request
-    import json
-    from urllib.parse import quote
-
     query = body.repo_id.strip()
     if not query:
         return []
@@ -59,7 +55,6 @@ def _search_huggingface(query: str) -> list[dict]:
     from urllib.parse import quote
 
     base = proxy.get_hf_base()
-    # HF 搜索 API：按关键词 + GGUF 过滤
     url = (
         f"{base}/api/models?search={quote(query)}"
         f"&filter=gguf&sort=downloads&direction=-1&limit=12"
@@ -71,7 +66,6 @@ def _search_huggingface(query: str) -> list[dict]:
     results = []
     for m in data:
         rid = m.get("id", "")
-        # 搜索接口不返回 siblings 详情，filter=gguf 已过滤，直接采用
         results.append({
             "repo_id": rid,
             "name": rid.split("/")[-1],
@@ -126,7 +120,6 @@ def _list_huggingface(repo_id: str) -> list[dict]:
     import json
 
     base = proxy.get_hf_base()
-    # 通过 HF API 获取文件列表
     url = f"{base}/api/models/{repo_id}"
     req = urllib.request.Request(url, headers={"User-Agent": "llama-studio/0.1"})
     with proxy.build_opener().open(req, timeout=25) as resp:
@@ -136,10 +129,9 @@ def _list_huggingface(repo_id: str) -> list[dict]:
     for s in data.get("siblings", []):
         fn = s.get("rfilename", "")
         if fn.endswith(".gguf"):
-            size = s.get("size")  # HF API 的 siblings 通常无 size，走 HEAD
+            size = s.get("size")
             files.append({"filename": fn, "size": size})
 
-    # 补大小：HEAD 请求（最多 8 个文件，避免慢）
     import urllib.error
     for f in files[:8]:
         try:
@@ -171,19 +163,22 @@ def _list_modelscope(repo_id: str) -> list[dict]:
     return files
 
 
+# ------------------------------------------------------------------ #
+# 下载任务管理
+# ------------------------------------------------------------------ #
+
 @router.post("")
 def start_download(body: DownloadRequest):
     """启动下载任务"""
     if not body.filename:
         raise HTTPException(400, "请先选择要下载的文件")
 
-    # 目标路径：model_dir/<repo 最后一段>/<filename>
     repo_short = body.repo_id.split("/")[-1]
     target_dir = Path(settings.model_dir) / repo_short
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / Path(body.filename).name
 
-    # 写 DB（先拿到自增 id，作为内存 task 的 key）
+    # 写 DB
     with get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO download_tasks (source, repo_id, filename, local_path, status, created_at, updated_at) "
@@ -192,43 +187,52 @@ def start_download(body: DownloadRequest):
         )
         tid = cur.lastrowid
 
-    # 内存任务用 DB id 作 key（保证 progress 接口能查到）
+    _launch_worker(tid, body.source, body.repo_id, body.filename, str(target), body.mirror)
+    return _tasks.get(tid, {"id": tid, "status": "error", "error": "启动失败"})
+
+
+def _launch_worker(tid: int, source: str, repo_id: str, filename: str, local_path: str, mirror: str = None):
+    """启动下载线程（供 start_download / retry 复用）"""
     with _task_lock:
         _tasks[tid] = {
             "id": tid,
-            "source": body.source,
-            "repo_id": body.repo_id,
-            "filename": body.filename,
-            "local_path": str(target),
+            "source": source,
+            "repo_id": repo_id,
+            "filename": filename,
+            "local_path": local_path,
             "status": "downloading",
             "progress": 0.0,
             "downloaded_bytes": 0,
             "total_bytes": 0,
             "error": None,
+            "paused": False,
+            "stop": False,
             "created_at": now(),
         }
 
-    # 后台线程下载
-    t = threading.Thread(target=_download_worker, args=(tid, body), daemon=True)
+    t = threading.Thread(
+        target=_download_worker,
+        args=(tid, source, repo_id, filename, local_path, mirror),
+        daemon=True,
+    )
     t.start()
-    return _tasks[tid]
 
 
-def _download_worker(tid: int, body: DownloadRequest):
-    """后台下载线程（支持断点续传）"""
+def _download_worker(tid: int, source: str, repo_id: str, filename: str, local_path: str, mirror: str = None):
+    """后台下载线程（支持断点续传 + 暂停/继续）"""
     import urllib.request
 
     task = _tasks[tid]
-    target = Path(task["local_path"])
+    target = Path(local_path)
     tmp = target.with_suffix(target.suffix + ".part")
 
     # 构造 URL
-    if body.source == "modelscope":
-        base = body.mirror or "https://modelscope.cn"
-        url = f"{base}/models/{body.repo_id}/resolve/master/{body.filename}"
+    if source == "modelscope":
+        base = mirror or "https://modelscope.cn"
+        url = f"{base}/models/{repo_id}/resolve/master/{filename}"
     else:
-        base = body.mirror or proxy.get_hf_base()
-        url = f"{base}/{body.repo_id}/resolve/main/{body.filename}"
+        base = mirror or proxy.get_hf_base()
+        url = f"{base}/{repo_id}/resolve/main/{filename}"
 
     try:
         # 已下载部分（断点续传）
@@ -244,6 +248,16 @@ def _download_worker(tid: int, body: DownloadRequest):
             task["total_bytes"] = total
             task["downloaded_bytes"] = existing
             while True:
+                # 检查停止标志
+                if task.get("stop"):
+                    task["status"] = "cancelled"
+                    return
+
+                # 检查暂停标志
+                if task.get("paused"):
+                    time.sleep(0.5)
+                    continue
+
                 chunk = resp.read(1024 * 256)
                 if not chunk:
                     break
@@ -262,6 +276,9 @@ def _download_worker(tid: int, body: DownloadRequest):
                 (task["downloaded_bytes"], task["total_bytes"], now(), tid),
             )
     except Exception as e:
+        if task.get("stop"):
+            task["status"] = "cancelled"
+            return
         task["status"] = "error"
         task["error"] = str(e)
         with get_conn() as conn:
@@ -302,13 +319,103 @@ def task_progress(tid: int):
     return task
 
 
+@router.post("/tasks/{tid}/pause")
+def pause_task(tid: int):
+    """暂停下载任务"""
+    with _task_lock:
+        if tid not in _tasks:
+            raise HTTPException(404, "任务不在内存中（可能已完成或已中断）")
+        task = _tasks[tid]
+        if task["status"] != "downloading":
+            raise HTTPException(400, f"当前状态 {task['status']} 不可暂停")
+        task["paused"] = True
+        task["status"] = "paused"
+    with get_conn() as conn:
+        conn.execute("UPDATE download_tasks SET status='paused', updated_at=? WHERE id=?", (now(), tid))
+    return {"ok": True, "status": "paused"}
+
+
+@router.post("/tasks/{tid}/resume")
+def resume_task(tid: int):
+    """继续下载任务"""
+    with _task_lock:
+        if tid not in _tasks:
+            raise HTTPException(404, "任务不在内存中（可能已完成或已中断）")
+        task = _tasks[tid]
+        if task["status"] != "paused":
+            raise HTTPException(400, f"当前状态 {task['status']} 不可继续")
+        task["paused"] = False
+        task["status"] = "downloading"
+    with get_conn() as conn:
+        conn.execute("UPDATE download_tasks SET status='downloading', updated_at=? WHERE id=?", (now(), tid))
+    return {"ok": True, "status": "downloading"}
+
+
+@router.post("/tasks/{tid}/retry")
+def retry_task(tid: int):
+    """重试失败的下载任务（清除 .part 重新开始）"""
+    with _task_lock:
+        if tid not in _tasks:
+            # 内存没有，从 DB 查
+            with get_conn() as conn:
+                row = conn.execute("SELECT * FROM download_tasks WHERE id=?", (tid,)).fetchone()
+            if not row:
+                raise HTTPException(404, "任务不存在")
+            r = dict(row)
+            if r["status"] != "error":
+                raise HTTPException(400, "只能重试失败状态的任务")
+            source = r["source"]
+            repo_id = r["repo_id"]
+            filename = r["filename"]
+            local_path = r["local_path"]
+        else:
+            task = _tasks[tid]
+            if task["status"] != "error":
+                raise HTTPException(400, "只能重试失败状态的任务")
+            source = task["source"]
+            repo_id = task["repo_id"]
+            filename = task["filename"]
+            local_path = task["local_path"]
+
+    # 删除旧 .part 文件
+    target = Path(local_path)
+    tmp = target.with_suffix(target.suffix + ".part")
+    if tmp.exists():
+        tmp.unlink()
+
+    # 更新 DB 状态
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE download_tasks SET status='downloading', progress=0, downloaded_bytes=0, "
+            "total_bytes=0, updated_at=? WHERE id=?",
+            (now(), tid),
+        )
+
+    # 重新启动下载线程
+    _launch_worker(tid, source, repo_id, filename, local_path)
+    return {"ok": True, "status": "downloading"}
+
+
 @router.delete("/tasks/{tid}")
-def cancel_task(tid: int):
-    """取消任务（删除临时文件）"""
-    if tid in _tasks:
-        task = _tasks.pop(tid)
-        tmp = Path(task["local_path"]).with_suffix(Path(task["local_path"]).suffix + ".part")
+def delete_task(tid: int):
+    """删除任务：停止活跃线程 + 删 .part + 删 DB 记录 + 移除内存"""
+    with _task_lock:
+        task = _tasks.pop(tid, None)
+
+    if task:
+        # 停止活跃线程
+        task["stop"] = True
+        # 删除 .part 临时文件
+        target = Path(task["local_path"])
+        tmp = target.with_suffix(target.suffix + ".part")
         if tmp.exists():
-            tmp.unlink()
-        return {"ok": True}
-    raise HTTPException(404, "任务不存在")
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+    # 删 DB 记录（无论内存有没有）
+    with get_conn() as conn:
+        conn.execute("DELETE FROM download_tasks WHERE id=?", (tid,))
+
+    return {"ok": True}

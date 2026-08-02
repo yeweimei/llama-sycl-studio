@@ -10,29 +10,57 @@ from pathlib import Path
 # 确保能 import app 包
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
+from app.database import init_db
+from app import auth as auth_mod
 from app.routers import services, models, downloads, gpu, settings as settings_router
+from app.routers import auth as auth_router
 
 app = FastAPI(
     title="LLM 推理服务管理台",
     description="管理 NUC12 上的 llama.cpp SYCL Docker 推理服务",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 # CORS：开发时前端 vite 不同端口
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: 生产环境收紧
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# 初始化数据库
+init_db()
+
+# ---------- 认证中间件 ----------
+# 不需要认证的路径前缀
+_PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/status", "/api/auth/setup", "/api/health"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """拦截 /api/* 请求，校验 Bearer token（公开路径放行）"""
+    path = request.url.path
+    if path.startswith("/api/"):
+        if path in _PUBLIC_API_PATHS:
+            return await call_next(request)
+        # 校验 token
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        if not auth_mod.check_token(token):
+            return JSONResponse(status_code=401, content={"detail": "未认证"})
+    return await call_next(request)
+
+
 # 路由注册
+app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(services.router, prefix="/api/services", tags=["services"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])
 app.include_router(downloads.router, prefix="/api/downloads", tags=["downloads"])
@@ -42,7 +70,7 @@ app.include_router(settings_router.router, prefix="/api/settings", tags=["settin
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 # 前端构建产物（生产模式挂载，SPA history fallback）

@@ -78,7 +78,7 @@
             </template>
           </el-table-column>
           <el-table-column label="大小" width="110" align="right">
-            <template #default="{ row }">{{ row.size ? fmtSize(row.size) : '—' }}</template>
+            <template #default="{ row }">{{ row.size ? fmtSize(row.size) : '-' }}</template>
           </el-table-column>
           <el-table-column label="操作" width="100">
             <template #default="{ row }">
@@ -94,7 +94,10 @@
 
     <!-- 下载任务 -->
     <el-card shadow="never">
-      <div class="card-title"><span>下载任务</span></div>
+      <div class="card-title">
+        <span>下载任务</span>
+        <el-button size="small" style="margin-left:auto" @click="loadTasks">刷新</el-button>
+      </div>
       <el-table :data="tasks" stripe size="small">
         <el-table-column prop="filename" label="文件" min-width="220" show-overflow-tooltip />
         <el-table-column label="进度" width="240">
@@ -105,15 +108,33 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tag size="small" :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150">
+        <el-table-column label="操作" width="200">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'downloading'" size="small" type="danger" @click="cancel(row)">取消</el-button>
-            <el-button v-if="row.status === 'done'" size="small" type="success" @click="refresh()">刷新模型</el-button>
+            <!-- downloading -> 暂停 / 取消 -->
+            <template v-if="row.status === 'downloading'">
+              <el-button size="small" @click="pauseDownload(row)">暂停</el-button>
+              <el-button size="small" type="danger" @click="cancelDownload(row)">取消</el-button>
+            </template>
+            <!-- paused -> 继续 / 取消 -->
+            <template v-else-if="row.status === 'paused'">
+              <el-button size="small" type="primary" @click="resumeDownload(row)">继续</el-button>
+              <el-button size="small" type="danger" @click="cancelDownload(row)">取消</el-button>
+            </template>
+            <!-- error -> 重试 / 删除 -->
+            <template v-else-if="row.status === 'error'">
+              <el-button size="small" type="warning" @click="retryDownload(row)">重试</el-button>
+              <el-button size="small" type="danger" @click="deleteHistory(row)">删除</el-button>
+            </template>
+            <!-- done -> 删除 -->
+            <template v-else-if="row.status === 'done'">
+              <el-button size="small" type="success" @click="refreshModels()">刷新模型</el-button>
+              <el-button size="small" type="danger" @click="deleteHistory(row)">删除</el-button>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -124,9 +145,13 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Folder } from '@element-plus/icons-vue'
-import { listSources, searchModels, listRepoFiles, startDownload, listTasks, taskProgress, cancelTask } from '../api'
+import {
+  listSources, searchModels, listRepoFiles, startDownload,
+  listTasks, taskProgress, cancelTask, pauseTask, resumeTask, retryTask, deleteTask,
+  listModels
+} from '../api'
 
 const form = ref({ source: 'huggingface', repo_id: '' })
 const sources = ref([])
@@ -186,7 +211,7 @@ async function selectRepo(row) {
 async function doDownload(row) {
   downloadingFile.value = row.filename
   try {
-    const t = await startDownload({ source: form.value.source, repo_id: selectedRepo.value.repo_id, filename: row.filename })
+    await startDownload({ source: form.value.source, repo_id: selectedRepo.value.repo_id, filename: row.filename })
     ElMessage.success(`开始下载 ${row.filename}`)
     loadTasks()
   } catch (e) {
@@ -197,33 +222,91 @@ async function doDownload(row) {
 }
 
 async function loadTasks() {
-  tasks.value = await listTasks()
+  try {
+    tasks.value = await listTasks()
+  } catch {
+    return
+  }
   for (const t of tasks.value) {
-    if (t.status === 'downloading') {
+    if (t.status === 'downloading' || t.status === 'paused') {
       try {
         const p = await taskProgress(t.id)
         t.progress = p.progress
         t.status = p.status
         if (p.status === 'done') loadTasks()
-        if (p.status === 'error') {
-          t.status = 'error'
-          ElMessage.error(p.error || '下载失败')
-        }
       } catch (e) {
         // 404：任务已丢失，标记失败避免死循环轮询
-        t.status = 'error'
         if (e.response?.status === 404) {
-          ElMessage.warning('下载任务已中断，请重新发起')
+          t.status = 'error'
         }
       }
     }
   }
 }
 
-async function cancel(row) {
-  await cancelTask(row.id)
-  ElMessage.info('已取消')
-  loadTasks()
+async function pauseDownload(row) {
+  try {
+    await pauseTask(row.id)
+    ElMessage.info('已暂停')
+    loadTasks()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '暂停失败')
+  }
+}
+
+async function resumeDownload(row) {
+  try {
+    await resumeTask(row.id)
+    ElMessage.success('已继续')
+    loadTasks()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '继续失败')
+  }
+}
+
+async function retryDownload(row) {
+  try {
+    await retryTask(row.id)
+    ElMessage.success('正在重试...')
+    loadTasks()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '重试失败')
+  }
+}
+
+async function cancelDownload(row) {
+  try {
+    await ElMessageBox.confirm('确定取消此下载任务？', '提示', { type: 'warning' })
+  } catch { return }
+  try {
+    await cancelTask(row.id)
+    ElMessage.info('已取消')
+    loadTasks()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '取消失败')
+  }
+}
+
+async function deleteHistory(row) {
+  try {
+    await ElMessageBox.confirm('确定删除此任务记录？', '提示', { type: 'warning' })
+  } catch { return }
+  try {
+    await deleteTask(row.id)
+    ElMessage.info('已删除')
+    loadTasks()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '删除失败')
+  }
+}
+
+async function refreshModels() {
+  try {
+    await listModels()
+    ElMessage.success('模型列表已刷新')
+  } catch {
+    // ignore
+  }
 }
 
 // ---------- 格式化 ----------
@@ -253,10 +336,10 @@ function quantType(fn) {
   return 'info'
 }
 function statusText(s) {
-  return { downloading: '下载中', done: '完成', error: '失败' }[s] || s
+  return { downloading: '下载中', done: '完成', error: '失败', paused: '已暂停', cancelled: '已取消' }[s] || s
 }
 function statusType(s) {
-  return { downloading: 'primary', done: 'success', error: 'danger' }[s] || 'info'
+  return { downloading: 'primary', done: 'success', error: 'danger', paused: 'warning', cancelled: 'info' }[s] || 'info'
 }
 
 onMounted(async () => {

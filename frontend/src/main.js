@@ -9,6 +9,7 @@ import './style.css'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/login', component: () => import('./views/Login.vue'), meta: { title: '登录', public: true } },
     { path: '/', redirect: '/services' },
     { path: '/services', component: () => import('./views/Services.vue'), meta: { title: '服务管理' } },
     { path: '/services/:id', component: () => import('./views/ServiceDetail.vue'), meta: { title: '服务详情' } },
@@ -17,6 +18,16 @@ const router = createRouter({
     { path: '/monitor', component: () => import('./views/Monitor.vue'), meta: { title: '系统监控' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '设置' } },
   ],
+})
+
+// 全局路由守卫：未认证跳 /login
+router.beforeEach(async (to) => {
+  if (to.meta.public) return true
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    return '/login'
+  }
+  return true
 })
 
 const app = createApp(App)

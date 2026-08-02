@@ -2,6 +2,36 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
+// ---------- 请求拦截器：自动带 token ----------
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('auth_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// ---------- 响应拦截器：401 跳登录 ----------
+api.interceptors.response.use(
+  res => res,
+  err => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('auth_token')
+      // 避免在登录页循环跳转
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
+// ---------- 认证 ----------
+export const authStatus = () => api.get('/auth/status').then(r => r.data)
+export const authSetup = (password) => api.post('/auth/setup', { password }).then(r => r.data)
+export const authLogin = (password) => api.post('/auth/login', { password }).then(r => r.data)
+export const authLogout = () => api.post('/auth/logout').then(r => r.data)
+
 // ---------- 服务 ----------
 export const listServices = () => api.get('/services').then(r => r.data)
 export const getService = (id) => api.get(`/services/${id}`).then(r => r.data)
@@ -30,6 +60,10 @@ export const startDownload = (data) => api.post('/downloads', data).then(r => r.
 export const listTasks = () => api.get('/downloads/tasks').then(r => r.data)
 export const taskProgress = (tid) => api.get(`/downloads/tasks/${tid}/progress`).then(r => r.data)
 export const cancelTask = (tid) => api.delete(`/downloads/tasks/${tid}`).then(r => r.data)
+export const pauseTask = (tid) => api.post(`/downloads/tasks/${tid}/pause`).then(r => r.data)
+export const resumeTask = (tid) => api.post(`/downloads/tasks/${tid}/resume`).then(r => r.data)
+export const retryTask = (tid) => api.post(`/downloads/tasks/${tid}/retry`).then(r => r.data)
+export const deleteTask = (tid) => api.delete(`/downloads/tasks/${tid}`).then(r => r.data)
 
 // ---------- 监控 ----------
 export const gpuStatus = () => api.get('/gpu').then(r => r.data)
