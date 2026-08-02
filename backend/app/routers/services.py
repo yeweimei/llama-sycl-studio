@@ -308,6 +308,12 @@ def service_logs(sid: int, tail: int = 200, since: Optional[str] = None, until: 
         time_only_pattern = re.compile(r'(\d{2}:\d{2}:\d{2})')
 
         if since_dt or until_dt:
+            # 统一 since/until 时区为 UTC（naive -> UTC，避免与 aware 行时间比较崩溃）
+            if since_dt and since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            if until_dt and until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=timezone.utc)
+
             timed_lines = []
             file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime, tz=timezone.utc)
             for line in raw_lines:
