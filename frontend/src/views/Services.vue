@@ -12,7 +12,7 @@
         单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「加载」将模型载入 GPU 显存
       </el-alert>
 
-      <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name">
+      <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys">
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <span class="status-dot" :class="'status-' + (row.loaded ? 'running' : 'stopped')"></span>
@@ -121,6 +121,7 @@ const loadProgress = ref(0)
 const loadStatusText = ref('')
 const loadLogs = ref([])
 const logContainer = ref(null)
+const expandedRowKeys = ref([])
 let pollTimer = null
 let logTimer = null
 
@@ -220,7 +221,8 @@ async function doLoad(row) {
   loadStatusText.value = '正在启动加载…'
   loadLogs.value = []
 
-  // 展开行
+  // 自动展开当前行显示进度
+  expandedRowKeys.value = [row.name]
   services.value = services.value.map(s => ({ ...s }))
 
   try {
@@ -241,6 +243,7 @@ async function doLoad(row) {
           loadProgress.value = 0
           loadStatusText.value = ''
           loadLogs.value = []
+          expandedRowKeys.value = []
           services.value = services.value.map(s => ({ ...s }))
         }, 1500)
       }
@@ -253,6 +256,7 @@ async function doLoad(row) {
     loadProgress.value = 0
     loadStatusText.value = ''
     loadLogs.value = []
+    expandedRowKeys.value = []
   }
 }
 
@@ -266,6 +270,8 @@ async function doUnload(row) {
   loadProgress.value = 50
   loadLogs.value = []
 
+  // 自动展开当前行显示进度
+  expandedRowKeys.value = [row.name]
   services.value = services.value.map(s => ({ ...s }))
 
   try {
@@ -281,6 +287,7 @@ async function doUnload(row) {
           loadProgress.value = 0
           loadStatusText.value = ''
           loadLogs.value = []
+          expandedRowKeys.value = []
           services.value = services.value.map(s => ({ ...s }))
         }, 1500)
       }
@@ -291,6 +298,7 @@ async function doUnload(row) {
     loadProgress.value = 0
     loadStatusText.value = ''
     loadLogs.value = []
+    expandedRowKeys.value = []
   }
 }
 
