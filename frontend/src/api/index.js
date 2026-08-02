@@ -17,7 +17,6 @@ api.interceptors.response.use(
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('auth_token')
-      // 避免在登录页循环跳转
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'
       }
@@ -33,21 +32,19 @@ export const authLogin = (password) => api.post('/auth/login', { password }).the
 export const authLogout = () => api.post('/auth/logout').then(r => r.data)
 export const authChangePassword = (oldPassword, newPassword) => api.post('/auth/change-password', { old_password: oldPassword, new_password: newPassword }).then(r => r.data)
 
-// ---------- 服务 ----------
+// ---------- 模型池管理 ----------
 export const listServices = () => api.get('/services').then(r => r.data)
 export const getService = (id) => api.get(`/services/${id}`).then(r => r.data)
-export const gpuOptions = () => api.get('/services/gpu/options').then(r => r.data)
 export const createService = (data) => api.post('/services', data).then(r => r.data)
 export const updateService = (id, data) => api.put(`/services/${id}`, data).then(r => r.data)
 export const startService = (id) => api.post(`/services/${id}/start`).then(r => r.data)
 export const stopService = (id) => api.post(`/services/${id}/stop`).then(r => r.data)
-export const restartService = (id) => api.post(`/services/${id}/restart`).then(r => r.data)
-export const cloneService = (id, name) => api.post(`/services/${id}/clone`, null, { params: { name } }).then(r => r.data)
 export const deleteService = (id) => api.delete(`/services/${id}`).then(r => r.data)
 export const getServiceLogs = (id, tail = 200) => api.get(`/services/${id}/logs`, { params: { tail } }).then(r => r.data)
 export const getParamSchema = () => api.get('/services/params/schema').then(r => r.data)
 export const chatProxy = (id, data) => api.post(`/services/${id}/chat`, data).then(r => r.data)
 export const clientConfig = (id) => api.get(`/services/${id}/client-config`).then(r => r.data)
+export const routerStatus = () => api.get('/services/router/status').then(r => r.data)
 
 // ---------- 模型 ----------
 export const listModels = () => api.get('/models').then(r => r.data)
@@ -78,10 +75,15 @@ export const toggleApiKey = (id) => api.post(`/settings/api-keys/${id}/toggle`).
 export const listTemplates = () => api.get('/settings/templates').then(r => r.data)
 export const createTemplate = (data) => api.post('/settings/templates', data).then(r => r.data)
 export const deleteTemplate = (id) => api.delete(`/settings/templates/${id}`).then(r => r.data)
-export const listImages = () => api.get('/settings/images').then(r => r.data)
-export const imageVersions = () => api.get('/settings/image-versions').then(r => r.data)
-export const pullImage = (tag) => api.post('/settings/images/pull', null, { params: { tag } }).then(r => r.data)
 export const getProxySettings = () => api.get('/settings/proxy').then(r => r.data)
 export const saveProxySettings = (data) => api.put('/settings/proxy', data).then(r => r.data)
+export const containerInfo = () => api.get('/settings/container-info').then(r => r.data)
+
+// ---------- 模型预设 ----------
+export const listPresets = () => api.get('/presets').then(r => r.data)
+export const createPreset = (data) => api.post('/presets', data).then(r => r.data)
+export const updatePreset = (id, data) => api.put(`/presets/${id}`, data).then(r => r.data)
+export const deletePreset = (id) => api.delete(`/presets/${id}`).then(r => r.data)
+export const generateConfigIni = () => api.post('/presets/generate-config').then(r => r.data)
 
 export default api

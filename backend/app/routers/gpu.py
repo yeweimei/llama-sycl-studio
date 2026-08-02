@@ -1,9 +1,10 @@
-"""GPU / 系统监控 API - 通过 xpu-smi / 系统命令获取"""
+"""GPU / 系统监控 API - 容器内环境"""
 import shutil
 import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter
+from app.config import settings
 
 router = APIRouter()
 
@@ -18,7 +19,7 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
 
 @router.get("")
 def gpu_status():
-    """GPU 状态：优先 xpu-smi，兜底 lspci"""
+    """GPU 状态：优先 xpu-smi，兜底 /sys/class/drm"""
     out = _run(["xpu-smi", "stats"])
     if out.strip():
         return {"source": "xpu-smi", "raw": out}
@@ -51,8 +52,8 @@ def system_status():
         "memory_avail_gb": round(avail, 1),
         "disk_total_gb": round(disk.total / 1024**3, 1),
         "disk_free_gb": round(disk.free / 1024**3, 1),
-        "model_dir": str(Path.home() / "models"),
-        "model_dir_size_gb": round(_dir_size_gb(Path("/home/zhangjiyu/models")), 2),
+        "model_dir": settings.model_dir,
+        "model_dir_size_gb": round(_dir_size_gb(Path(settings.model_dir)), 2),
     }
 
 

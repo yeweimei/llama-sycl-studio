@@ -1,4 +1,4 @@
-"""SQLite 数据库 - 存服务配置、API keys、下载任务"""
+"""SQLite 数据库 - 存服务配置、API keys、下载任务、模型预设"""
 import sqlite3
 import json
 import time
@@ -24,14 +24,11 @@ def init_db():
             """
             CREATE TABLE IF NOT EXISTS services (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,          -- 服务名（也用作容器名）
-                model_path TEXT NOT NULL,           -- 模型路径（容器内 /models/...）
-                port INTEGER UNIQUE NOT NULL,       -- 对外端口
-                args TEXT NOT NULL DEFAULT '{}',    -- JSON: llama-server 参数
-                gpu_devices TEXT NOT NULL DEFAULT '[]', -- JSON: 使用的显卡设备列表
-                api_key TEXT,                       -- OpenAI API key（可选）
-                status TEXT DEFAULT 'stopped',      -- running/stopped/error
-                container_id TEXT,
+                name TEXT UNIQUE NOT NULL,
+                model_path TEXT NOT NULL,
+                args TEXT NOT NULL DEFAULT '{}',
+                api_key TEXT,
+                status TEXT DEFAULT 'unloaded',
                 created_at INTEGER,
                 updated_at INTEGER
             );
@@ -46,11 +43,11 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS download_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source TEXT NOT NULL,               -- huggingface / modelscope
+                source TEXT NOT NULL,
                 repo_id TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 local_path TEXT NOT NULL,
-                status TEXT DEFAULT 'downloading',  -- downloading/done/error
+                status TEXT DEFAULT 'downloading',
                 progress REAL DEFAULT 0,
                 total_bytes INTEGER DEFAULT 0,
                 downloaded_bytes INTEGER DEFAULT 0,
@@ -61,7 +58,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
-                args TEXT NOT NULL DEFAULT '{}',    -- JSON: 参数模板
+                args TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER
             );
 
@@ -69,12 +66,27 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS model_presets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT UNIQUE NOT NULL,
+                ctx_size INTEGER DEFAULT 8192,
+                temp REAL DEFAULT 0.7,
+                threads INTEGER DEFAULT 8,
+                batch_size INTEGER DEFAULT 2048,
+                ubatch_size INTEGER DEFAULT 512,
+                parallel INTEGER DEFAULT 4,
+                cache_type_k TEXT DEFAULT 'q8_0',
+                cache_type_v TEXT DEFAULT 'q8_0',
+                flash_attn INTEGER DEFAULT 1,
+                jinja INTEGER DEFAULT 1,
+                n_gpu_layers INTEGER DEFAULT 99,
+                extra_args TEXT DEFAULT '{}',
+                created_at INTEGER,
+                updated_at INTEGER
+            );
             """
         )
-        # 旧库迁移：services 表补 gpu_devices 列
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()}
-        if "gpu_devices" not in cols:
-            conn.execute("ALTER TABLE services ADD COLUMN gpu_devices TEXT NOT NULL DEFAULT '[]'")
 
 
 def now() -> int:

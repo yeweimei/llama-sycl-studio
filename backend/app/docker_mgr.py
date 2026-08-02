@@ -1,16 +1,8 @@
-"""Docker 容器管理 - 封装 llama-server SYCL 容器的完整生命周期"""
-import json
-import socket
-import time
-from typing import Optional
+"""Docker 容器管理 - 已废弃，保留空壳用于兼容旧 import"""
+# 此文件已废弃，功能迁移到 router_client.py
+# 仅为兼容旧代码的 import 不报错而保留
 
-import docker
-from docker.errors import NotFound, APIError
 
-from app.config import settings
-from app.database import get_conn, now
-
-# 关键参数白名单（图形化表单可设置的参数 -> llama-server CLI 参数）
 PARAM_MAP = {
     "n_gpu_layers": ("-ngl", int),
     "ctx_size": ("-c", int),
@@ -30,7 +22,6 @@ PARAM_MAP = {
     "verbose": ("-v", bool),
 }
 
-# 默认参数（9B 模型推荐配置）
 DEFAULT_ARGS = {
     "n_gpu_layers": 99,
     "ctx_size": 32768,
@@ -45,293 +36,37 @@ DEFAULT_ARGS = {
 }
 
 
-def _client() -> docker.DockerClient:
-    """连接宿主 docker（容器内则走挂载的 socket）"""
-    try:
-        return docker.from_env()
-    except Exception:
-        # 兜底：显式指定 socket
-        return docker.DockerClient(base_url="unix://var/run/docker.sock")
-
-
 def detect_gpus() -> list[dict]:
-    """检测宿主机可用显卡（从 /dev/dri 设备推断）
-    返回真实设备路径（cardX / renderDXXX），供 docker 挂载"""
+    """检测可用显卡（容器内简化版）"""
     import glob
-    import re
     import os
-
     gpus = []
-    # by-path 链接 -> 真实设备名（card0/renderD128）
-    links = {}
-    for p in glob.glob("/dev/dri/by-path/*"):
-        try:
-            real = os.path.realpath(p)
-            base = real.split("/")[-1]
-            if "card" in base:
-                links[base] = p  # 如 card0 -> pci-0000:03:00.0-card
-        except Exception:
-            continue
-
-    # 读 lspci 获取显卡名称（PCI 地址 -> 名称）
-    names = {}
-    try:
-        import subprocess
-        import shutil
-        lspci = shutil.which("lspci")
-        if lspci:
-            out = subprocess.run([lspci], capture_output=True, text=True, timeout=5).stdout
-            for line in out.splitlines():
-                # 00:02.0 VGA compatible controller: Intel ... [Iris Xe Graphics]
-                m = re.match(r"(\S+)\s+[^:]+controller: (.+)", line)
-                if m and ("VGA" in line or "Display" in line or "3D" in line):
-                    names[m.group(1)] = m.group(2).strip()
-    except Exception:
-        pass
-
-    for card in sorted(links.keys()):
-        # card0 -> renderD128, card1 -> renderD129
-        idx = re.search(r"(\d+)", card)
-        if not idx:
-            continue
-        render = f"renderD{128 + int(idx.group(1))}"
-        # 从 by-path 拿 PCI 地址（统一去掉 0000: 前缀，与 lspci 对齐）
-        pci = ""
-        m = re.search(r"pci-(\S+)-card", links[card])
-        if m:
-            pci = m.group(1)
-            pci = pci[5:] if pci.startswith("0000:") else pci
+    for card in sorted(glob.glob("/dev/dri/card*")):
+        idx = card.split("card")[-1]
+        render = f"/dev/dri/renderD{128 + int(idx)}"
         gpus.append({
-            "id": card,                      # card0 / card1
-            "name": names.get(pci, f"GPU {card}"),
-            "pci": pci,
-            "card": f"/dev/dri/{card}",
-            "render": f"/dev/dri/{render}",
-            "devices": [f"/dev/dri/{card}", f"/dev/dri/{render}"],
+            "id": f"card{idx}",
+            "name": f"GPU card{idx}",
+            "card": card,
+            "render": render,
+            "devices": [card, render],
         })
     return gpus
 
 
-def find_free_port(preferred: Optional[int] = None) -> int:
-    """找空闲端口（避开已占用）"""
-    used = set()
-    with get_conn() as conn:
-        for row in conn.execute("SELECT port FROM services"):
-            used.add(row["port"])
-    if preferred and preferred not in used:
-        return preferred
-    for port in range(settings.port_min, settings.port_max + 1):
-        if port in used:
-            continue
-        with socket.socket() as s:
-            try:
-                s.bind(("0.0.0.0", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError("无可用端口")
-
-
-def build_container_args(model_path: str, port: int, args: dict, api_key: Optional[str] = None) -> list[str]:
-    """把表单参数转为 llama-server 命令行参数"""
-    cmd = [
-        "-m", model_path,
-        "--port", str(port),
-        "--host", "0.0.0.0",
-    ]
-    for key, (flag, caster) in PARAM_MAP.items():
-        if key not in args:
-            continue
-        val = args[key]
-        if caster is bool:
-            if val:
-                cmd.append(flag)
-        elif caster == "flash":
-            if val:
-                cmd += [flag, "on"]
-        else:
-            cmd.append(flag)
-            cmd.append(str(caster(val)))
-    if api_key:
-        cmd += ["--api-key", api_key]
-    return cmd
-
-
-def create_service(name: str, model_path: str, args: dict, api_key: Optional[str] = None,
-                   port: Optional[int] = None, gpu_devices: Optional[list[str]] = None) -> dict:
-    """创建服务（注册到 DB，不启动容器）"""
-    port = port or find_free_port()
-    client = _client()
-    try:
-        client.images.get(settings.llama_image)
-    except NotFound:
-        raise RuntimeError(f"镜像 {settings.llama_image} 不存在，请先拉取")
-
-    # 默认显卡：第一个检测到的 dGPU（独显），兜底全局配置
-    gpu_list = gpu_devices or settings.gpu_devices
-
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO services (name, model_path, port, args, gpu_devices, api_key, status, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?, 'stopped', ?, ?)",
-            (name, model_path, port, json.dumps(args), json.dumps(gpu_list), api_key, now(), now()),
-        )
-        sid = cur.lastrowid
-    return get_service(sid)
-
-
-def start_service(sid: int) -> dict:
-    """启动服务（创建并运行容器）"""
-    svc = get_service(sid)
-    if not svc:
-        raise RuntimeError("服务不存在")
-    client = _client()
-    container_name = f"llm-{svc['name']}"
-
-    # 清理同名的旧容器
-    try:
-        old = client.containers.get(container_name)
-        old.remove(force=True)
-    except NotFound:
-        pass
-
-    cmd = build_container_args(svc["model_path"], svc["port"], svc["args"], svc["api_key"])
-
-    # 挂载模型目录 + 显卡设备（用服务自己的配置）
-    volumes = {settings.model_dir: {"bind": "/models", "mode": "ro"}}
-    gpu_list = svc.get("gpu_devices") or settings.gpu_devices
-    devices = []
-    for d in gpu_list:
-        devices.append(f"{d}:{d}")
-
-    env = {
-        "ZES_ENABLE_SYSMAN": "1",
-        "GGML_SYCL_ENABLE_FLASH_ATTN": "1",
-    }
-
-    try:
-        container = client.containers.run(
-            image=settings.llama_image,
-            name=container_name,
-            command=cmd,
-            detach=True,
-            volumes=volumes,
-            devices=devices,
-            environment=env,
-            ports={f"{svc['port']}/tcp": svc["port"]},
-            entrypoint=None,
-            restart_policy={"Name": "unless-stopped"},
-            healthcheck={
-                "test": ["CMD", "python3", "-c",
-                          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%d/health', timeout=5).status==200 else 1)" % svc["port"]],
-                "interval": 10000000000,
-                "timeout": 8000000000,
-                "retries": 6,
-                "start_period": 120000000000,
-            },
-        )
-        with get_conn() as conn:
-            conn.execute(
-                "UPDATE services SET status='running', container_id=?, updated_at=? WHERE id=?",
-                (container.id, now(), sid),
-            )
-    except APIError as e:
-        with get_conn() as conn:
-            conn.execute("UPDATE services SET status='error', updated_at=? WHERE id=?", (now(), sid))
-        raise RuntimeError(f"容器启动失败: {e}")
-
-    return get_service(sid)
-
-
-def stop_service(sid: int) -> dict:
-    """停止服务"""
-    svc = get_service(sid)
-    if not svc:
-        raise RuntimeError("服务不存在")
-    client = _client()
-    try:
-        container = client.containers.get(f"llm-{svc['name']}")
-        container.stop(timeout=10)
-        container.remove()
-    except NotFound:
-        pass
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE services SET status='stopped', container_id=NULL, updated_at=? WHERE id=?",
-            (now(), sid),
-        )
-    return get_service(sid)
-
-
-def restart_service(sid: int) -> dict:
-    stop_service(sid)
-    return start_service(sid)
-
-
-def get_service(sid: int) -> Optional[dict]:
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-    if not row:
-        return None
-    svc = dict(row)
-    svc["args"] = json.loads(svc["args"] or "{}")
-    try:
-        svc["gpu_devices"] = json.loads(svc["gpu_devices"] or "[]")
-    except json.JSONDecodeError:
-        svc["gpu_devices"] = []
-    return svc
+def sync_status():
+    """兼容旧接口 - 空操作"""
+    pass
 
 
 def list_services() -> list[dict]:
-    with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["args"] = json.loads(d["args"] or "{}")
-        try:
-            d["gpu_devices"] = json.loads(d["gpu_devices"] or "[]")
-        except json.JSONDecodeError:
-            d["gpu_devices"] = []
-        out.append(d)
-    return out
+    """兼容旧接口 - 返回空列表"""
+    return []
 
 
-def delete_service(sid: int):
-    svc = get_service(sid)
-    if not svc:
-        return
-    if svc["status"] == "running":
-        stop_service(sid)
-    with get_conn() as conn:
-        conn.execute("DELETE FROM services WHERE id=?", (sid,))
+def get_service(sid: int):
+    return None
 
 
 def get_container_logs(sid: int, tail: int = 200) -> str:
-    """获取容器日志"""
-    svc = get_service(sid)
-    if not svc:
-        return ""
-    client = _client()
-    try:
-        container = client.containers.get(f"llm-{svc['name']}")
-        return container.logs(tail=tail).decode("utf-8", errors="replace")
-    except NotFound:
-        return "(容器不存在)"
-
-
-def sync_status():
-    """同步所有服务的真实状态（容器是否在跑）"""
-    client = _client()
-    running = set()
-    for c in client.containers.list(all=True):
-        if c.name.startswith("llm-"):
-            running.add(c.name[4:])
-    with get_conn() as conn:
-        for r in conn.execute("SELECT id, name, status FROM services").fetchall():
-            real = "running" if r["name"] in running else "stopped"
-            if real != r["status"]:
-                conn.execute(
-                    "UPDATE services SET status=?, updated_at=? WHERE id=?",
-                    (real, now(), r["id"]),
-                )
+    return "(日志功能已迁移到 router 模式)"

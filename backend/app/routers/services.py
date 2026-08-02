@@ -1,23 +1,22 @@
-"""服务管理 API"""
+"""服务管理 API - router 模型池管理（替代旧容器管理）"""
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app import docker_mgr
+from app import router_client
 from app.database import get_conn, now
+from app.config import settings
 
 router = APIRouter()
 
 
 class ServiceCreate(BaseModel):
     name: str
-    model_path: str            # 容器内路径 /models/xxx.gguf
+    model_path: str
     args: dict = {}
     api_key: Optional[str] = None
-    port: Optional[int] = None
-    gpu_devices: Optional[list[str]] = None
 
 
 class ServiceUpdate(BaseModel):
@@ -25,143 +24,248 @@ class ServiceUpdate(BaseModel):
     api_key: Optional[str] = None
     name: Optional[str] = None
     model_path: Optional[str] = None
-    port: Optional[int] = None
-    gpu_devices: Optional[list[str]] = None
 
 
 @router.get("")
 def list_services():
-    docker_mgr.sync_status()
-    return docker_mgr.list_services()
+    """列出模型池：合并 DB 注册的模型 + router 发现的模型"""
+    # 从 router 获取实时状态
+    router_models = router_client.list_models_sync()
+    loaded_info = router_client.get_loaded_models_sync()
+
+    # 构建 loaded 模型的详情映射
+    loaded_map = {}
+    if isinstance(loaded_info, list):
+        for m in loaded_info:
+            mid = m.get("model", m.get("id", ""))
+            if mid:
+                loaded_map[mid] = m
+    elif isinstance(loaded_info, dict):
+        for m in loaded_info.get("models", []):
+            mid = m.get("model", m.get("id", ""))
+            if mid:
+                loaded_map[mid] = m
+
+    # 从 DB 获取注册的模型元信息
+    db_models = {}
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
+    for r in rows:
+        d = dict(r)
+        d["args"] = json.loads(d["args"] or "{}")
+        db_models[d["name"]] = d
+
+    # 合并：router 发现的所有模型 + DB 注册的模型
+    result = []
+    seen = set()
+
+    for rm in router_models:
+        mid = rm["id"]
+        seen.add(mid)
+        db_info = db_models.get(mid, {})
+        is_loaded = rm.get("loaded", False) or mid in loaded_map
+        loaded_detail = loaded_map.get(mid, {})
+        result.append({
+            "id": db_info.get("id", 0),
+            "name": mid,
+            "model_path": db_info.get("model_path", f"/models/{mid}.gguf"),
+            "args": db_info.get("args", {}),
+            "api_key": db_info.get("api_key"),
+            "status": "loaded" if is_loaded else "unloaded",
+            "loaded": is_loaded,
+            "loaded_info": loaded_detail,
+            "created_at": db_info.get("created_at"),
+            "updated_at": db_info.get("updated_at"),
+        })
+
+    # DB 中有但 router 未发现的模型（可能文件不存在）
+    for name, db_info in db_models.items():
+        if name not in seen:
+            result.append({
+                "id": db_info["id"],
+                "name": name,
+                "model_path": db_info["model_path"],
+                "args": db_info["args"],
+                "api_key": db_info.get("api_key"),
+                "status": "unavailable",
+                "loaded": False,
+                "loaded_info": {},
+                "created_at": db_info.get("created_at"),
+                "updated_at": db_info.get("updated_at"),
+            })
+
+    return result
 
 
-@router.get("/gpu/options")
-def gpu_options():
-    """检测宿主机可用显卡（编辑对话框渲染用）"""
-    return {"gpus": docker_mgr.detect_gpus()}
+@router.get("/router/status")
+def router_status():
+    """获取 router 健康状态和驻留模型详情"""
+    healthy = router_client.health_check_sync()
+    loaded = router_client.get_loaded_models_sync() if healthy else []
+    return {
+        "healthy": healthy,
+        "router_url": settings.router_url,
+        "loaded_models": loaded,
+    }
 
 
 @router.post("")
 def create_service(body: ServiceCreate):
-    try:
-        svc = docker_mgr.create_service(
-            name=body.name,
-            model_path=body.model_path,
-            args=body.args or docker_mgr.DEFAULT_ARGS,
-            api_key=body.api_key,
-            port=body.port,
-            gpu_devices=body.gpu_devices,
+    """注册模型到模型池（仅 DB 记录，不加载）"""
+    with get_conn() as conn:
+        dup = conn.execute("SELECT id FROM services WHERE name=?", (body.name,)).fetchone()
+        if dup:
+            raise HTTPException(400, f"模型 {body.name} 已注册")
+        cur = conn.execute(
+            "INSERT INTO services (name, model_path, args, api_key, status, created_at, updated_at) "
+            "VALUES (?,?,?,?, 'unloaded', ?, ?)",
+            (body.name, body.model_path, json.dumps(body.args or {}), body.api_key, now(), now()),
         )
-    except RuntimeError as e:
-        raise HTTPException(400, str(e))
-    return svc
+        sid = cur.lastrowid
+    return {"id": sid, "name": body.name, "status": "unloaded"}
 
 
 @router.get("/{sid}")
 def get_service(sid: int):
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        raise HTTPException(404, "服务不存在")
-    return svc
+    """获取单个模型详情"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    d["args"] = json.loads(d["args"] or "{}")
+
+    # 查 router 实时状态
+    router_models = router_client.list_models_sync()
+    loaded_info = router_client.get_loaded_models_sync()
+    loaded_map = {}
+    if isinstance(loaded_info, list):
+        for m in loaded_info:
+            mid = m.get("model", m.get("id", ""))
+            if mid:
+                loaded_map[mid] = m
+
+    rm = next((m for m in router_models if m["id"] == d["name"]), None)
+    if rm:
+        d["loaded"] = rm.get("loaded", False)
+        d["status"] = "loaded" if d["loaded"] else "unloaded"
+        d["loaded_info"] = loaded_map.get(d["name"], {})
+    else:
+        d["loaded"] = False
+        d["status"] = "unavailable"
+        d["loaded_info"] = {}
+
+    return d
 
 
 @router.put("/{sid}")
 def update_service(sid: int, body: ServiceUpdate):
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        raise HTTPException(404, "服务不存在")
-    if svc["status"] == "running" and (body.name or body.model_path or body.port):
-        raise HTTPException(400, "请先停止服务再修改名称/模型/端口")
-
-    args = svc["args"] if body.args is None else body.args
-    api_key = svc["api_key"] if body.api_key is None else body.api_key
-    name = svc["name"] if body.name is None else body.name
-    model_path = svc["model_path"] if body.model_path is None else body.model_path
-    port = svc["port"] if body.port is None else body.port
-    gpu_devices = svc.get("gpu_devices") or [] if body.gpu_devices is None else body.gpu_devices
-
-    # 校验重名和端口冲突
+    """更新模型配置"""
     with get_conn() as conn:
-        dup = conn.execute(
-            "SELECT id FROM services WHERE (name=? OR port=?) AND id!=?", (name, port, sid)
-        ).fetchone()
-    if dup:
-        raise HTTPException(400, "服务名或端口已被占用")
-
-    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "模型不存在")
+        d = dict(row)
+        args = json.loads(d["args"] or "{}") if body.args is None else body.args
+        api_key = d["api_key"] if body.api_key is None else body.api_key
+        name = d["name"] if body.name is None else body.name
+        model_path = d["model_path"] if body.model_path is None else body.model_path
         conn.execute(
-            "UPDATE services SET name=?, model_path=?, port=?, args=?, gpu_devices=?, api_key=?, updated_at=? WHERE id=?",
-            (name, model_path, port, json.dumps(args), json.dumps(gpu_devices), api_key, now(), sid),
+            "UPDATE services SET name=?, model_path=?, args=?, api_key=?, updated_at=? WHERE id=?",
+            (name, model_path, json.dumps(args), api_key, now(), sid),
         )
-    return docker_mgr.get_service(sid)
-
-
-@router.post("/{sid}/clone")
-def clone_service(sid: int, name: Optional[str] = None):
-    """克隆服务：复制配置为新服务（新端口，不启动）"""
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        raise HTTPException(404, "服务不存在")
-    new_name = name or f"{svc['name']}-copy"
-    # 检查重名
-    with get_conn() as conn:
-        dup = conn.execute("SELECT id FROM services WHERE name=?", (new_name,)).fetchone()
-    if dup:
-        raise HTTPException(400, f"服务名 {new_name} 已存在")
-    try:
-        return docker_mgr.create_service(
-            name=new_name,
-            model_path=svc["model_path"],
-            args=svc["args"],
-            api_key=svc.get("api_key"),
-            gpu_devices=svc.get("gpu_devices") or None,
-        )
-    except RuntimeError as e:
-        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
+    """加载模型到 router"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    model_name = d["name"]
+
     try:
-        return docker_mgr.start_service(sid)
+        result = router_client.load_model_sync(model_name)
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE id=?", (now(), sid))
+        return {"ok": True, "status": "loaded", "detail": result}
     except RuntimeError as e:
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='error', updated_at=? WHERE id=?", (now(), sid))
         raise HTTPException(400, str(e))
 
 
 @router.post("/{sid}/stop")
 def stop_service(sid: int):
-    return docker_mgr.stop_service(sid)
+    """从 router 卸载模型"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    model_name = d["name"]
 
-
-@router.post("/{sid}/restart")
-def restart_service(sid: int):
     try:
-        return docker_mgr.restart_service(sid)
+        result = router_client.unload_model_sync(model_name)
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE id=?", (now(), sid))
+        return {"ok": True, "status": "unloaded", "detail": result}
     except RuntimeError as e:
         raise HTTPException(400, str(e))
 
 
 @router.delete("/{sid}")
 def delete_service(sid: int):
-    docker_mgr.delete_service(sid)
+    """删除模型注册记录（不删文件）"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "模型不存在")
+        conn.execute("DELETE FROM services WHERE id=?", (sid,))
     return {"ok": True}
 
 
 @router.get("/{sid}/logs")
 def service_logs(sid: int, tail: int = 200):
-    return {"logs": docker_mgr.get_container_logs(sid, tail)}
+    """获取 router 日志（简化版：返回 router 状态摘要）"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    healthy = router_client.health_check_sync()
+    loaded = router_client.get_loaded_models_sync() if healthy else []
+    # 找到当前模型的信息
+    model_info = ""
+    if isinstance(loaded, list):
+        for m in loaded:
+            if m.get("model", m.get("id", "")) == d["name"]:
+                model_info = json.dumps(m, indent=2, ensure_ascii=False)
+                break
+    logs = f"=== Router Health: {'OK' if healthy else 'UNREACHABLE'} ===\n"
+    logs += f"=== Router URL: {settings.router_url} ===\n"
+    logs += f"=== Model: {d['name']} ===\n"
+    if model_info:
+        logs += f"--- Loaded Info ---\n{model_info}\n"
+    else:
+        logs += "(模型未加载或无信息)\n"
+    return {"logs": logs}
 
 
 @router.get("/params/schema")
 def param_schema():
     """返回参数白名单（前端表单渲染用）"""
+    from app.docker_mgr import PARAM_MAP, DEFAULT_ARGS
     return {
-        "map": {k: {"flag": v[0], "type": (v[1].__name__ if hasattr(v[1], "__name__") else str(v[1]))} for k, v in docker_mgr.PARAM_MAP.items()},
-        "defaults": docker_mgr.DEFAULT_ARGS,
+        "map": {k: {"flag": v[0], "type": (v[1].__name__ if hasattr(v[1], "__name__") else str(v[1]))} for k, v in PARAM_MAP.items()},
+        "defaults": DEFAULT_ARGS,
     }
 
 
-# ---------- 聊天代理（OpenAI 兼容转发，自动带 API Key） ----------
+# ---------- 聊天代理（通过 /v1 统一网关，自动选模型） ----------
 
 class ChatRequest(BaseModel):
     messages: list[dict]
@@ -175,22 +279,22 @@ class ChatRequest(BaseModel):
 
 @router.post("/{sid}/chat")
 async def chat_proxy(sid: int, body: ChatRequest):
-    """转发到服务的 OpenAI 兼容端点（支持流式）"""
+    """转发到 router 的 OpenAI 兼容端点（支持流式）"""
     import httpx
+    from fastapi.responses import StreamingResponse
 
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        raise HTTPException(404, "服务不存在")
-    if svc["status"] != "running":
-        raise HTTPException(400, "服务未运行")
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    model_name = d["name"]
 
-    url = f"http://127.0.0.1:{svc['port']}/v1/chat/completions"
+    url = f"{settings.router_url}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
-    if svc.get("api_key"):
-        headers["Authorization"] = f"Bearer {svc['api_key']}"
 
     payload = {
-        "model": "local",
+        "model": model_name,
         "messages": body.messages,
         "max_tokens": body.max_tokens,
         "stream": body.stream,
@@ -216,9 +320,6 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
             return r.json()
 
-    # 流式：SSE 透传
-    from fastapi.responses import StreamingResponse
-
     async def gen():
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
@@ -239,36 +340,37 @@ def client_config(sid: int):
     """生成 curl / openclaw / python 三种客户端配置片段"""
     import socket
 
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        raise HTTPException(404, "服务不存在")
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在")
+    d = dict(row)
+    model_name = d["name"]
 
-    # 宿主机 IP（NUC12 局域网 IP）
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         host_ip = s.getsockname()[0]
         s.close()
     except Exception:
-        host_ip = "<NUC12-IP>"
+        host_ip = "<HOST-IP>"
 
-    base = f"http://{host_ip}:{svc['port']}/v1"
-    model = svc["model_path"].split("/")[-1].replace(".gguf", "")
-    key = svc.get("api_key") or "<API_KEY>"
-    auth = f'"Authorization: Bearer {key}"' if svc.get("api_key") else ""
+    base = f"http://{host_ip}:{settings.webui_port}/v1"
+    key = d.get("api_key") or "<API_KEY>"
+    auth = f'"Authorization: Bearer {key}"' if d.get("api_key") else ""
 
     curl = f'''curl {base}/chat/completions \\
   -H "Content-Type: application/json" \\
   {"  -H " + auth + " \\" if auth else ""}
-  -d '{{"model": "{model}", "messages": [{{"role": "user", "content": "你好"}}], "max_tokens": 100}}'
+  -d '{{"model": "{model_name}", "messages": [{{"role": "user", "content": "你好"}}], "max_tokens": 100}}'
 '''
 
     openclaw = f'''# openclaw.json models.providers 片段
-"llm-nuc12": {{
+"llm-studio": {{
   "type": "openai",
   "baseUrl": "{base}",
   "apiKey": "{key}",
-  "models": ["{model}"]
+  "models": ["{model_name}"]
 }}'''
 
     python = f'''import openai
@@ -278,71 +380,15 @@ client = openai.OpenAI(
     api_key="{key}",
 )
 resp = client.chat.completions.create(
-    model="{model}",
+    model="{model_name}",
     messages=[{{"role": "user", "content": "你好"}}],
 )
 print(resp.choices[0].message.content)'''
 
     return {
         "base_url": base,
-        "model": model,
+        "model": model_name,
         "curl": curl.strip(),
         "openclaw": openclaw.strip(),
         "python": python.strip(),
     }
-
-
-# ---------- 日志 WebSocket 实时流 ----------
-
-@router.websocket("/{sid}/logs/ws")
-async def logs_ws(websocket: WebSocket, sid: int):
-    """实时推送容器日志（docker logs -f）"""
-    import asyncio
-    import docker
-
-    await websocket.accept()
-    svc = docker_mgr.get_service(sid)
-    if not svc:
-        await websocket.send_json({"type": "error", "message": "服务不存在"})
-        await websocket.close()
-        return
-
-    try:
-        client = docker.from_env()
-        container = client.containers.get(f"llm-{svc['name']}")
-    except Exception as e:
-        await websocket.send_json({"type": "error", "message": f"容器不可用: {e}"})
-        await websocket.close()
-        return
-
-    async def pump():
-        """在后台线程读 docker 日志流，通过队列转发"""
-        queue = asyncio.Queue()
-        stop = asyncio.Event()
-
-        def reader():
-            try:
-                for line in container.logs(stream=True, follow=True, tail=100):
-                    if stop.is_set():
-                        break
-                    queue.put_nowait(line.decode("utf-8", errors="replace"))
-            except Exception as e:
-                queue.put_nowait(f"[日志流结束] {e}\n")
-
-        t = asyncio.get_event_loop().run_in_executor(None, reader)
-        try:
-            while True:
-                line = await queue.get()
-                await websocket.send_json({"type": "log", "line": line})
-        finally:
-            stop.set()
-
-    try:
-        await pump()
-    except Exception:
-        pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
