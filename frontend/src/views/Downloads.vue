@@ -205,7 +205,17 @@ async function loadTasks() {
         t.progress = p.progress
         t.status = p.status
         if (p.status === 'done') loadTasks()
-      } catch (e) { /* ignore */ }
+        if (p.status === 'error') {
+          t.status = 'error'
+          ElMessage.error(p.error || '下载失败')
+        }
+      } catch (e) {
+        // 404：任务已丢失，标记失败避免死循环轮询
+        t.status = 'error'
+        if (e.response?.status === 404) {
+          ElMessage.warning('下载任务已中断，请重新发起')
+        }
+      }
     }
   }
 }

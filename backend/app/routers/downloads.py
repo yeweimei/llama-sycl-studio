@@ -183,8 +183,17 @@ def start_download(body: DownloadRequest):
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / Path(body.filename).name
 
+    # 写 DB（先拿到自增 id，作为内存 task 的 key）
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO download_tasks (source, repo_id, filename, local_path, status, created_at, updated_at) "
+            "VALUES (?,?,?,?, 'downloading', ?, ?)",
+            (body.source, body.repo_id, body.filename, str(target), now(), now()),
+        )
+        tid = cur.lastrowid
+
+    # 内存任务用 DB id 作 key（保证 progress 接口能查到）
     with _task_lock:
-        tid = int(time.time() * 1000) % 100000
         _tasks[tid] = {
             "id": tid,
             "source": body.source,
@@ -198,14 +207,6 @@ def start_download(body: DownloadRequest):
             "error": None,
             "created_at": now(),
         }
-
-    # 写 DB
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO download_tasks (source, repo_id, filename, local_path, status, created_at, updated_at) "
-            "VALUES (?,?,?,?, 'downloading', ?, ?)",
-            (body.source, body.repo_id, body.filename, str(target), now(), now()),
-        )
 
     # 后台线程下载
     t = threading.Thread(target=_download_worker, args=(tid, body), daemon=True)
@@ -280,10 +281,25 @@ def list_tasks():
 
 @router.get("/tasks/{tid}/progress")
 def task_progress(tid: int):
-    """实时进度"""
+    """实时进度：优先内存态（下载线程），回退 DB（进程重启后的历史任务）"""
     if tid in _tasks:
         return _tasks[tid]
-    raise HTTPException(404, "任务不存在")
+    # 内存没有：查 DB
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM download_tasks WHERE id=?", (tid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "任务不存在")
+    task = dict(row)
+    # DB 标记 downloading 但内存无线程 = 进程重启导致下载中断
+    if task["status"] == "downloading":
+        task["status"] = "error"
+        task["error"] = "下载进程中断（服务重启），请重新发起下载"
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE download_tasks SET status='error', updated_at=? WHERE id=?",
+                (now(), tid),
+            )
+    return task
 
 
 @router.delete("/tasks/{tid}")
