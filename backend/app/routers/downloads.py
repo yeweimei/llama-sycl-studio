@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import get_conn, now
+from app import proxy
 
 router = APIRouter()
 
@@ -33,6 +34,82 @@ def list_sources():
     ]
 
 
+@router.post("/search")
+def search_models(body: DownloadRequest):
+    """搜索模型仓库（HF / ModelScope）"""
+    import urllib.request
+    import json
+    from urllib.parse import quote
+
+    query = body.repo_id.strip()
+    if not query:
+        return []
+
+    try:
+        if body.source == "modelscope":
+            return _search_modelscope(query)
+        return _search_huggingface(query)
+    except Exception as e:
+        raise HTTPException(400, f"搜索失败: {e}")
+
+
+def _search_huggingface(query: str) -> list[dict]:
+    import urllib.request
+    import json
+    from urllib.parse import quote
+
+    base = proxy.get_hf_base()
+    # HF 搜索 API：按关键词 + GGUF 过滤
+    url = (
+        f"{base}/api/models?search={quote(query)}"
+        f"&filter=gguf&sort=downloads&direction=-1&limit=12"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "llama-studio/0.1"})
+    with proxy.build_opener().open(req, timeout=25) as resp:
+        data = json.loads(resp.read())
+
+    results = []
+    for m in data:
+        rid = m.get("id", "")
+        # 搜索接口不返回 siblings 详情，filter=gguf 已过滤，直接采用
+        results.append({
+            "repo_id": rid,
+            "name": rid.split("/")[-1],
+            "author": rid.split("/")[0] if "/" in rid else "",
+            "description": (m.get("description") or "")[:200],
+            "downloads": m.get("downloads", 0),
+            "likes": m.get("likes", 0),
+            "tags": m.get("tags", [])[:6],
+            "modified": (m.get("lastModified") or "")[:10],
+        })
+    return results
+
+
+def _search_modelscope(query: str) -> list[dict]:
+    import urllib.request
+    import json
+    from urllib.parse import quote
+
+    url = f"https://modelscope.cn/api/v1/dolphin/models?PageSize=12&PageNumber=1&SortBy=Default&Target=&SingleCriterion={quote(query)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "llama-studio/0.1"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read())
+
+    results = []
+    for m in data.get("Data", {}).get("Model", {}).get("Models", []) or []:
+        results.append({
+            "repo_id": m.get("Path", ""),
+            "name": m.get("Name", ""),
+            "author": m.get("Owner", {}).get("Name", "") if isinstance(m.get("Owner"), dict) else "",
+            "description": (m.get("Description") or "")[:200],
+            "downloads": m.get("Downloads", 0),
+            "likes": m.get("Likes", 0),
+            "tags": m.get("Tags", [])[:6],
+            "modified": "",
+        })
+    return [r for r in results if r["repo_id"]]
+
+
 @router.post("/list-files")
 def list_repo_files(body: DownloadRequest):
     """列出仓库内可下载文件（用于选择量化版本）"""
@@ -48,17 +125,32 @@ def _list_huggingface(repo_id: str) -> list[dict]:
     import urllib.request
     import json
 
+    base = proxy.get_hf_base()
     # 通过 HF API 获取文件列表
-    url = f"https://huggingface.co/api/models/{repo_id}"
+    url = f"{base}/api/models/{repo_id}"
     req = urllib.request.Request(url, headers={"User-Agent": "llama-studio/0.1"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with proxy.build_opener().open(req, timeout=25) as resp:
         data = json.loads(resp.read())
 
     files = []
     for s in data.get("siblings", []):
         fn = s.get("rfilename", "")
         if fn.endswith(".gguf"):
-            files.append({"filename": fn, "size": None})
+            size = s.get("size")  # HF API 的 siblings 通常无 size，走 HEAD
+            files.append({"filename": fn, "size": size})
+
+    # 补大小：HEAD 请求（最多 8 个文件，避免慢）
+    import urllib.error
+    for f in files[:8]:
+        try:
+            hurl = f"{base}/{repo_id}/resolve/main/{f['filename']}"
+            hreq = urllib.request.Request(hurl, method="HEAD", headers={"User-Agent": "llama-studio/0.1"})
+            with proxy.build_opener().open(hreq, timeout=12) as hresp:
+                cl = hresp.headers.get("Content-Length")
+                if cl:
+                    f["size"] = int(cl)
+        except Exception:
+            pass
     return files
 
 
@@ -134,7 +226,7 @@ def _download_worker(tid: int, body: DownloadRequest):
         base = body.mirror or "https://modelscope.cn"
         url = f"{base}/models/{body.repo_id}/resolve/master/{body.filename}"
     else:
-        base = body.mirror or "https://huggingface.co"
+        base = body.mirror or proxy.get_hf_base()
         url = f"{base}/{body.repo_id}/resolve/main/{body.filename}"
 
     try:
@@ -145,7 +237,8 @@ def _download_worker(tid: int, body: DownloadRequest):
             headers["Range"] = f"bytes={existing}-"
 
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "ab") as f:
+        opener = proxy.build_opener()
+        with opener.open(req, timeout=60) as resp, open(tmp, "ab") as f:
             total = existing + int(resp.headers.get("Content-Length", 0) or 0)
             task["total_bytes"] = total
             task["downloaded_bytes"] = existing

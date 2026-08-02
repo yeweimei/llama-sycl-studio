@@ -24,6 +24,7 @@ export const deleteModel = (path) => api.delete('/models', { params: { path } })
 
 // ---------- 下载 ----------
 export const listSources = () => api.get('/downloads/sources').then(r => r.data)
+export const searchModels = (data) => api.post('/downloads/search', data).then(r => r.data)
 export const listRepoFiles = (data) => api.post('/downloads/list-files', data).then(r => r.data)
 export const startDownload = (data) => api.post('/downloads', data).then(r => r.data)
 export const listTasks = () => api.get('/downloads/tasks').then(r => r.data)
@@ -45,5 +46,7 @@ export const deleteTemplate = (id) => api.delete(`/settings/templates/${id}`).th
 export const listImages = () => api.get('/settings/images').then(r => r.data)
 export const imageVersions = () => api.get('/settings/image-versions').then(r => r.data)
 export const pullImage = (tag) => api.post('/settings/images/pull', null, { params: { tag } }).then(r => r.data)
+export const getProxySettings = () => api.get('/settings/proxy').then(r => r.data)
+export const saveProxySettings = (data) => api.put('/settings/proxy', data).then(r => r.data)
 
 export default api

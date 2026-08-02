@@ -62,6 +62,32 @@
           </el-table>
           <el-empty v-if="!images.length" description="无本地镜像" :image-size="60" />
         </el-card>
+
+        <el-card shadow="never" style="margin-top:16px">
+          <div class="card-title"><span>🌐 网络代理（模型搜索/下载）</span></div>
+          <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
+            用于解决模型搜索/下载被墙的问题（如 NUC12 直连 HuggingFace 超时）
+          </el-alert>
+          <el-form :model="proxyForm" label-width="120px" size="small">
+            <el-form-item label="启用代理">
+              <el-switch v-model="proxyForm.proxy_enabled" />
+            </el-form-item>
+            <el-form-item label="代理地址">
+              <el-input v-model="proxyForm.proxy_url" placeholder="如 http://192.168.3.232:7897" />
+              <div class="form-tip">宿主机 clash 代理示例：http://192.168.3.232:7897</div>
+            </el-form-item>
+            <el-form-item label="HF 镜像">
+              <el-input v-model="proxyForm.hf_mirror" placeholder="如 https://hf-mirror.com（可选）" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="savingProxy" @click="saveProxy">保存代理设置</el-button>
+              <el-button size="small" style="margin-left:8px" @click="testProxy">测试连接</el-button>
+            </el-form-item>
+          </el-form>
+          <el-alert v-if="proxyTest" :type="proxyTestOk ? 'success' : 'error'" :closable="false" show-icon style="margin-top:8px">
+            {{ proxyTest }}
+          </el-alert>
+        </el-card>
       </el-col>
     </el-row>
 
@@ -101,6 +127,7 @@ import { ElMessage } from 'element-plus'
 import {
   listApiKeys, createApiKey, deleteApiKey, toggleApiKey,
   listTemplates, deleteTemplate, listImages, imageVersions,
+  getProxySettings, saveProxySettings,
 } from '../api'
 
 const keys = ref([])
@@ -111,6 +138,10 @@ const createKeyDialog = ref(false)
 const showKeyDialog = ref(false)
 const newKeyName = ref('')
 const generatedKey = ref('')
+const proxyForm = ref({ proxy_enabled: false, proxy_url: '', hf_mirror: '' })
+const savingProxy = ref(false)
+const proxyTest = ref('')
+const proxyTestOk = ref(false)
 
 function maskKey(k) {
   if (!k) return ''
@@ -123,6 +154,40 @@ async function loadImages() {
   images.value = await listImages()
   const v = await imageVersions()
   currentImage.value = v.current
+}
+
+async function loadProxy() {
+  proxyForm.value = await getProxySettings()
+}
+
+async function saveProxy() {
+  savingProxy.value = true
+  try {
+    proxyForm.value = await saveProxySettings(proxyForm.value)
+    ElMessage.success('代理设置已保存（搜索/下载立即生效）')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    savingProxy.value = false
+  }
+}
+
+async function testProxy() {
+  // 前端直接试连 HF，验证代理是否通
+  proxyTest.value = '测试中...'
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 12000)
+    const resp = await fetch('https://huggingface.co/api/models?search=qwen&limit=1', {
+      signal: ctrl.signal,
+    })
+    clearTimeout(timer)
+    proxyTestOk.value = resp.ok
+    proxyTest.value = resp.ok ? '✅ 连接正常（直连）' : `❌ 直连失败（HTTP ${resp.status}）`
+  } catch (e) {
+    proxyTestOk.value = false
+    proxyTest.value = `❌ 直连失败：${e.name === 'AbortError' ? '超时（建议启用代理）' : e.message}`
+  }
 }
 
 async function doCreateKey() {
@@ -160,7 +225,7 @@ function fmtSize(n) {
   return v.toFixed(1) + units[i]
 }
 
-onMounted(() => { loadKeys(); loadTemplates(); loadImages() })
+onMounted(() => { loadKeys(); loadTemplates(); loadImages(); loadProxy() })
 </script>
 
 <style scoped>

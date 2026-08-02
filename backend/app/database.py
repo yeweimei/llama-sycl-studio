@@ -64,6 +64,11 @@ def init_db():
                 args TEXT NOT NULL DEFAULT '{}',    -- JSON: 参数模板
                 created_at INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
         # 旧库迁移：services 表补 gpu_devices 列

@@ -7,8 +7,40 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import get_conn, now
+from app import proxy
 
 router = APIRouter()
+
+
+# ---------- 网络代理 ----------
+
+class ProxySettings(BaseModel):
+    proxy_enabled: bool = False
+    proxy_url: str = ""
+    hf_mirror: str = ""
+
+
+@router.get("/proxy")
+def get_proxy_settings():
+    """读取网络代理设置"""
+    s = proxy.get_settings()
+    return {
+        "proxy_enabled": s.get("proxy_enabled") == "1",
+        "proxy_url": s.get("proxy_url", ""),
+        "hf_mirror": s.get("hf_mirror", ""),
+    }
+
+
+@router.put("/proxy")
+def save_proxy_settings(body: ProxySettings):
+    """保存网络代理设置（搜索/下载立即生效）"""
+    proxy.save_settings({
+        "proxy_enabled": "1" if body.proxy_enabled else "0",
+        "proxy_url": body.proxy_url.strip(),
+        "hf_mirror": body.hf_mirror.strip(),
+    })
+    return get_proxy_settings()
+
 
 
 # ---------- API Keys ----------
