@@ -1,7 +1,7 @@
 <template>
   <div class="page-container">
     <el-row :gutter="16">
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <el-card shadow="never">
           <div class="card-title"><span>内存</span></div>
           <div class="big-num">{{ sys.memory_avail_gb }} <small>GB 可用</small></div>
@@ -9,7 +9,7 @@
           <div class="sub-info">总 {{ sys.memory_total_gb }} GB</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <el-card shadow="never">
           <div class="card-title"><span>磁盘</span></div>
           <div class="big-num">{{ sys.disk_free_gb }} <small>GB 可用</small></div>
@@ -17,7 +17,7 @@
           <div class="sub-info">总 {{ sys.disk_total_gb }} GB</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <el-card shadow="never">
           <div class="card-title"><span>模型目录</span></div>
           <div class="big-num">{{ sys.model_dir_size_gb }} <small>GB</small></div>
@@ -73,5 +73,11 @@ onMounted(() => { loadSys(); loadGpu() })
   background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px;
   font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
   max-height: 400px; overflow: auto; white-space: pre-wrap;
+}
+
+/* 移动端：卡片间距 */
+@media (max-width: 767px) {
+  .big-num { font-size: 26px; }
+  .el-col + .el-col { margin-top: 12px; }
 }
 </style>

@@ -11,7 +11,7 @@
       <!-- ================= 模型信息 ================= -->
       <el-tab-pane label="📊 模型信息" name="info">
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-card shadow="never" style="border:none">
               <div class="card-title"><span>基本信息</span></div>
               <el-descriptions :column="1" size="small" border>
@@ -26,7 +26,7 @@
               </el-descriptions>
             </el-card>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-card shadow="never" style="border:none">
               <div class="card-title"><span>Router 驻留信息</span></div>
               <div v-if="service?.loaded_info && Object.keys(service.loaded_info).length">
@@ -430,7 +430,7 @@ function onGlobalKey(e) {
   font-size: 12px;
   line-height: 1.5;
 }
-.log-toolbar { margin-bottom: 10px; display: flex; align-items: center; }
+.log-toolbar { margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .log-view {
   background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px;
   font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
@@ -475,5 +475,14 @@ function onGlobalKey(e) {
   color: #409eff; font-size: 18px; animation: blink 1s infinite;
 }
 @keyframes blink { 50% { opacity: 0.2; } }
-.chat-controls { display: flex; align-items: center; gap: 8px; }
+.chat-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 移动端适配 */
+@media (max-width: 767px) {
+  .log-toolbar > * { margin-bottom: 4px; }
+  .log-toolbar :deep(.el-date-editor) { width: 100% !important; }
+  .chat-messages { height: 320px; padding: 10px; }
+  .chat-bubble { max-width: 90%; }
+  .el-col + .el-col { margin-top: 12px; }
+}
 </style>

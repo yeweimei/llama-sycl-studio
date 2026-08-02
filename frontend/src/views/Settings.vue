@@ -2,7 +2,7 @@
   <div class="page-container">
     <el-row :gutter="16">
       <!-- 左列 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <!-- API 密钥 -->
         <el-card shadow="never">
           <div class="card-title">
@@ -47,7 +47,7 @@
       </el-col>
 
       <!-- 右列 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <!-- 容器信息 -->
         <el-card shadow="never">
           <div class="card-title"><span>📦 容器架构</span></div>
@@ -142,7 +142,7 @@
     </el-row>
 
     <!-- 生成密钥对话框 -->
-    <el-dialog v-model="createKeyDialog" title="生成 API 密钥" width="420px">
+    <el-dialog v-model="createKeyDialog" title="生成 API 密钥" width="420px" class="responsive-dialog">
       <el-form label-width="80px">
         <el-form-item label="名称">
           <el-input v-model="newKeyName" placeholder="如 openclaw、doclab" />
@@ -155,7 +155,7 @@
     </el-dialog>
 
     <!-- 新密钥展示 -->
-    <el-dialog v-model="showKeyDialog" title="新密钥已生成（请立即保存）" width="520px">
+    <el-dialog v-model="showKeyDialog" title="新密钥已生成（请立即保存）" width="520px" class="responsive-dialog">
       <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px">
         此密钥只显示一次，关闭后无法再次查看
       </el-alert>
@@ -170,50 +170,50 @@
     </el-dialog>
 
     <!-- 预设编辑对话框 -->
-    <el-dialog v-model="presetDialog" :title="editingPreset.id ? '编辑预设' : '新增预设'" width="640px">
+    <el-dialog v-model="presetDialog" :title="editingPreset.id ? '编辑预设' : '新增预设'" width="640px" class="responsive-dialog">
       <el-form :model="editingPreset" label-width="120px" size="small">
         <el-form-item label="模型名" required>
           <el-input v-model="editingPreset.model_name" placeholder="如 Qwen3.5-9B-Q6_K" :disabled="!!editingPreset.id" />
         </el-form-item>
         <el-row :gutter="12">
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="上下文长度">
               <el-input-number v-model="editingPreset.ctx_size" :min="512" :max="262144" :step="1024" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="GPU 层数">
               <el-input-number v-model="editingPreset.n_gpu_layers" :min="0" :max="999" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="温度">
               <el-input-number v-model="editingPreset.temp" :min="0" :max="2" :step="0.1" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="线程数">
               <el-input-number v-model="editingPreset.threads" :min="1" :max="64" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="批大小">
               <el-input-number v-model="editingPreset.batch_size" :min="32" :max="8192" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="并发槽位">
               <el-input-number v-model="editingPreset.parallel" :min="1" :max="64" style="width:100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="KV 缓存 K">
               <el-select v-model="editingPreset.cache_type_k" style="width:100%">
                 <el-option v-for="t in ['f16','bf16','q8_0','q4_0','q4_1','iq4_nl','f32']" :key="t" :label="t" :value="t" />
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="KV 缓存 V">
               <el-select v-model="editingPreset.cache_type_v" style="width:100%">
                 <el-option v-for="t in ['f16','bf16','q8_0','q4_0','q4_1','iq4_nl','f32']" :key="t" :label="t" :value="t" />
@@ -395,4 +395,10 @@ onMounted(() => {
 
 <style scoped>
 .form-tip { font-size: 12px; color: #909399; margin-top: 8px; }
+
+/* 移动端：双列堆叠为单列 */
+@media (max-width: 767px) {
+  .el-col + .el-col { margin-top: 12px; }
+  .responsive-dialog { width: 92% !important; }
+}
 </style>

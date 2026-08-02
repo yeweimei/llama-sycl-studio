@@ -47,3 +47,34 @@ body {
 .status-running { background: #67c23a; }
 .status-stopped { background: #909399; }
 .status-error   { background: #f56c6c; }
+
+/* ====== 移动端响应式（<768px）====== */
+@media (max-width: 767px) {
+  /* 兜底：禁止 body 级横向滚动 */
+  body { overflow-x: hidden; }
+
+  /* 页面容器 padding 缩小 */
+  .page-container { padding: 12px; }
+
+  /* 表格容器横向滚动（不影响页面级滚动） */
+  .el-table {
+    width: 100% !important;
+  }
+  .el-table__body-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 卡片间距缩小 */
+  .el-card { margin-bottom: 12px; }
+
+  /* 按钮组允许换行 */
+  .el-button-group { flex-wrap: wrap; }
+
+  /* 对话框宽度自适应 */
+  .el-dialog { width: 92% !important; margin: 0 auto; }
+
+  /* 表单 label 顶部对齐 */
+  .el-form-item__label { float: none; display: block; text-align: left; padding-bottom: 4px; }
+  .el-form-item__content { margin-left: 0 !important; }
+}

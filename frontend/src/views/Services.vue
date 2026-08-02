@@ -12,7 +12,7 @@
         单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「加载」将模型载入 GPU 显存
       </el-alert>
 
-      <el-table :data="services" v-loading="loading" stripe>
+      <el-table :data="services" v-loading="loading" stripe class="mobile-table">
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <span class="status-dot" :class="'status-' + (row.loaded ? 'running' : 'stopped')"></span>
@@ -162,4 +162,11 @@ onMounted(refresh)
 
 <style scoped>
 .form-tip { font-size: 12px; color: #909399; margin-top: 4px; }
+
+/* 移动端：操作列按钮换行 */
+@media (max-width: 767px) {
+  .mobile-table :deep(.el-table__cell) { padding: 4px 0; }
+  .mobile-table :deep(.cell) { padding: 0 4px; }
+  :deep(.el-button + .el-button) { margin-left: 4px; }
+}
 </style>

@@ -11,7 +11,7 @@
         </el-button>
       </div>
 
-      <el-table :data="models" v-loading="loading" stripe>
+      <el-table :data="models" v-loading="loading" stripe class="mobile-table">
         <el-table-column prop="name" label="模型" min-width="240" show-overflow-tooltip>
           <template #default="{ row }">
             <el-icon v-if="row.kind === 'hf-dir'"><Folder /></el-icon>

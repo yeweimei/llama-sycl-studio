@@ -40,7 +40,7 @@
     <!-- 搜索结果 -->
     <el-card v-if="results.length" shadow="never" style="margin-bottom:16px">
       <div class="card-title"><span>搜索结果（{{ results.length }}）</span></div>
-      <el-table :data="results" stripe size="small" @row-click="selectRepo" style="cursor:pointer">
+      <el-table :data="results" stripe size="small" @row-click="selectRepo" style="cursor:pointer" class="mobile-table">
         <el-table-column prop="name" label="模型" min-width="180">
           <template #default="{ row }">
             <span class="repo-name">{{ row.name }}</span>
@@ -70,7 +70,7 @@
         <el-button size="small" style="margin-left:8px" @click="selectedRepo = null">← 返回</el-button>
       </div>
       <div v-loading="listingFiles" style="min-height:60px">
-        <el-table v-if="files.length" :data="files" stripe size="small">
+        <el-table v-if="files.length" :data="files" stripe size="small" class="mobile-table">
           <el-table-column prop="filename" label="文件" min-width="300" show-overflow-tooltip />
           <el-table-column label="量化" width="100">
             <template #default="{ row }">
@@ -98,7 +98,7 @@
         <span>下载任务</span>
         <el-button size="small" style="margin-left:auto" @click="loadTasks">刷新</el-button>
       </div>
-      <el-table :data="tasks" stripe size="small">
+      <el-table :data="tasks" stripe size="small" class="mobile-table">
         <el-table-column prop="filename" label="文件" min-width="220" show-overflow-tooltip />
         <el-table-column label="进度" width="240">
           <template #default="{ row }">
@@ -376,4 +376,17 @@ onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null 
 .repo-name { font-weight: 600; }
 .repo-author { color: #909399; font-size: 12px; margin-left: 6px; }
 .card-title { display: flex; align-items: center; gap: 8px; }
+
+/* 移动端：搜索栏堆叠 */
+@media (max-width: 767px) {
+  .search-bar {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .search-bar .el-select { width: 100% !important; }
+  .search-bar .el-input { width: 100%; }
+  .search-bar .el-button { width: 100%; }
+  .mobile-table :deep(.el-table__cell) { padding: 4px 0; }
+  :deep(.el-button + .el-button) { margin-left: 4px; }
+}
 </style>

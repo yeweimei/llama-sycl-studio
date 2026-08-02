@@ -194,6 +194,7 @@ async function doLogin() {
   position: relative;
   z-index: 1;
   width: 400px;
+  max-width: 90vw;
   padding: 44px 40px 28px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.07);
@@ -305,5 +306,11 @@ async function doLogin() {
   width: 6px; height: 6px;
   border-radius: 50%;
   background: #22c55e;
+}
+
+/* 移动端适配 */
+@media (max-width: 767px) {
+  .login-card { padding: 32px 20px 20px; }
+  .login-footer { margin-top: 18px; }
 }
 </style>
