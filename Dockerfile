@@ -4,7 +4,7 @@ FROM ghcr.io/ggml-org/llama.cpp:server-intel
 
 # 系统依赖 + 设置 LD_LIBRARY_PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip python3-venv curl ca-certificates \
+    python3-pip python3-venv curl ca-certificates xpu-smi \
     && rm -rf /var/lib/apt/lists/*
 
 # 保留原有 LD_LIBRARY_PATH（Intel oneAPI），追加分号 /app

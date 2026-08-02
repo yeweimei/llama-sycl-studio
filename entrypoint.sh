@@ -45,6 +45,7 @@ ROUTER_ARGS=(
     --models-dir "${MODELS_DIR}"
     --models-max "${MODELS_MAX}"
     --embeddings
+    --metrics
     -c 8192
     --flash-attn on
     --jinja

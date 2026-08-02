@@ -12,7 +12,7 @@
         单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「加载」将模型载入 GPU 显存
       </el-alert>
 
-      <el-table :data="services" v-loading="loading" stripe class="mobile-table">
+      <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name">
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <span class="status-dot" :class="'status-' + (row.loaded ? 'running' : 'stopped')"></span>
@@ -54,6 +54,26 @@
             <el-button v-if="row.status === 'unavailable'" size="small" type="danger" @click="doDelete(row)" :disabled="!row.id">删除</el-button>
           </template>
         </el-table-column>
+
+        <!-- 行展开：加载进度 -->
+        <el-table-column type="expand" width="1">
+          <template #default="{ row }">
+            <div v-if="loadingModel === row.name || unloadingModel === row.name" class="loading-panel">
+              <el-progress
+                :percentage="loadProgress"
+                :indeterminate="loadProgress < 30"
+                :status="loadProgress >= 100 ? 'success' : ''"
+                :stroke-width="16"
+                style="margin-bottom:8px"
+              />
+              <div class="load-status-text">{{ loadStatusText }}</div>
+              <div class="load-log-title">加载日志（最新 50 行）</div>
+              <div ref="logContainer" class="load-log-view">
+                <div v-for="(line, i) in loadLogs" :key="i" class="log-line">{{ line }}</div>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
 
       <el-empty v-if="!loading && services.length === 0" description="未发现模型，请将 GGUF 文件放入模型目录" />
@@ -81,18 +101,28 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
   listServices, startService, stopService, deleteService, routerStatus,
+  getServiceLogs,
 } from '../api'
 
 const services = ref([])
 const loading = ref(false)
 const loadingModel = ref('')
+const unloadingModel = ref('')
 const routerHealthy = ref(false)
 const routerInfo = ref(null)
+
+// 加载进度相关
+const loadProgress = ref(0)
+const loadStatusText = ref('')
+const loadLogs = ref([])
+const logContainer = ref(null)
+let pollTimer = null
+let logTimer = null
 
 function formatSize(bytes) {
   if (!bytes) return '-'
@@ -116,29 +146,151 @@ async function refresh() {
   }
 }
 
+function findServiceRow(modelName) {
+  return services.value.find(s => s.name === modelName)
+}
+
+async function pollLogs(modelName) {
+  try {
+    const row = findServiceRow(modelName)
+    if (!row?.id) return
+    const data = await getServiceLogs(row.id, { tail: 50 })
+    const lines = (data.logs || data || '').split('\n').filter(l => l.trim())
+    loadLogs.value = lines.slice(-50)
+    await nextTick()
+    if (logContainer.value) {
+      logContainer.value.scrollTop = logContainer.value.scrollHeight
+    }
+  } catch (e) { /* ignore log errors */ }
+}
+
+async function pollServiceStatus(modelName, isLoad) {
+  try {
+    await refresh()
+    const row = findServiceRow(modelName)
+    if (!row) return false
+
+    if (isLoad) {
+      const status = (row.status || '').toLowerCase()
+      if (status === 'loaded' || row.loaded) {
+        loadProgress.value = 100
+        loadStatusText.value = '加载完成'
+        ElMessage.success(`${modelName} 加载完成`)
+        return true
+      }
+      if (status === 'unavailable' || status === 'error') {
+        loadStatusText.value = '加载失败'
+        ElMessage.error(`${modelName} 加载失败`)
+        return true
+      }
+      // 递进进度
+      if (loadProgress.value < 30) loadProgress.value = 30
+      else if (loadProgress.value < 60) loadProgress.value = 60
+      else if (loadProgress.value < 80) loadProgress.value = 80
+      loadStatusText.value = '模型加载中，冷启动约需 1-2 分钟…'
+    } else {
+      const status = (row.status || '').toLowerCase()
+      if (!row.loaded || status === 'unloaded') {
+        ElMessage.success(`${modelName} 已卸载`)
+        return true
+      }
+      if (status === 'unavailable' || status === 'error') {
+        ElMessage.error(`${modelName} 卸载失败`)
+        return true
+      }
+    }
+    return false
+  } catch (e) {
+    return false
+  }
+}
+
+function clearTimers() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (logTimer) { clearInterval(logTimer); logTimer = null }
+}
+
 async function doLoad(row) {
+  if (loadingModel.value) {
+    ElMessage.warning('已有模型正在加载，请等待完成')
+    return
+  }
   loadingModel.value = row.name
+  loadProgress.value = 0
+  loadStatusText.value = '正在启动加载…'
+  loadLogs.value = []
+
+  // 展开行
+  services.value = services.value.map(s => ({ ...s }))
+
   try {
     await startService(row.id)
-    ElMessage.success(`${row.name} 加载中（首次加载约需 30-60 秒）`)
-    setTimeout(refresh, 3000)
+    loadProgress.value = 30
+    loadStatusText.value = '模型加载中，冷启动约需 1-2 分钟…'
+
+    // 立即拉一次日志
+    await pollLogs(row.name)
+
+    // 轮询状态 + 日志
+    pollTimer = setInterval(async () => {
+      const done = await pollServiceStatus(row.name, true)
+      if (done) {
+        clearTimers()
+        setTimeout(() => {
+          loadingModel.value = ''
+          loadProgress.value = 0
+          loadStatusText.value = ''
+          loadLogs.value = []
+          services.value = services.value.map(s => ({ ...s }))
+        }, 1500)
+      }
+    }, 2000)
+
+    logTimer = setInterval(() => pollLogs(row.name), 2000)
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
-  } finally {
     loadingModel.value = ''
+    loadProgress.value = 0
+    loadStatusText.value = ''
+    loadLogs.value = []
   }
 }
 
 async function doUnload(row) {
-  loadingModel.value = row.name
+  if (loadingModel.value || unloadingModel.value) {
+    ElMessage.warning('已有操作正在进行，请等待完成')
+    return
+  }
+  unloadingModel.value = row.name
+  loadStatusText.value = '正在卸载…'
+  loadProgress.value = 50
+  loadLogs.value = []
+
+  services.value = services.value.map(s => ({ ...s }))
+
   try {
     await stopService(row.id)
-    ElMessage.success(`${row.name} 已卸载`)
-    refresh()
+    loadStatusText.value = '卸载中…'
+
+    pollTimer = setInterval(async () => {
+      const done = await pollServiceStatus(row.name, false)
+      if (done) {
+        clearTimers()
+        setTimeout(() => {
+          unloadingModel.value = ''
+          loadProgress.value = 0
+          loadStatusText.value = ''
+          loadLogs.value = []
+          services.value = services.value.map(s => ({ ...s }))
+        }, 1500)
+      }
+    }, 2000)
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '卸载失败')
-  } finally {
-    loadingModel.value = ''
+    unloadingModel.value = ''
+    loadProgress.value = 0
+    loadStatusText.value = ''
+    loadLogs.value = []
   }
 }
 
@@ -158,15 +310,34 @@ async function doDelete(row) {
 }
 
 onMounted(refresh)
+onUnmounted(clearTimers)
 </script>
 
 <style scoped>
 .form-tip { font-size: 12px; color: #909399; margin-top: 4px; }
 
-/* 移动端：操作列按钮换行 */
+.loading-panel {
+  padding: 16px 20px;
+  background: #fafafa;
+}
+.load-status-text {
+  font-size: 13px; color: #606266; margin-bottom: 12px;
+}
+.load-log-title {
+  font-size: 12px; color: #909399; margin-bottom: 6px;
+}
+.load-log-view {
+  background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px;
+  font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
+  max-height: 300px; overflow-y: auto; line-height: 1.6;
+}
+.log-line { white-space: pre-wrap; word-break: break-all; }
+
+/* 移动端 */
 @media (max-width: 767px) {
   .mobile-table :deep(.el-table__cell) { padding: 4px 0; }
   .mobile-table :deep(.cell) { padding: 0 4px; }
   :deep(.el-button + .el-button) { margin-left: 4px; }
+  .loading-panel { padding: 12px 8px; }
 }
 </style>
