@@ -34,7 +34,7 @@ cd "${STUDIO_DIR}/backend"
 export PYTHONPATH="${STUDIO_DIR}/backend"
 export LLAMA_MODEL_DIR="${MODELS_DIR}"
 export LLAMA_STUDIO_DATA="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
-python3 -c "from app.presets import _write_config_ini; r = _write_config_ini(); print('  config.ini:', 'OK' if r.get('ok') else 'SKIP/ERR', r.get('path',''))" 2>&1 | tail -2
+python3 -c "from app.routers.presets import _write_config_ini; r = _write_config_ini(); print('  config.ini:', 'OK' if r.get('ok') else 'SKIP/ERR', r.get('path',''))" 2>&1 | tail -2
 cd "${STUDIO_DIR}"
 
 # ========== 启动 llama-server (router mode) ==========
@@ -62,8 +62,9 @@ DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
 LOG_FILE="${DATA_DIR}/router.log"
 mkdir -p "${DATA_DIR}"
 
-# 启动 llama-server，stdout/stderr 重定向到 router.log
-"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > "${LOG_FILE}" 2>&1 &
+# 启动 llama-server，stdout/stderr 经 awk 加 ISO 时间戳前缀后写入 router.log
+# （llama.cpp 原生日志是相对时间戳 0.00.859.603，无法按时间过滤，加前缀后支持 since/until）
+"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > >(awk '{ print strftime("%Y-%m-%d %H:%M:%S"), $0; fflush() }' > "${LOG_FILE}") 2>&1 &
 ROUTER_PID=$!
 echo "  Router PID: ${ROUTER_PID}"
 echo "  Log file:   ${LOG_FILE}"
