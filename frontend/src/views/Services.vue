@@ -73,6 +73,15 @@
           </el-select>
           <div class="form-tip">模型不存在？先去「模型中心」或「模型下载」</div>
         </el-form-item>
+        <el-form-item label="推理显卡">
+          <el-select v-model="form.gpu_id" style="width:100%">
+            <el-option v-for="g in gpus" :key="g.id" :label="g.name" :value="g.id">
+              <span>{{ g.name }}</span>
+              <span style="float:right;color:#909399;font-size:12px">{{ g.id }}</span>
+            </el-option>
+          </el-select>
+          <div class="form-tip">默认 A770M 独显；Iris Xe 核显可用于轻量任务（如 embedding）</div>
+        </el-form-item>
         <el-form-item label="API Key">
           <el-input v-model="form.api_key" placeholder="可选，设置后需带 Authorization: Bearer 访问" />
         </el-form-item>
@@ -213,7 +222,9 @@ async function refresh() {
 }
 
 function openCreate() {
-  form.value = { name: '', model_path: '', api_key: '', port: null }
+  // 默认选独显（A770M），找不到则第一个
+  const defaultGpu = gpus.value.find(g => g.name.includes('A770')) || gpus.value[0] || null
+  form.value = { name: '', model_path: '', api_key: '', port: null, gpu_id: defaultGpu?.id || '' }
   createVisible.value = true
 }
 
@@ -224,7 +235,11 @@ async function doCreate() {
   }
   creating.value = true
   try {
-    await createService(form.value)
+    const payload = { ...form.value }
+    const gpu = gpus.value.find(g => g.id === form.value.gpu_id)
+    if (gpu) payload.gpu_devices = gpu.devices
+    delete payload.gpu_id
+    await createService(payload)
     ElMessage.success('服务已创建')
     createVisible.value = false
     refresh()
