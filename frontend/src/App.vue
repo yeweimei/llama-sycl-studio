@@ -1,5 +1,8 @@
 <template>
-  <el-container class="layout">
+  <!-- 登录页：独立全屏，不带侧边栏布局 -->
+  <router-view v-if="isLoginPage" />
+
+  <el-container v-else class="layout">
     <el-aside width="200px" class="aside">
       <div class="logo">
         <span class="logo-icon">⬢</span>
@@ -44,12 +47,12 @@
       <el-main class="main">
         <router-view />
       </el-main>
-    </el-container>
+        </el-container>
   </el-container>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Service, Files, Download, Monitor, Setting, SwitchButton } from '@element-plus/icons-vue'
 import { authLogout } from './api'
@@ -57,6 +60,9 @@ import { authLogout } from './api'
 const router = useRouter()
 const now = ref(new Date().toLocaleString('zh-CN'))
 let timer = null
+
+// 登录页不显示侧边栏布局
+const isLoginPage = computed(() => router.currentRoute.value.path === '/login')
 
 async function doLogout() {
   try {

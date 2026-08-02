@@ -88,6 +88,27 @@
             {{ proxyTest }}
           </el-alert>
         </el-card>
+
+        <el-card shadow="never" style="margin-top:16px">
+          <div class="card-title"><span>🔒 修改密码</span></div>
+          <el-form :model="pwdForm" label-width="80px" size="small">
+            <el-form-item label="原密码">
+              <el-input v-model="pwdForm.old_password" type="password" show-password placeholder="当前管理员密码" />
+            </el-form-item>
+            <el-form-item label="新密码">
+              <el-input v-model="pwdForm.new_password" type="password" show-password placeholder="至少 4 位" />
+            </el-form-item>
+            <el-form-item label="确认新密码">
+              <el-input v-model="pwdForm.confirm" type="password" show-password placeholder="再次输入新密码" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="changingPwd" @click="doChangePassword">修改密码</el-button>
+            </el-form-item>
+          </el-form>
+          <el-alert type="info" :closable="false" show-icon style="margin-top:4px">
+            修改后当前登录保持有效，下次登录请使用新密码
+          </el-alert>
+        </el-card>
       </el-col>
     </el-row>
 
@@ -127,7 +148,7 @@ import { ElMessage } from 'element-plus'
 import {
   listApiKeys, createApiKey, deleteApiKey, toggleApiKey,
   listTemplates, deleteTemplate, listImages, imageVersions,
-  getProxySettings, saveProxySettings,
+  getProxySettings, saveProxySettings, authChangePassword,
 } from '../api'
 
 const keys = ref([])
@@ -142,6 +163,24 @@ const proxyForm = ref({ proxy_enabled: false, proxy_url: '', hf_mirror: '' })
 const savingProxy = ref(false)
 const proxyTest = ref('')
 const proxyTestOk = ref(false)
+const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
+const changingPwd = ref(false)
+
+async function doChangePassword() {
+  if (!pwdForm.value.old_password) { ElMessage.warning('请输入原密码'); return }
+  if (!pwdForm.value.new_password || pwdForm.value.new_password.length < 4) { ElMessage.warning('新密码至少 4 位'); return }
+  if (pwdForm.value.new_password !== pwdForm.value.confirm) { ElMessage.warning('两次输入的新密码不一致'); return }
+  changingPwd.value = true
+  try {
+    await authChangePassword(pwdForm.value.old_password, pwdForm.value.new_password)
+    ElMessage.success('密码已修改')
+    pwdForm.value = { old_password: '', new_password: '', confirm: '' }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '修改失败')
+  } finally {
+    changingPwd.value = false
+  }
+}
 
 function maskKey(k) {
   if (!k) return ''

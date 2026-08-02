@@ -11,6 +11,28 @@ class PasswordBody(BaseModel):
     password: str
 
 
+class ChangePasswordBody(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordBody, request: Request):
+    """修改管理员密码（需登录 + 旧密码校验）"""
+    token = _extract_token(request)
+    if not auth_mod.check_token(token):
+        raise HTTPException(401, "未认证")
+    if not auth_mod.is_password_configured():
+        raise HTTPException(400, "未设置管理员密码")
+    stored = _get_stored_hash()
+    if not auth_mod.verify_password(body.old_password, stored):
+        raise HTTPException(401, "原密码错误")
+    if len(body.new_password) < 4:
+        raise HTTPException(400, "新密码至少 4 位")
+    auth_mod.set_password(body.new_password)
+    return {"ok": True}
+
+
 @router.get("/status")
 def auth_status(request: Request):
     """检查认证状态：是否已设置密码 + 当前请求是否已认证"""

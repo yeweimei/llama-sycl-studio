@@ -31,6 +31,7 @@ export const authStatus = () => api.get('/auth/status').then(r => r.data)
 export const authSetup = (password) => api.post('/auth/setup', { password }).then(r => r.data)
 export const authLogin = (password) => api.post('/auth/login', { password }).then(r => r.data)
 export const authLogout = () => api.post('/auth/logout').then(r => r.data)
+export const authChangePassword = (oldPassword, newPassword) => api.post('/auth/change-password', { old_password: oldPassword, new_password: newPassword }).then(r => r.data)
 
 // ---------- 服务 ----------
 export const listServices = () => api.get('/services').then(r => r.data)
