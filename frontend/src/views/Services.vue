@@ -149,65 +149,48 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="上下文长度">
-              <el-input-number v-model="editForm.args.ctx_size" :min="512" :step="1024" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.ctx_size" :min="512" :max="262144" :step="1024" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="GPU 层数">
-              <el-input-number v-model="editForm.args.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="线程数">
-              <el-input-number v-model="editForm.args.threads" :min="1" :max="128" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.threads" :min="1" :max="64" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="批大小">
-              <el-input-number v-model="editForm.args.batch_size" :min="1" :step="512" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.batch_size" :min="32" :max="8192" :step="512" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
         </el-row>
         <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="ubatch">
+              <el-input-number v-model="editForm.preset.ubatch_size" :min="32" :max="4096" :step="256" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
           <el-col :span="12">
             <el-form-item label="并行数">
-              <el-input-number v-model="editForm.args.parallel" :min="1" :max="32" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.parallel" :min="1" :max="64" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
+        </el-row>
+        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="温度">
-              <el-input-number v-model="editForm.args.temp" :min="0" :max="2" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+              <el-input-number v-model="editForm.preset.temp" :min="0" :max="2" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
             </el-form-item>
           </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="top_p">
-              <el-input-number v-model="editForm.args.top_p" :min="0" :max="1" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="repeat_penalty">
-              <el-input-number v-model="editForm.args.repeat_penalty" :min="0.5" :max="2" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="KV 缓存 K">
-              <el-select v-model="editForm.args.cache_type_k" style="width:100%">
-                <el-option label="f16" value="f16" />
-                <el-option label="q8_0" value="q8_0" />
-                <el-option label="q4_0" value="q4_0" />
-                <el-option label="q4_1" value="q4_1" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="KV 缓存 V">
-              <el-select v-model="editForm.args.cache_type_v" style="width:100%">
+              <el-select v-model="editForm.preset.cache_type_k" style="width:100%">
                 <el-option label="f16" value="f16" />
                 <el-option label="q8_0" value="q8_0" />
                 <el-option label="q4_0" value="q4_0" />
@@ -218,16 +201,29 @@
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="Flash Attention">
-              <el-switch v-model="editForm.args.flash_attn" />
+            <el-form-item label="KV 缓存 V">
+              <el-select v-model="editForm.preset.cache_type_v" style="width:100%">
+                <el-option label="f16" value="f16" />
+                <el-option label="q8_0" value="q8_0" />
+                <el-option label="q4_0" value="q4_0" />
+                <el-option label="q4_1" value="q4_1" />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="Jinja 模板">
-              <el-switch v-model="editForm.args.jinja" />
+            <el-form-item label="Flash Attn">
+              <el-switch v-model="editForm.preset.flash_attn" />
             </el-form-item>
           </el-col>
         </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="Jinja 模板">
+              <el-switch v-model="editForm.preset.jinja" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <div class="form-tip" style="margin-top:4px">推理参数通过模型预设(config.ini)生效，保存后需重启容器加载。</div>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -244,6 +240,7 @@ import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import {
   listServices, startService, stopService, deleteService, routerStatus,
   getServiceLogs, createService, updateService, restartService,
+  listPresets, createPreset, updatePreset,
 } from '../api'
 
 const services = ref([])
@@ -268,21 +265,13 @@ const creating = ref(false)
 const form = ref({ name: '', model_path: '', api_key: '' })
 const editVisible = ref(false)
 const saving = ref(false)
-const DEFAULT_ARGS = {
-  ctx_size: 8192,
-  temp: 0.7,
-  top_p: 0.9,
-  repeat_penalty: 1.1,
-  threads: 8,
-  batch_size: 2048,
-  parallel: 4,
-  n_gpu_layers: 99,
-  cache_type_k: 'q8_0',
-  cache_type_v: 'q8_0',
-  flash_attn: true,
-  jinja: true,
+const DEFAULT_PRESET = {
+  ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
+  ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
+  flash_attn: true, jinja: true, n_gpu_layers: 99,
 }
-const editForm = ref({ id: null, name: '', model_path: '', api_key: '', args: { ...DEFAULT_ARGS } })
+const editForm = ref({ id: null, name: '', model_path: '', api_key: '', presetId: null, preset: { ...DEFAULT_PRESET } })
+const _allPresets = ref([])
 
 function formatSize(bytes) {
   if (!bytes) return '-'
@@ -486,14 +475,21 @@ async function doCreate() {
   }
 }
 
-function openEdit(row) {
-  const raw = typeof row.args === 'string' ? JSON.parse(row.args || '{}') : (row.args || {})
+async function openEdit(row) {
+  // 拉取预设列表，找当前模型的预设
+  try {
+    _allPresets.value = await listPresets()
+  } catch (e) {
+    _allPresets.value = []
+  }
+  const found = _allPresets.value.find(p => p.model_name === row.name)
   editForm.value = {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
     api_key: row.api_key || '',
-    args: { ...DEFAULT_ARGS, ...raw },
+    presetId: found?.id || null,
+    preset: found ? { ...found } : { ...DEFAULT_PRESET },
   }
   editVisible.value = true
 }
@@ -505,13 +501,26 @@ async function doSaveEdit() {
   }
   saving.value = true
   try {
+    // 1. 保存基本信息到 services 表
     await updateService(editForm.value.id, {
       name: editForm.value.name,
       model_path: editForm.value.model_path,
       api_key: editForm.value.api_key || null,
-      args: editForm.value.args,
     })
-    ElMessage.success('已保存（重启服务生效）')
+    // 2. 保存推理参数到 model_presets 表（upsert）
+    const p = editForm.value.preset
+    const payload = {
+      ctx_size: p.ctx_size, temp: p.temp, threads: p.threads,
+      batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
+      cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
+      flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
+    }
+    if (editForm.value.presetId) {
+      await updatePreset(editForm.value.presetId, payload)
+    } else {
+      await createPreset({ model_name: editForm.value.name, ...payload })
+    }
+    ElMessage.success('已保存（推理参数需重启容器后生效）')
     editVisible.value = false
     refresh()
   } catch (e) {

@@ -69,13 +69,10 @@ async def get_loaded_models() -> list[dict]:
         return _extract_models(r.json())
 
 
-async def load_model(model_id: str, params: Optional[dict] = None) -> dict:
-    """POST /models/load - 加载模型到 router（可选传推理参数）"""
-    payload = {"model": model_id}
-    if params:
-        payload["params"] = params
+async def load_model(model_id: str) -> dict:
+    """POST /models/load - 加载模型到 router"""
     async with httpx.AsyncClient(timeout=300.0) as c:
-        r = await c.post(f"{_base()}/models/load", json=payload)
+        r = await c.post(f"{_base()}/models/load", json={"model": model_id})
         if r.status_code != 200:
             raise RuntimeError(f"加载失败 ({r.status_code}): {r.text[:500]}")
         return r.json()
@@ -127,13 +124,10 @@ def get_loaded_models_sync() -> list[dict]:
         return _extract_models(r.json())
 
 
-def load_model_sync(model_id: str, params: Optional[dict] = None) -> dict:
-    """同步版本 - 加载模型（可选传推理参数）"""
-    payload = {"model": model_id}
-    if params:
-        payload["params"] = params
+def load_model_sync(model_id: str) -> dict:
+    """同步版本 - 加载模型"""
     with httpx.Client(timeout=300.0) as c:
-        r = c.post(f"{_base()}/models/load", json=payload)
+        r = c.post(f"{_base()}/models/load", json={"model": model_id})
         if r.status_code != 200:
             raise RuntimeError(f"加载失败 ({r.status_code}): {r.text[:500]}")
         return r.json()
