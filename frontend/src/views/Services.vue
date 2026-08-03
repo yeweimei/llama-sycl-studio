@@ -131,8 +131,8 @@
     </el-dialog>
 
     <!-- 编辑模型对话框 -->
-    <el-dialog v-model="editVisible" title="编辑模型" width="560px" top="10vh">
-      <el-form :model="editForm" label-width="100px">
+    <el-dialog v-model="editVisible" title="编辑模型" width="720px" top="8vh">
+      <el-form :model="editForm" label-width="110px">
         <el-form-item label="模型名称" required>
           <el-input v-model="editForm.name" />
         </el-form-item>
@@ -143,6 +143,91 @@
           <el-input v-model="editForm.api_key" placeholder="留空则不鉴权" />
           <div class="form-tip">修改后需重启服务生效</div>
         </el-form-item>
+
+        <el-divider content-position="left">推理参数</el-divider>
+
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="上下文长度">
+              <el-input-number v-model="editForm.args.ctx_size" :min="512" :step="1024" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="GPU 层数">
+              <el-input-number v-model="editForm.args.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="线程数">
+              <el-input-number v-model="editForm.args.threads" :min="1" :max="128" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="批大小">
+              <el-input-number v-model="editForm.args.batch_size" :min="1" :step="512" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="并行数">
+              <el-input-number v-model="editForm.args.parallel" :min="1" :max="32" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="温度">
+              <el-input-number v-model="editForm.args.temp" :min="0" :max="2" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="top_p">
+              <el-input-number v-model="editForm.args.top_p" :min="0" :max="1" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="repeat_penalty">
+              <el-input-number v-model="editForm.args.repeat_penalty" :min="0.5" :max="2" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="KV 缓存 K">
+              <el-select v-model="editForm.args.cache_type_k" style="width:100%">
+                <el-option label="f16" value="f16" />
+                <el-option label="q8_0" value="q8_0" />
+                <el-option label="q4_0" value="q4_0" />
+                <el-option label="q4_1" value="q4_1" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="KV 缓存 V">
+              <el-select v-model="editForm.args.cache_type_v" style="width:100%">
+                <el-option label="f16" value="f16" />
+                <el-option label="q8_0" value="q8_0" />
+                <el-option label="q4_0" value="q4_0" />
+                <el-option label="q4_1" value="q4_1" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="Flash Attention">
+              <el-switch v-model="editForm.args.flash_attn" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Jinja 模板">
+              <el-switch v-model="editForm.args.jinja" />
+            </el-form-item>
+          </el-col>
+        </el-row>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -183,7 +268,21 @@ const creating = ref(false)
 const form = ref({ name: '', model_path: '', api_key: '' })
 const editVisible = ref(false)
 const saving = ref(false)
-const editForm = ref({ id: null, name: '', model_path: '', api_key: '' })
+const DEFAULT_ARGS = {
+  ctx_size: 8192,
+  temp: 0.7,
+  top_p: 0.9,
+  repeat_penalty: 1.1,
+  threads: 8,
+  batch_size: 2048,
+  parallel: 4,
+  n_gpu_layers: 99,
+  cache_type_k: 'q8_0',
+  cache_type_v: 'q8_0',
+  flash_attn: true,
+  jinja: true,
+}
+const editForm = ref({ id: null, name: '', model_path: '', api_key: '', args: { ...DEFAULT_ARGS } })
 
 function formatSize(bytes) {
   if (!bytes) return '-'
@@ -388,7 +487,14 @@ async function doCreate() {
 }
 
 function openEdit(row) {
-  editForm.value = { id: row.id, name: row.name, model_path: row.model_path, api_key: row.api_key || '' }
+  const raw = typeof row.args === 'string' ? JSON.parse(row.args || '{}') : (row.args || {})
+  editForm.value = {
+    id: row.id,
+    name: row.name,
+    model_path: row.model_path,
+    api_key: row.api_key || '',
+    args: { ...DEFAULT_ARGS, ...raw },
+  }
   editVisible.value = true
 }
 
@@ -403,6 +509,7 @@ async function doSaveEdit() {
       name: editForm.value.name,
       model_path: editForm.value.model_path,
       api_key: editForm.value.api_key || null,
+      args: editForm.value.args,
     })
     ElMessage.success('已保存（重启服务生效）')
     editVisible.value = false

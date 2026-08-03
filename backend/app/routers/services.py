@@ -211,12 +211,25 @@ def update_service(sid: int, body: ServiceUpdate):
     return {"ok": True}
 
 
+def _get_service_row(sid) -> dict:
+    """从 DB 获取服务行（含解析后的 args）"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在，请先刷新模型列表")
+    d = dict(row)
+    d["args"] = json.loads(d["args"] or "{}")
+    return d
+
+
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router（支持 DB id 或按名称）"""
-    model_name = _resolve_model_name(sid)
+    """加载模型到 router（携带 DB 中配置的推理参数）"""
+    svc = _get_service_row(sid)
+    model_name = svc["name"]
+    args = svc.get("args", {})
     try:
-        result = router_client.load_model_sync(model_name)
+        result = router_client.load_model_sync(model_name, params=args if args else None)
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
         return {"ok": True, "status": "loaded", "detail": result}
@@ -251,8 +264,10 @@ def _resolve_model_name(sid) -> str:
 
 @router.post("/{sid}/restart")
 def restart_service(sid: int):
-    """重启模型：先卸载再加载（尽力而为）"""
-    model_name = _resolve_model_name(sid)
+    """重启模型：先卸载再加载（携带 DB 中配置的推理参数）"""
+    svc = _get_service_row(sid)
+    model_name = svc["name"]
+    args = svc.get("args", {})
     # 先尝试卸载（失败不阻断，继续加载）
     try:
         router_client.unload_model_sync(model_name)
@@ -260,9 +275,9 @@ def restart_service(sid: int):
         time.sleep(2)  # 等待 router 完成卸载清理
     except RuntimeError:
         pass  # 卸载失败不阻断重启流程
-    # 重新加载
+    # 重新加载（带参数）
     try:
-        result = router_client.load_model_sync(model_name)
+        result = router_client.load_model_sync(model_name, params=args if args else None)
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
         return {"ok": True, "status": "loaded", "detail": result}
