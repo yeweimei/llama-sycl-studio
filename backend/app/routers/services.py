@@ -256,6 +256,8 @@ def restart_service(sid: int):
     # 先尝试卸载（失败不阻断，继续加载）
     try:
         router_client.unload_model_sync(model_name)
+        import time
+        time.sleep(2)  # 等待 router 完成卸载清理
     except RuntimeError:
         pass  # 卸载失败不阻断重启流程
     # 重新加载
