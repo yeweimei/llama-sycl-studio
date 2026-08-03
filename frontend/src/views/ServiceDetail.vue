@@ -80,7 +80,8 @@
               <div class="chat-bubble">
                 <div v-if="m.role === 'user'" class="chat-label">你</div>
                 <div v-else class="chat-label" style="color:#409eff">助手</div>
-                <div class="chat-content" style="white-space:pre-wrap">{{ m.content }}</div>
+                <div v-if="m.role === 'assistant'" class="chat-content markdown-body" v-html="renderMarkdown(m.content)"></div>
+                <div v-else class="chat-content" style="white-space:pre-wrap">{{ m.content }}</div>
                 <div v-if="m.thinking" class="chat-thinking">
                   <div class="thinking-header" @click="toggleThinking(i)">
                     <span>🤔 思考过程</span>
@@ -98,8 +99,28 @@
             <el-checkbox v-model="chatThinking">思考模式</el-checkbox>
             <span style="margin-left:12px;font-size:13px;color:#909399">max_tokens</span>
             <el-input-number v-model="chatMaxTokens" :min="32" :max="8192" :step="64" size="small" style="width:130px" />
+            <el-upload
+              :show-file-list="false"
+              :before-upload="handleFileUpload"
+              accept=".txt,.md,.pdf"
+              style="margin-left:8px"
+            >
+              <el-button size="small" :loading="fileParsing">上传文件</el-button>
+            </el-upload>
+            <el-upload
+              v-if="isVisionModel"
+              :show-file-list="false"
+              :before-upload="handleImageUpload"
+              accept="image/png,image/jpeg"
+              style="margin-left:4px"
+            >
+              <el-button size="small">图片</el-button>
+            </el-upload>
             <el-button size="small" type="primary" style="margin-left:auto" :disabled="!canChat || chatLoading" @click="sendChat">发送</el-button>
             <el-button size="small" @click="clearChat">清空</el-button>
+          </div>
+          <div v-if="pendingImage" style="margin-bottom:4px">
+            <el-tag closable @close="pendingImage = null">📷 图片已附加</el-tag>
           </div>
           <el-input
             v-model="chatInput"
@@ -143,7 +164,16 @@ import { ArrowDown } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
   chatProxy, clientConfig,
+  getChatHistory, addChatHistory, clearChatHistory, parsePdf,
 } from '../api'
+import { marked } from 'marked'
+
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try { return marked.parse(text) } catch { return text }
+}
 
 const route = useRoute()
 const sid = route.params.id
@@ -228,8 +258,14 @@ const chatLoading = ref(false)
 const chatThinking = ref(false)
 const chatMaxTokens = ref(512)
 const chatView = ref(null)
+const fileParsing = ref(false)
+const pendingImage = ref(null) // base64 data URL
 
 const canChat = computed(() => service.value?.loaded)
+const isVisionModel = computed(() => {
+  const name = (service.value?.name || '').toLowerCase()
+  return ['vl', 'vlm', 'vision', 'visual'].some(k => name.includes(k))
+})
 
 function stripThink(text) {
   if (!text) return text
@@ -246,8 +282,19 @@ function toggleThinking(index) {
 async function sendChat() {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value) return
+  // 构建消息内容（多模态图片）
+  let userContent = text
+  if (pendingImage.value) {
+    userContent = [
+      { type: 'text', text },
+      { type: 'image_url', image_url: { url: pendingImage.value } },
+    ]
+  }
   messages.value.push({ role: 'user', content: text })
+  // 持久化用户消息
+  try { await addChatHistory(sid, { role: 'user', content: text }) } catch (e) { /* ignore */ }
   chatInput.value = ''
+  pendingImage.value = null
   chatLoading.value = true
   messages.value.push({ role: 'assistant', content: '', thinking: '' })
   const aiMsg = messages.value[messages.value.length - 1]
@@ -256,10 +303,16 @@ async function sendChat() {
     const payload = {
       messages: messages.value
         .filter(m => m.role !== 'thinking')
-        .map(m => ({
-          role: m.role,
-          content: m.role === 'assistant' ? stripThink(m.content) : m.content,
-        })),
+        .map((m, idx) => {
+          // 最后一条用户消息用多模态内容
+          if (m.role === 'user' && idx === messages.value.length - 2 && Array.isArray(userContent)) {
+            return { role: 'user', content: userContent }
+          }
+          return {
+            role: m.role,
+            content: m.role === 'assistant' ? stripThink(m.content) : m.content,
+          }
+        }),
       max_tokens: chatMaxTokens.value,
       temperature: 0.7,
       stream: true,
@@ -331,12 +384,17 @@ async function sendChat() {
   } finally {
     chatLoading.value = false
     scrollChat()
+    // 持久化助手回复
+    if (aiMsg.content && !aiMsg.content.startsWith('❌')) {
+      try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '' }) } catch (e) { /* ignore */ }
+    }
   }
 }
 
-function clearChat() {
+async function clearChat() {
   messages.value = []
   thinkingExpanded.value = {}
+  try { await clearChatHistory(sid) } catch (e) { /* ignore */ }
 }
 
 function scrollChat() {
@@ -344,6 +402,46 @@ function scrollChat() {
     const el = chatView.value
     if (el) el.scrollTop = el.scrollHeight
   })
+}
+
+// ---------- 文件上传 ----------
+async function handleFileUpload(file) {
+  fileParsing.value = true
+  try {
+    if (file.name.endsWith('.pdf')) {
+      const resp = await parsePdf(sid, file)
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + resp.text
+    } else {
+      // txt/md 直接读文本
+      const text = await file.text()
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + text.slice(0, 8000)
+    }
+  } catch (e) {
+    ElMessage.error('文件解析失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    fileParsing.value = false
+  }
+  return false // 阻止 el-upload 默认上传
+}
+
+async function handleImageUpload(file) {
+  // 转 base64 data URL
+  const reader = new FileReader()
+  reader.onload = () => {
+    pendingImage.value = reader.result
+  }
+  reader.readAsDataURL(file)
+  return false
+}
+
+// ---------- 加载历史 ----------
+async function loadHistory() {
+  try {
+    const list = await getChatHistory(sid)
+    if (list.length) {
+      messages.value = list.map(h => ({ role: h.role, content: h.content, thinking: h.thinking || '' }))
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // ---------- 接入配置 ----------
@@ -409,6 +507,7 @@ async function load() {
 
 onMounted(() => {
   load()
+  loadHistory()
   window.addEventListener('keydown', onGlobalKey)
 })
 onUnmounted(() => {
@@ -454,6 +553,13 @@ function onGlobalKey(e) {
 .chat-msg.user .chat-bubble { background: #ecf5ff; border-color: #d9ecff; }
 .chat-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
 .chat-content { font-size: 14px; line-height: 1.6; }
+.chat-content.markdown-body :deep(p) { margin: 4px 0; }
+.chat-content.markdown-body :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 8px 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+.chat-content.markdown-body :deep(code) { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+.chat-content.markdown-body :deep(pre code) { background: none; padding: 0; }
+.chat-content.markdown-body :deep(ul), .chat-content.markdown-body :deep(ol) { padding-left: 20px; margin: 4px 0; }
+.chat-content.markdown-body :deep(table) { border-collapse: collapse; }
+.chat-content.markdown-body :deep(th), .chat-content.markdown-body :deep(td) { border: 1px solid #ddd; padding: 4px 8px; }
 .chat-thinking {
   margin-top: 6px; font-size: 12px; color: #b88230;
   background: #fdf6ec; border-radius: 6px;

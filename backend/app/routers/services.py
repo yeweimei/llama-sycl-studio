@@ -2,7 +2,7 @@
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app import router_client
@@ -652,3 +652,76 @@ print(resp.choices[0].message.content)'''
         "openclaw": openclaw.strip(),
         "python": python.strip(),
     }
+
+
+# ---------- 聊天历史 ----------
+
+class HistoryItem(BaseModel):
+    role: str
+    content: str = ""
+    thinking: str = ""
+
+
+@router.get("/{sid}/history")
+def get_history(sid: int):
+    """获取聊天历史"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT role, content, thinking, created_at FROM chat_history WHERE sid=? ORDER BY id",
+            (sid,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{sid}/history")
+def add_history(sid: int, body: HistoryItem):
+    """追加聊天历史"""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO chat_history (sid, role, content, thinking, created_at) VALUES (?,?,?,?,?)",
+            (sid, body.role, body.content, body.thinking, now()),
+        )
+    return {"ok": True}
+
+
+@router.delete("/{sid}/history")
+def clear_history(sid: int):
+    """清空聊天历史"""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM chat_history WHERE sid=?", (sid,))
+    return {"ok": True}
+
+
+# ---------- PDF 解析 ----------
+
+@router.post("/{sid}/parse-pdf")
+async def parse_pdf(sid: int, file: UploadFile):
+    """上传 PDF 文件，返回提取的文本"""
+    from fastapi import UploadFile as _UF
+    import io
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "空文件")
+
+    text = ""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=content, filetype="pdf")
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+    except ImportError:
+        # PyMuPDF 不可用，尝试 pdfplumber
+        try:
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    text += page.extract_text() or ""
+        except ImportError:
+            raise HTTPException(500, "PDF 解析库未安装（需要 PyMuPDF 或 pdfplumber）")
+
+    if not text.strip():
+        text = "（PDF 未提取到文本，可能是扫描件）"
+
+    return {"text": text[:8000]}  # 截断防止超长
