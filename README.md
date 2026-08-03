@@ -56,8 +56,13 @@ llama-sycl-studio/
 │       ├── proxy.py      # 下载代理
 │       └── routers/      # API 路由（services/presets/downloads/auth/...）
 ├── frontend/             # Vue3 源码（构建后打进镜像）
+├── docs/BUILD.md         # 📦 完整构建说明（从零到部署）
 └── scripts/deploy.sh     # 一键构建 + 部署
 ```
+
+## 快速开始
+
+📦 **从源码构建镜像 & 部署**：详见 [docs/BUILD.md](docs/BUILD.md)（前置条件 / 构建 / 运行 / 排障）
 
 ## 一键部署
 
