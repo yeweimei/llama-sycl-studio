@@ -127,7 +127,7 @@ def create_preset(body: PresetCreate):
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
             "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, device, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
