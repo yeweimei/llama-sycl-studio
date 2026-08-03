@@ -24,17 +24,21 @@
 ## 功能
 
 - **模型池管理**：加载/卸载模型、实时状态（unloaded/loading/loaded）、按需加载
+- **服务管理**：模型注册/编辑/启停/重启/删除全生命周期管理，启动时行内展开实时进度条 + 日志滚动
 - **统一 API**：`/v1/chat/completions`、`/v1/embeddings`、`/v1/completions`（OpenAI 兼容，SSE 流式）
 - **模型预设**：每模型独立参数（ctx/temp/threads/cache-type/flash-attn/jinja 等），CRUD 自动同步 config.ini
 - **模型下载**：对接 HuggingFace / ModelScope，断点续传、暂停/继续/重试/删除、实时进度
-- **系统监控**：GPU 状态（xpu-smi）、内存、磁盘、模型目录
+- **GPU 监控**：xpu-smi 结构化采集（显存/功耗/进程级占用），推理活跃度（吞吐 tok/s）
+- **系统监控**：内存、磁盘、模型目录
 - **参数模板**：常用配置一键保存/套用
+- **移动端适配**：375px 无横向溢出，汉堡菜单 + 抽屉侧边栏，响应式布局
 
 ## 技术栈
 
 - 推理：llama.cpp `server-intel` 镜像（SYCL，Intel GPU）
 - 后端：Python FastAPI + SQLite（HTTP 控制 router，无需 docker.sock）
 - 前端：Vue 3 + Vite + Element Plus（打包进镜像）
+- 监控：Intel xpu-smi（容器内，类 nvidia-smi）
 
 ## 目录结构
 
@@ -114,3 +118,7 @@ docker run -d --name llama-studio --restart unless-stopped \
 - `/v1/chat/completions`、`/v1/embeddings`、`/v1/completions` 需带 `Authorization: Bearer <token>`（登录后拿）
 - `/v1/models` 公开（同 OpenAI 行为）
 - 首次访问需设置管理员密码；建议通过 Tailscale 访问或加反代鉴权
+
+## License
+
+MIT
