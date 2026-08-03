@@ -97,7 +97,12 @@ def init_db():
         if "mmap" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
         if "device" not in preset_cols:
-            conn.execute("ALTER TABLE model_presets ADD COLUMN device TEXT DEFAULT '0'")
+            conn.execute("ALTER TABLE model_presets ADD COLUMN device TEXT DEFAULT 'SYCL0'")
+        # 迁移旧 device 值: "0"->"SYCL0", "1"->"SYCL1"
+        for old, new in [("0", "SYCL0"), ("1", "SYCL1")]:
+            conn.execute("UPDATE model_presets SET device=? WHERE device=?", (new, old))
+        # 也处理空值和 NULL
+        conn.execute("UPDATE model_presets SET device='SYCL0' WHERE device IS NULL OR device='')")
         svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
         if "gpu_id" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")

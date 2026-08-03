@@ -236,7 +236,7 @@ def selectable_gpus():
                 else:
                     label = "GPU"
                 gpus.append({
-                    "id": str(idx),
+                    "id": f"SYCL{idx}",
                     "sycl_index": idx,
                     "name": f"{raw_name} ({label})",
                     "total_mib": total_mib,
@@ -253,7 +253,7 @@ def selectable_gpus():
         idx = card.split("card")[-1]
         render = f"/dev/dri/renderD{128 + int(idx)}"
         gpus.append({
-            "id": f"card{idx}",
+            "id": f"SYCL{idx}",
             "sycl_index": None,
             "name": f"GPU card{idx} (回退)",
             "card": card,

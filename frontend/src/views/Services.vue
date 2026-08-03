@@ -413,7 +413,7 @@ async function doCreate() {
     await createService({ name: form.value.name, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null })
     // 保存推理参数为预设
     try {
-      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || '0' })
+      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0' })
     } catch (e) {
       // 预设已存在则忽略，用户可在编辑时更新
     }
@@ -439,7 +439,7 @@ async function openEdit(row) {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
-    gpu_id: row.gpu_id || (found?.device && found.device !== '0' ? found.device : row.gpu_id || ''),
+    gpu_id: row.gpu_id || found?.device || 'SYCL0',
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
   }
@@ -467,7 +467,7 @@ async function doSaveEdit() {
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
       flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
-      mmap: p.mmap, device: editForm.value.gpu_id || '0',
+      mmap: p.mmap, device: editForm.value.gpu_id || 'SYCL0',
     }
     if (editForm.value.presetId) {
       await updatePreset(editForm.value.presetId, payload)

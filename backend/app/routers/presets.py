@@ -8,6 +8,18 @@ from app.config import settings
 router = APIRouter()
 
 
+def _normalize_device(v) -> str:
+    """将旧值(0/1)映射为 SYCL0/SYCL1，已含 SYCL 前缀的原样保留"""
+    if not v:
+        return "SYCL0"
+    s = str(v)
+    if s.startswith("SYCL"):
+        return s
+    if s.isdigit():
+        return f"SYCL{s}"
+    return "SYCL0"
+
+
 def _write_config_ini() -> dict:
     """从 DB 全量生成 config.ini 并写入模型目录（幂等：先清空再重建）
     返回 {"ok": bool, "path": str, "content": str, "error": str?}
@@ -36,9 +48,8 @@ def _write_config_ini() -> dict:
         if not d.get("mmap", 1):
             lines.append("no-mmap = on")
         lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
-        dev = d.get("device", "0")
-        if dev and dev != "0":
-            lines.append(f"device = {dev}")
+        dev = _normalize_device(d.get("device"))
+        lines.append(f"device = {dev}")
         extra = json.loads(d["extra_args"] or "{}")
         for k, v in extra.items():
             lines.append(f"{k} = {v}")
@@ -68,7 +79,7 @@ class PresetCreate(BaseModel):
     jinja: bool = True
     n_gpu_layers: int = 99
     mmap: bool = True
-    device: str = "0"
+    device: str = "SYCL0"
     extra_args: dict = {}
 
 
@@ -100,7 +111,7 @@ def list_presets():
         d["flash_attn"] = bool(d["flash_attn"])
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
-        d["device"] = d.get("device", "0")
+        d["device"] = _normalize_device(d.get("device"))
         d["extra_args"] = json.loads(d["extra_args"] or "{}")
         out.append(d)
     return out
@@ -120,7 +131,7 @@ def create_preset(body: PresetCreate):
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
-             1 if body.mmap else 0, body.device, json.dumps(body.extra_args), now(), now()),
+             1 if body.mmap else 0, _normalize_device(body.device), json.dumps(body.extra_args), now(), now()),
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
@@ -140,7 +151,7 @@ def update_preset(pid: int, body: PresetUpdate):
                        "cache_type_k", "cache_type_v", "n_gpu_layers", "device"]:
             v = getattr(body, field, None)
             if v is not None:
-                updates[field] = v
+                updates[field] = _normalize_device(v) if field == "device" else v
         if body.flash_attn is not None:
             updates["flash_attn"] = 1 if body.flash_attn else 0
         if body.jinja is not None:
