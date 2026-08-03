@@ -203,31 +203,62 @@ def _query_inference_metrics() -> dict:
 
 @router.get("/selectable")
 def selectable_gpus():
-    """返回可选 GPU 设备列表（扫描 /dev/dri）"""
+    """返回可选 GPU 设备列表（解析 llama-server --list-devices，回退 /dev/dri 扫描）"""
+    import os
+    import re
     import glob
+
+    # 尝试调用 llama-server --list-devices
+    llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
+    if os.path.isfile(llama_bin):
+        try:
+            r = subprocess.run(
+                [llama_bin, "--list-devices"],
+                capture_output=True, text=True, timeout=15,
+            )
+            # --list-devices 输出到 stdout，warning 行可能到 stderr
+            output = r.stdout + r.stderr
+            # 匹配: SYCL0: Intel(R) Arc(TM) A770M Graphics (15473 MiB, 15473 MiB free)
+            pattern = re.compile(
+                r"SYCL(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)"
+            )
+            gpus = []
+            for m in pattern.finditer(output):
+                idx = int(m.group(1))
+                raw_name = m.group(2).strip()
+                total_mib = int(m.group(3))
+                free_mib = int(m.group(4))
+                # 标注独显/核显
+                if "Arc" in raw_name:
+                    label = "独显"
+                elif "Iris" in raw_name or "Xe" in raw_name:
+                    label = "核显"
+                else:
+                    label = "GPU"
+                gpus.append({
+                    "id": str(idx),
+                    "sycl_index": idx,
+                    "name": f"{raw_name} ({label})",
+                    "total_mib": total_mib,
+                    "free_mib": free_mib,
+                })
+            if gpus:
+                return gpus
+        except Exception:
+            pass
+
+    # 回退：扫描 /dev/dri
     gpus = []
     for card in sorted(glob.glob("/dev/dri/card*")):
         idx = card.split("card")[-1]
         render = f"/dev/dri/renderD{128 + int(idx)}"
         gpus.append({
             "id": f"card{idx}",
-            "name": f"GPU card{idx}",
+            "sycl_index": None,
+            "name": f"GPU card{idx} (回退)",
             "card": card,
             "render": render,
         })
-    # 尝试从 xpu-smi 获取实际设备名
-    if shutil.which("xpu-smi"):
-        dump = _run(["xpu-smi"], timeout=10)
-        for g in gpus:
-            idx = int(g["id"].replace("card", ""))
-            # 在 xpu-smi 输出中找设备名
-            for line in dump.splitlines():
-                if 'Arc' in line or 'Iris' in line or 'Graphics' in line:
-                    import re
-                    m = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'\-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'\-]*)', line)
-                    if m:
-                        g["name"] = m.group(1).strip()
-                        break
     return gpus
 
 

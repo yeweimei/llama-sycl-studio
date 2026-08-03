@@ -42,6 +42,7 @@ ssh "$TARGET" "docker rm -f llama-studio 2>/dev/null || true; \
     -p 9100:9100 \
     -v /home/zhangjiyu/models:/models \
     -v llama-studio-data:/root/.llama-studio \
+    --device /dev/dri/card0 --device /dev/dri/renderD128 \
     --device /dev/dri/card1 --device /dev/dri/renderD129 \
     -e ZES_ENABLE_SYSMAN=1 -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
     llama-studio:latest && \

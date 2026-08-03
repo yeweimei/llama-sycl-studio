@@ -83,6 +83,7 @@ def init_db():
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
+                device TEXT DEFAULT '0',
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER
@@ -95,6 +96,8 @@ def init_db():
         preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
         if "mmap" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
+        if "device" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN device TEXT DEFAULT '0'")
         svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
         if "gpu_id" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
