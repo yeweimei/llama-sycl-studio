@@ -5,11 +5,14 @@
         <span>模型池管理</span>
         <el-tag v-if="routerHealthy" size="small" type="success" style="margin-left:8px">Router 在线</el-tag>
         <el-tag v-else size="small" type="danger" style="margin-left:8px">Router 离线</el-tag>
-        <el-button size="small" @click="refresh" style="margin-left:auto"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
+        <el-button type="primary" size="small" @click="openCreate" style="margin-left:auto">
+          <el-icon><Plus /></el-icon>&nbsp;注册模型
+        </el-button>
+        <el-button size="small" @click="refresh"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
       </div>
 
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
-        单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「加载」将模型载入 GPU 显存
+        单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「启动」将模型载入 GPU 显存
       </el-alert>
 
       <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys">
@@ -45,13 +48,22 @@
         <el-table-column label="操作" width="280">
           <template #default="{ row }">
             <el-button v-if="!row.loaded" type="success" size="small" :loading="loadingModel === row.name" @click="doLoad(row)">
-              加载
+              启动
             </el-button>
             <el-button v-else type="warning" size="small" :loading="loadingModel === row.name" @click="doUnload(row)">
-              卸载
+              停止
             </el-button>
+            <el-button size="small" @click="openEdit(row)" :disabled="!row.id">编辑</el-button>
             <el-button size="small" @click="$router.push('/services/' + row.id)" :disabled="!row.id">详情</el-button>
-            <el-button v-if="row.status === 'unavailable'" size="small" type="danger" @click="doDelete(row)" :disabled="!row.id">删除</el-button>
+            <el-dropdown trigger="click" @command="(cmd) => onMore(cmd, row)">
+              <el-button size="small">更多<el-icon><ArrowDown /></el-icon></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="restart" :disabled="!row.loaded">重启</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided style="color:#f56c6c">删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
 
@@ -97,16 +109,56 @@
         </el-tag>
       </div>
     </el-card>
+
+    <!-- 注册模型对话框 -->
+    <el-dialog v-model="createVisible" title="注册模型" width="560px" top="10vh">
+      <el-form :model="form" label-width="100px">
+        <el-form-item label="模型名称" required>
+          <el-input v-model="form.name" placeholder="如 qwen3.5-9b" />
+        </el-form-item>
+        <el-form-item label="模型路径" required>
+          <el-input v-model="form.model_path" placeholder="/models/xxx.gguf" />
+          <div class="form-tip">模型文件在容器内的路径，通常为 /models/&lt;文件名&gt;.gguf</div>
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="form.api_key" placeholder="可选，设置后需带 Authorization: Bearer 访问" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="doCreate">注册</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 编辑模型对话框 -->
+    <el-dialog v-model="editVisible" title="编辑模型" width="560px" top="10vh">
+      <el-form :model="editForm" label-width="100px">
+        <el-form-item label="模型名称" required>
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="模型路径" required>
+          <el-input v-model="editForm.model_path" placeholder="/models/xxx.gguf" />
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="editForm.api_key" placeholder="留空则不鉴权" />
+          <div class="form-tip">修改后需重启服务生效</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="doSaveEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import {
   listServices, startService, stopService, deleteService, routerStatus,
-  getServiceLogs,
+  getServiceLogs, createService, updateService, restartService,
 } from '../api'
 
 const services = ref([])
@@ -124,6 +176,14 @@ const logContainer = ref(null)
 const expandedRowKeys = ref([])
 let pollTimer = null
 let logTimer = null
+
+// 新建/编辑对话框
+const createVisible = ref(false)
+const creating = ref(false)
+const form = ref({ name: '', model_path: '', api_key: '' })
+const editVisible = ref(false)
+const saving = ref(false)
+const editForm = ref({ id: null, name: '', model_path: '', api_key: '' })
 
 function formatSize(bytes) {
   if (!bytes) return '-'
@@ -295,6 +355,112 @@ async function doUnload(row) {
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '卸载失败')
     unloadingModel.value = ''
+    loadProgress.value = 0
+    loadStatusText.value = ''
+    loadLogs.value = []
+    expandedRowKeys.value = []
+  }
+}
+
+// ---------- 新建/编辑 ----------
+
+function openCreate() {
+  form.value = { name: '', model_path: '', api_key: '' }
+  createVisible.value = true
+}
+
+async function doCreate() {
+  if (!form.value.name || !form.value.model_path) {
+    ElMessage.warning('请填写模型名称和模型路径')
+    return
+  }
+  creating.value = true
+  try {
+    await createService(form.value)
+    ElMessage.success('已注册，点击「启动」加载模型')
+    createVisible.value = false
+    refresh()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '注册失败')
+  } finally {
+    creating.value = false
+  }
+}
+
+function openEdit(row) {
+  editForm.value = { id: row.id, name: row.name, model_path: row.model_path, api_key: row.api_key || '' }
+  editVisible.value = true
+}
+
+async function doSaveEdit() {
+  if (!editForm.value.name || !editForm.value.model_path) {
+    ElMessage.warning('请填写模型名称和模型路径')
+    return
+  }
+  saving.value = true
+  try {
+    await updateService(editForm.value.id, {
+      name: editForm.value.name,
+      model_path: editForm.value.model_path,
+      api_key: editForm.value.api_key || null,
+    })
+    ElMessage.success('已保存（重启服务生效）')
+    editVisible.value = false
+    refresh()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+// ---------- 更多操作 ----------
+
+async function onMore(cmd, row) {
+  if (cmd === 'restart') await doRestart(row)
+  else if (cmd === 'delete') await doDelete(row)
+}
+
+async function doRestart(row) {
+  if (loadingModel.value) {
+    ElMessage.warning('已有操作正在进行，请等待完成')
+    return
+  }
+  loadingModel.value = row.name
+  loadProgress.value = 10
+  loadStatusText.value = '正在重启（卸载中）…'
+  loadLogs.value = []
+
+  // 展开行显示进度
+  expandedRowKeys.value = [row.name]
+  services.value = services.value.map(s => ({ ...s }))
+
+  try {
+    await restartService(row.id)
+    loadProgress.value = 60
+    loadStatusText.value = '模型加载中…'
+    await pollLogs(row.name)
+
+    // 轮询直到 loaded
+    pollTimer = setInterval(async () => {
+      const done = await pollServiceStatus(row.name, true)
+      if (done) {
+        clearTimers()
+        setTimeout(() => {
+          loadingModel.value = ''
+          loadProgress.value = 0
+          loadStatusText.value = ''
+          loadLogs.value = []
+          expandedRowKeys.value = []
+          services.value = services.value.map(s => ({ ...s }))
+        }, 1500)
+      }
+    }, 2000)
+
+    logTimer = setInterval(() => pollLogs(row.name), 2000)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '重启失败')
+    loadingModel.value = ''
     loadProgress.value = 0
     loadStatusText.value = ''
     loadLogs.value = []

@@ -249,6 +249,27 @@ def _resolve_model_name(sid) -> str:
     raise HTTPException(404, "模型不存在，请先刷新模型列表")
 
 
+@router.post("/{sid}/restart")
+def restart_service(sid: int):
+    """重启模型：先卸载再加载（尽力而为）"""
+    model_name = _resolve_model_name(sid)
+    # 先尝试卸载（失败不阻断，继续加载）
+    try:
+        router_client.unload_model_sync(model_name)
+    except RuntimeError:
+        pass  # 卸载失败不阻断重启流程
+    # 重新加载
+    try:
+        result = router_client.load_model_sync(model_name)
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
+        return {"ok": True, "status": "loaded", "detail": result}
+    except RuntimeError as e:
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), model_name))
+        raise HTTPException(400, str(e))
+
+
 @router.delete("/{sid}")
 def delete_service(sid: int):
     """删除模型注册记录（不删文件）"""

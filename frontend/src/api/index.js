@@ -45,6 +45,7 @@ export const updateService = (id, data) => api.put(`/services/${id}`, data).then
 export const startService = (id) => api.post(`/services/${id}/start`).then(r => r.data)
 export const stopService = (id) => api.post(`/services/${id}/stop`).then(r => r.data)
 export const deleteService = (id) => api.delete(`/services/${id}`).then(r => r.data)
+export const restartService = (id) => api.post(`/services/${id}/restart`).then(r => r.data)
 export const getServiceLogs = (id, tail = 200, since = null, until = null) => {
   const params = { tail }
   if (since) params.since = since
