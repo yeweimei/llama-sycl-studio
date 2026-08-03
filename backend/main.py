@@ -20,7 +20,7 @@ from app.database import init_db
 from app import auth as auth_mod
 from app.routers import services, models, downloads, gpu, settings as settings_router
 from app.routers import auth as auth_router
-from app.routers import presets, tags
+from app.routers import presets, tags, stats
 
 app = FastAPI(
     title="LLM Studio",
@@ -85,6 +85,7 @@ app.include_router(gpu.router, prefix="/api/gpu", tags=["gpu"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(presets.router, prefix="/api/presets", tags=["presets"])
 app.include_router(tags.router, prefix="/api/model-tags", tags=["tags"])
+app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 
 
 @app.get("/api/health")

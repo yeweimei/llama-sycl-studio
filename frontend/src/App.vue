@@ -26,6 +26,10 @@
           <el-icon><Monitor /></el-icon>
           <span>系统监控</span>
         </el-menu-item>
+        <el-menu-item index="/stats">
+          <el-icon><DataLine /></el-icon>
+          <span>API统计</span>
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span>设置</span>
@@ -62,6 +66,10 @@
           <el-icon><Monitor /></el-icon>
           <span>系统监控</span>
         </el-menu-item>
+        <el-menu-item index="/stats">
+          <el-icon><DataLine /></el-icon>
+          <span>API统计</span>
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <span>设置</span>
@@ -95,7 +103,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Service, Files, Download, Monitor, Setting, SwitchButton, Expand } from '@element-plus/icons-vue'
+import { Service, Files, Download, Monitor, Setting, SwitchButton, Expand, DataLine } from '@element-plus/icons-vue'
 import { authLogout } from './api'
 
 const router = useRouter()

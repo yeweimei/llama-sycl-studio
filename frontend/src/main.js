@@ -16,6 +16,7 @@ const router = createRouter({
     { path: '/models', component: () => import('./views/Models.vue'), meta: { title: '模型中心' } },
     { path: '/downloads', component: () => import('./views/Downloads.vue'), meta: { title: '模型下载' } },
     { path: '/monitor', component: () => import('./views/Monitor.vue'), meta: { title: '系统监控' } },
+    { path: '/stats', component: () => import('./views/Stats.vue'), meta: { title: 'API统计' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '设置' } },
   ],
 })

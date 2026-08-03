@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app import router_client
 from app.database import get_conn, now
 from app.config import settings
+from app.routers.stats import _record_stats
 
 router = APIRouter()
 
@@ -530,6 +531,8 @@ async def chat_proxy(sid: int, body: ChatRequest):
     timeout = httpx.Timeout(600.0, connect=10.0)
 
     if not body.stream:
+        import time as _time
+        t0 = _time.time()
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 r = await client.post(url, json=payload, headers=headers)
@@ -537,17 +540,50 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 raise HTTPException(502, f"转发失败: {e}")
             if r.status_code != 200:
                 raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
-            return r.json()
+            data = r.json()
+            # 埋点统计
+            elapsed_ms = int((_time.time() - t0) * 1000)
+            usage = data.get("usage", {})
+            _record_stats(model_name,
+                          prompt_tokens=usage.get("prompt_tokens", 0),
+                          completion_tokens=usage.get("completion_tokens", 0),
+                          prefill_ms=elapsed_ms)
+            return data
 
     async def gen():
+        import time as _time
+        t0 = _time.time()
+        first_token_time = None
+        prompt_tokens = 0
+        completion_tokens = 0
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 async with client.stream("POST", url, json=payload, headers=headers) as r:
                     async for line in r.aiter_lines():
                         if line:
+                            # 捕获首 token 时间
+                            if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
+                                first_token_time = _time.time()
+                            # 解析 usage（流式最后 chunk 可能有）
+                            if line.startswith("data:") and "[DONE]" not in line:
+                                try:
+                                    chunk = json.loads(line[5:].strip())
+                                    u = chunk.get("usage")
+                                    if u:
+                                        prompt_tokens = u.get("prompt_tokens", 0)
+                                        completion_tokens = u.get("completion_tokens", 0)
+                                except Exception:
+                                    pass
                             yield line + "\n"
             except httpx.HTTPError as e:
                 yield f"data: {{\"error\": \"{e}\"}}\n\n"
+        # 流式结束后埋点
+        total_ms = int((_time.time() - t0) * 1000)
+        prefill_ms = int((first_token_time - t0) * 1000) if first_token_time else total_ms
+        decode_ms = max(0, total_ms - prefill_ms)
+        _record_stats(model_name, prompt_tokens=prompt_tokens,
+                      completion_tokens=completion_tokens,
+                      prefill_ms=prefill_ms, decode_ms=decode_ms)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
