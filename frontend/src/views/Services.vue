@@ -26,6 +26,9 @@
           <template #default="{ row }">
             <el-link type="primary" @click="$router.push('/services/' + row.id)" v-if="row.id">{{ row.name }}</el-link>
             <span v-else>{{ row.name }}</span>
+            <div v-if="svcTags(row.name).length" style="margin-top:2px">
+              <el-tag v-for="t in svcTags(row.name)" :key="t" size="small" effect="plain" style="margin-right:2px">{{ t }}</el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="设备" width="90">
@@ -197,7 +200,7 @@ import {
   listServices, startService, stopService, deleteService, routerStatus,
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
-  listModels, getSelectableGpus,
+  listModels, getSelectableGpus, listModelTags,
 } from '../api'
 
 const services = ref([])
@@ -234,6 +237,13 @@ const useManualPath = ref(false)
 const editUseManualPath = ref(false)
 const modelList = ref([])
 const gpuList = ref([])
+const svcTagMap = ref({})
+
+function svcTags(name) {
+  const t = svcTagMap.value[name]
+  if (!t) return []
+  return [...(t.tags || []), ...(t.custom_tags || [])]
+}
 const editVisible = ref(false)
 const saving = ref(false)
 const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET } })
@@ -577,9 +587,12 @@ async function doDelete(row) {
 onMounted(async () => {
   refresh()
   try {
-    const [models, gpus] = await Promise.all([listModels(), getSelectableGpus()])
+    const [models, gpus, tags] = await Promise.all([listModels(), getSelectableGpus(), listModelTags()])
     modelList.value = models
     gpuList.value = gpus
+    const tm = {}
+    for (const t of tags) tm[t.model_name] = t
+    svcTagMap.value = tm
   } catch (e) { /* ignore */ }
 })
 onUnmounted(clearTimers)

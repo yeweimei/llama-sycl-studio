@@ -45,6 +45,9 @@
           <template #default="{ row }">
             <span class="repo-name">{{ row.name }}</span>
             <span class="repo-author">@{{ row.author }}</span>
+            <div v-if="allTags(row.repo_id).length" style="margin-top:2px">
+              <el-tag v-for="t in allTags(row.repo_id)" :key="t" size="small" effect="plain" style="margin-right:2px">{{ t }}</el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
@@ -54,9 +57,10 @@
         <el-table-column label="点赞" width="70" align="right">
           <template #default="{ row }">{{ fmtNum(row.likes) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="80" align="center">
+        <el-table-column label="操作" width="120" align="center">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click.stop="selectRepo(row)">查看</el-button>
+            <el-button size="small" link @click.stop="openTagDialog(row.repo_id)">标签</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -140,6 +144,21 @@
       </el-table>
       <el-empty v-if="!tasks.length" description="暂无下载任务" :image-size="60" />
     </el-card>
+    <!-- 标签编辑对话框 -->
+    <el-dialog v-model="tagDialogVisible" :title="`编辑标签 - ${editingTagModel}`" width="480px">
+      <div style="margin-bottom:12px">
+        <div style="font-size:13px;color:#606266;margin-bottom:8px">预置标签</div>
+        <el-tag v-for="t in PRESET_TAGS" :key="t" :type="editingTags.tags.includes(t) ? '' : 'info'" effect="plain" style="margin:2px;cursor:pointer" @click="togglePresetTag(t)">{{ t }}</el-tag>
+      </div>
+      <div>
+        <div style="font-size:13px;color:#606266;margin-bottom:8px">自定义标签</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <el-input v-model="customTagInput" placeholder="输入标签" size="small" @keyup.enter="addCustomTag" />
+          <el-button size="small" @click="addCustomTag">添加</el-button>
+        </div>
+        <el-tag v-for="t in editingTags.custom_tags" :key="t" closable size="small" style="margin:2px" @close="removeCustomTag(t)">{{ t }}</el-tag>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -150,7 +169,7 @@ import { Search, Folder } from '@element-plus/icons-vue'
 import {
   listSources, searchModels, listRepoFiles, startDownload,
   listTasks, taskProgress, cancelTask, pauseTask, resumeTask, retryTask, deleteTask,
-  listModels
+  listModels, listModelTags, updateModelTags, autoModelTags,
 } from '../api'
 
 const form = ref({ source: 'huggingface', repo_id: '' })
@@ -163,6 +182,66 @@ const listingFiles = ref(false)
 const downloadingFile = ref('')
 const tasks = ref([])
 const showHot = ref(true)
+const tagMap = ref({})
+const tagDialogVisible = ref(false)
+const editingTagModel = ref('')
+const editingTags = ref({ tags: [], custom_tags: [] })
+const PRESET_TAGS = ['思考', '多模态', 'MoE', 'Dense', 'OCR', 'TTS', 'Embedding']
+const customTagInput = ref('')
+
+function getTags(name) {
+  return tagMap.value[name] || { tags: [], custom_tags: [] }
+}
+
+function allTags(name) {
+  const t = getTags(name)
+  return [...t.tags, ...t.custom_tags]
+}
+
+async function loadTags() {
+  try {
+    const list = await listModelTags()
+    const map = {}
+    for (const t of list) map[t.model_name] = t
+    tagMap.value = map
+  } catch (e) { /* ignore */ }
+}
+
+function openTagDialog(name) {
+  const t = getTags(name)
+  editingTagModel.value = name
+  editingTags.value = { tags: [...t.tags], custom_tags: [...t.custom_tags] }
+  customTagInput.value = ''
+  tagDialogVisible.value = true
+}
+
+function togglePresetTag(tag) {
+  const idx = editingTags.value.tags.indexOf(tag)
+  if (idx >= 0) editingTags.value.tags.splice(idx, 1)
+  else editingTags.value.tags.push(tag)
+}
+
+function addCustomTag() {
+  const t = customTagInput.value.trim()
+  if (t && !editingTags.value.custom_tags.includes(t)) {
+    editingTags.value.custom_tags.push(t)
+    customTagInput.value = ''
+  }
+}
+
+function removeCustomTag(tag) {
+  editingTags.value.custom_tags = editingTags.value.custom_tags.filter(t => t !== tag)
+}
+
+async function saveTags() {
+  try {
+    await updateModelTags(editingTagModel.value, editingTags.value)
+    tagMap.value[editingTagModel.value] = { model_name: editingTagModel.value, ...editingTags.value }
+    tagDialogVisible.value = false
+  } catch (e) {
+    ElMessage.error('保存标签失败')
+  }
+}
 const isAuthed = ref(true)
 let pollTimer = null
 
@@ -353,6 +432,7 @@ function statusType(s) {
 onMounted(async () => {
   sources.value = await listSources()
   loadTasks()
+  loadTags()
   pollTimer = setInterval(() => { if (isAuthed.value) loadTasks() }, 3000)
 })
 onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } })

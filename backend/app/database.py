@@ -88,6 +88,34 @@ def init_db():
                 created_at INTEGER,
                 updated_at INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS model_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT UNIQUE NOT NULL,
+                tags TEXT DEFAULT '[]',
+                custom_tags TEXT DEFAULT '[]',
+                updated_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS api_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT UNIQUE NOT NULL,
+                request_count INTEGER DEFAULT 0,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_prefill_ms INTEGER DEFAULT 0,
+                total_decode_ms INTEGER DEFAULT 0,
+                updated_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sid INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT DEFAULT '',
+                thinking TEXT DEFAULT '',
+                created_at INTEGER
+            );
             """
         )
 

@@ -98,4 +98,23 @@ export const updatePreset = (id, data) => api.put(`/presets/${id}`, data).then(r
 export const deletePreset = (id) => api.delete(`/presets/${id}`).then(r => r.data)
 export const generateConfigIni = () => api.post('/presets/generate-config').then(r => r.data)
 
+// ---------- 模型标签 ----------
+export const listModelTags = () => api.get('/model-tags').then(r => r.data)
+export const getModelTags = (name) => api.get(`/model-tags/${encodeURIComponent(name)}`).then(r => r.data)
+export const updateModelTags = (name, data) => api.put(`/model-tags/${encodeURIComponent(name)}`, data).then(r => r.data)
+export const autoModelTags = (name) => api.post(`/model-tags/${encodeURIComponent(name)}/auto`).then(r => r.data)
+
+// ---------- API 统计 ----------
+export const getStats = () => api.get('/stats').then(r => r.data)
+
+// ---------- 聊天历史 ----------
+export const getChatHistory = (sid) => api.get(`/services/${sid}/history`).then(r => r.data)
+export const addChatHistory = (sid, data) => api.post(`/services/${sid}/history`, data).then(r => r.data)
+export const clearChatHistory = (sid) => api.delete(`/services/${sid}/history`).then(r => r.data)
+export const parsePdf = (sid, file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post(`/services/${sid}/parse-pdf`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
+}
+
 export default api
