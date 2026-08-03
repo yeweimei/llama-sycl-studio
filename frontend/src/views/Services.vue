@@ -120,9 +120,6 @@
           <el-input v-model="form.model_path" placeholder="/models/xxx.gguf" />
           <div class="form-tip">模型文件在容器内的路径，通常为 /models/&lt;文件名&gt;.gguf</div>
         </el-form-item>
-        <el-form-item label="API Key">
-          <el-input v-model="form.api_key" placeholder="可选，设置后需带 Authorization: Bearer 访问" />
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -138,10 +135,6 @@
         </el-form-item>
         <el-form-item label="模型路径" required>
           <el-input v-model="editForm.model_path" placeholder="/models/xxx.gguf" />
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input v-model="editForm.api_key" placeholder="留空则不鉴权" />
-          <div class="form-tip">修改后需重启服务生效</div>
         </el-form-item>
 
         <el-divider content-position="left">推理参数</el-divider>
@@ -262,7 +255,7 @@ let logTimer = null
 // 新建/编辑对话框
 const createVisible = ref(false)
 const creating = ref(false)
-const form = ref({ name: '', model_path: '', api_key: '' })
+const form = ref({ name: '', model_path: '' })
 const editVisible = ref(false)
 const saving = ref(false)
 const DEFAULT_PRESET = {
@@ -270,7 +263,7 @@ const DEFAULT_PRESET = {
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
   flash_attn: true, jinja: true, n_gpu_layers: 99,
 }
-const editForm = ref({ id: null, name: '', model_path: '', api_key: '', presetId: null, preset: { ...DEFAULT_PRESET } })
+const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET } })
 const _allPresets = ref([])
 
 function formatSize(bytes) {
@@ -453,7 +446,7 @@ async function doUnload(row) {
 // ---------- 新建/编辑 ----------
 
 function openCreate() {
-  form.value = { name: '', model_path: '', api_key: '' }
+  form.value = { name: '', model_path: '' }
   createVisible.value = true
 }
 
@@ -487,7 +480,6 @@ async function openEdit(row) {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
-    api_key: row.api_key || '',
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
   }
@@ -505,7 +497,6 @@ async function doSaveEdit() {
     await updateService(editForm.value.id, {
       name: editForm.value.name,
       model_path: editForm.value.model_path,
-      api_key: editForm.value.api_key || null,
     })
     // 2. 保存推理参数到 model_presets 表（upsert）
     const p = editForm.value.preset

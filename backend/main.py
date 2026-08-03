@@ -68,7 +68,8 @@ async def auth_middleware(request: Request, call_next):
             return await call_next(request)
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-        if not auth_mod.check_token(token):
+        # 接受 WebUI 登录 token 或 api_keys 表中的有效 key
+        if not auth_mod.check_token(token) and not auth_mod.check_api_key(token):
             return JSONResponse(status_code=401, content={"detail": "未认证"})
         return await call_next(request)
 

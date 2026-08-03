@@ -77,3 +77,14 @@ def _cleanup_tokens():
     expired = [t for t, exp in _tokens.items() if now > exp]
     for t in expired:
         _tokens.pop(t, None)
+
+
+def check_api_key(key: str) -> bool:
+    """校验 API Key 是否有效（查 api_keys 表）"""
+    if not key:
+        return False
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM api_keys WHERE key=? AND enabled=1", (key,)
+        ).fetchone()
+    return row is not None

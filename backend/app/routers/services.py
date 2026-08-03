@@ -16,12 +16,10 @@ class ServiceCreate(BaseModel):
     name: str
     model_path: str
     args: dict = {}
-    api_key: Optional[str] = None
 
 
 class ServiceUpdate(BaseModel):
     args: Optional[dict] = None
-    api_key: Optional[str] = None
     name: Optional[str] = None
     model_path: Optional[str] = None
 
@@ -59,13 +57,13 @@ def list_services():
             mid = rm["id"]
             if mid not in db_models:
                 cur = conn.execute(
-                    "INSERT INTO services (name, model_path, args, api_key, status, created_at, updated_at) "
-                    "VALUES (?,?,?,?, 'unloaded', ?, ?)",
-                    (mid, f"/models/{mid}.gguf", "{}", None, now(), now()),
+                    "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
+                    "VALUES (?,?, '{}', 'unloaded', ?, ?)",
+                    (mid, f"/models/{mid}.gguf", now(), now()),
                 )
                 db_models[mid] = {
                     "id": cur.lastrowid, "name": mid, "model_path": f"/models/{mid}.gguf",
-                    "args": {}, "api_key": None, "status": "unloaded",
+                    "args": {}, "status": "unloaded",
                     "created_at": now(), "updated_at": now(),
                 }
 
@@ -92,7 +90,6 @@ def list_services():
             "name": mid,
             "model_path": db_info.get("model_path", f"/models/{mid}.gguf"),
             "args": db_info.get("args", {}),
-            "api_key": db_info.get("api_key"),
             "status": state,
             "loaded": is_loaded,
             "loaded_info": loaded_detail,
@@ -108,7 +105,6 @@ def list_services():
                 "name": name,
                 "model_path": db_info["model_path"],
                 "args": db_info["args"],
-                "api_key": db_info.get("api_key"),
                 "status": "unavailable",
                 "loaded": False,
                 "loaded_info": {},
@@ -139,9 +135,9 @@ def create_service(body: ServiceCreate):
         if dup:
             raise HTTPException(400, f"模型 {body.name} 已注册")
         cur = conn.execute(
-            "INSERT INTO services (name, model_path, args, api_key, status, created_at, updated_at) "
-            "VALUES (?,?,?,?, 'unloaded', ?, ?)",
-            (body.name, body.model_path, json.dumps(body.args or {}), body.api_key, now(), now()),
+            "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
+            "VALUES (?,?,?, 'unloaded', ?, ?)",
+            (body.name, body.model_path, json.dumps(body.args or {}), now(), now()),
         )
         sid = cur.lastrowid
     return {"id": sid, "name": body.name, "status": "unloaded"}
@@ -201,12 +197,11 @@ def update_service(sid: int, body: ServiceUpdate):
             raise HTTPException(404, "模型不存在")
         d = dict(row)
         args = json.loads(d["args"] or "{}") if body.args is None else body.args
-        api_key = d["api_key"] if body.api_key is None else body.api_key
         name = d["name"] if body.name is None else body.name
         model_path = d["model_path"] if body.model_path is None else body.model_path
         conn.execute(
-            "UPDATE services SET name=?, model_path=?, args=?, api_key=?, updated_at=? WHERE id=?",
-            (name, model_path, json.dumps(args), api_key, now(), sid),
+            "UPDATE services SET name=?, model_path=?, args=?, updated_at=? WHERE id=?",
+            (name, model_path, json.dumps(args), now(), sid),
         )
     return {"ok": True}
 
@@ -490,8 +485,13 @@ def client_config(sid: int):
         host_ip = "<HOST-IP>"
 
     base = f"http://{host_ip}:{settings.webui_port}/v1"
-    key = d.get("api_key") or "<API_KEY>"
-    auth = f'"Authorization: Bearer {key}"' if d.get("api_key") else ""
+    # 从 api_keys 表取第一个启用的 key 作为示例
+    with get_conn() as conn:
+        key_row = conn.execute(
+            "SELECT key FROM api_keys WHERE enabled=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+    key = key_row["key"] if key_row else "<在系统设置生成 API 密钥>"
+    auth = f'"Authorization: Bearer {key}"' if key_row else ""
 
     curl = f'''curl {base}/chat/completions \\
   -H "Content-Type: application/json" \\
