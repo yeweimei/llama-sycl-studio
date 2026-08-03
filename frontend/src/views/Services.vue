@@ -12,7 +12,7 @@
       </div>
 
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
-        单容器一体化架构：llama-server router 自动发现 /models 目录下的 GGUF 模型，点击「启动」将模型载入 GPU 显存
+        单容器一体化架构：列表包含容器内所有由 llama-server router 发现的模型（含未在 WebUI 注册的），点击「启动」将模型载入 GPU 显存
       </el-alert>
 
       <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys">
@@ -26,6 +26,11 @@
           <template #default="{ row }">
             <el-link type="primary" @click="$router.push('/services/' + row.id)" v-if="row.id">{{ row.name }}</el-link>
             <span v-else>{{ row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="设备" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.loaded && row.device_label" size="small" :type="row.device === 'SYCL0' ? '' : 'success'">{{ row.device_label }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="量化" width="100">
@@ -67,7 +72,7 @@
           </template>
         </el-table-column>
 
-        <!-- 行展开：加载进度 -->
+        <!-- 行展开：加载进度 + 进程详情 -->
         <el-table-column type="expand" width="1">
           <template #default="{ row }">
             <div v-if="loadingModel === row.name || unloadingModel === row.name" class="loading-panel">
@@ -83,6 +88,17 @@
               <div ref="logContainer" class="load-log-view">
                 <div v-for="(line, i) in loadLogs" :key="i" class="log-line">{{ line }}</div>
               </div>
+            </div>
+            <div v-else-if="row.loaded" class="proc-panel">
+              <el-descriptions :column="4" size="small" border>
+                <el-descriptions-item label="端口">{{ row.port || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="设备">{{ row.device || '-' }} ({{ row.device_label || '-' }})</el-descriptions-item>
+                <el-descriptions-item label="PID">{{ row.pid || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="显存">{{ row.loaded_info?.mem_total ? formatSize(row.loaded_info.mem_total) : '-' }}</el-descriptions-item>
+              </el-descriptions>
+            </div>
+            <div v-else class="proc-panel">
+              <span style="color:#909399;font-size:13px">未加载</span>
             </div>
           </template>
         </el-table-column>
@@ -569,6 +585,10 @@ onUnmounted(clearTimers)
 
 .loading-panel {
   padding: 16px 20px;
+  background: #fafafa;
+}
+.proc-panel {
+  padding: 12px 20px;
   background: #fafafa;
 }
 .load-status-text {

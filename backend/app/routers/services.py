@@ -26,6 +26,80 @@ class ServiceUpdate(BaseModel):
     gpu_id: Optional[str] = None
 
 
+def _extract_proc_info(loaded_detail: dict) -> dict:
+    """从 router /models 返回的 loaded_detail 中解析进程级信息"""
+    import subprocess
+    import re
+
+    info = {"port": None, "device": None, "device_label": None, "pid": None, "loaded_at": None}
+    if not loaded_detail:
+        return info
+
+    # status.args 是启动参数字符串，如 "--port 8081 --device SYCL1 -c 8192 ..."
+    args_str = ""
+    status = loaded_detail.get("status")
+    if isinstance(status, dict):
+        args_val = status.get("args")
+        if isinstance(args_val, str):
+            args_str = args_val
+        elif isinstance(args_val, list):
+            args_str = " ".join(str(a) for a in args_val)
+    # 也尝试顶层 args 字段
+    if not args_str:
+        args_val = loaded_detail.get("args")
+        if isinstance(args_val, str):
+            args_str = args_val
+        elif isinstance(args_val, list):
+            args_str = " ".join(str(a) for a in args_val)
+
+    # 解析 --port
+    m_port = re.search(r"--port\s+(\d+)", args_str)
+    if m_port:
+        info["port"] = int(m_port.group(1))
+
+    # 解析 --device
+    m_dev = re.search(r"--device\s+(\S+)", args_str)
+    if m_dev:
+        dev = m_dev.group(1)
+    else:
+        dev = "SYCL0"
+    info["device"] = dev
+    # 设备标签映射
+    if "SYCL0" in dev:
+        info["device_label"] = "独显"
+    elif "SYCL1" in dev:
+        info["device_label"] = "核显"
+    else:
+        info["device_label"] = dev
+
+    # 通过端口查 PID
+    if info["port"]:
+        try:
+            ps_out = subprocess.run(
+                ["ps", "-eo", "pid,args"], capture_output=True, text=True, timeout=5
+            ).stdout
+            for line in ps_out.splitlines():
+                if f"--port {info['port']}" in line and "llama-server" in line:
+                    pid_str = line.strip().split()[0]
+                    try:
+                        info["pid"] = int(pid_str)
+                    except ValueError:
+                        pass
+                    break
+        except Exception:
+            pass
+
+    # loaded_at: 尝试从 status.created 或顶层字段取
+    if isinstance(status, dict):
+        created = status.get("created") or status.get("loaded_at")
+        if created:
+            info["loaded_at"] = created
+    if not info["loaded_at"]:
+        info["loaded_at"] = loaded_detail.get("created")
+
+    return info
+
+
 @router.get("")
 def list_services():
     """列出模型池：合并 DB 注册的模型 + router 发现的模型（自动注册发现的新模型）"""
@@ -87,6 +161,7 @@ def list_services():
                 state = router_client._parse_status(st)
         is_loaded = state == "loaded"
         loaded_detail = loaded_map.get(mid, {})
+        proc = _extract_proc_info(loaded_detail) if is_loaded else {"port": None, "device": None, "device_label": None, "pid": None, "loaded_at": None}
         result.append({
             "id": db_info.get("id", 0),
             "name": mid,
@@ -96,6 +171,11 @@ def list_services():
             "status": state,
             "loaded": is_loaded,
             "loaded_info": loaded_detail,
+            "port": proc["port"],
+            "device": proc["device"],
+            "device_label": proc["device_label"],
+            "pid": proc["pid"],
+            "loaded_at": proc["loaded_at"],
             "created_at": db_info.get("created_at"),
             "updated_at": db_info.get("updated_at"),
         })
@@ -112,6 +192,11 @@ def list_services():
                 "status": "unavailable",
                 "loaded": False,
                 "loaded_info": {},
+                "port": None,
+                "device": None,
+                "device_label": None,
+                "pid": None,
+                "loaded_at": None,
                 "created_at": db_info.get("created_at"),
                 "updated_at": db_info.get("updated_at"),
             })
