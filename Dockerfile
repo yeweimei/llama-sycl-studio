@@ -25,7 +25,7 @@ RUN chmod +x /app/studio/entrypoint.sh
 
 # 安装 Python 依赖（用清华镜像源，NUC12 直连 pypi 不稳定）
 RUN pip3 install --no-cache-dir --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    fastapi uvicorn pydantic python-multipart httpx requests
+    -r /app/studio/backend/requirements.txt
 
 # 环境变量默认值
 ENV LLAMA_MODEL_DIR=/models \

@@ -564,7 +564,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
                             # 捕获首 token 时间
                             if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
                                 first_token_time = _time.time()
-                            # 解析 usage（流式最后 chunk 可能有）
+                            # 解析 usage（流式最后 chunk 可能有；llama.cpp 用 timings 字段）
                             if line.startswith("data:") and "[DONE]" not in line:
                                 try:
                                     chunk = json.loads(line[5:].strip())
@@ -572,6 +572,11 @@ async def chat_proxy(sid: int, body: ChatRequest):
                                     if u:
                                         prompt_tokens = u.get("prompt_tokens", 0)
                                         completion_tokens = u.get("completion_tokens", 0)
+                                    else:
+                                        t = chunk.get("timings")
+                                        if t:
+                                            prompt_tokens = t.get("prompt_n", 0)
+                                            completion_tokens = t.get("predicted_n", 0)
                                 except Exception:
                                     pass
                             yield line + "\n"
