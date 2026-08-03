@@ -15,7 +15,7 @@
         单容器一体化架构：列表包含容器内所有由 llama-server router 发现的模型（含未在 WebUI 注册的），点击「启动」将模型载入 GPU 显存
       </el-alert>
 
-      <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys">
+      <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys" @expand-change="onExpandChange">
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <span class="status-dot" :class="'status-' + (row.loaded ? 'running' : 'stopped')"></span>
@@ -213,6 +213,11 @@ const loadStatusText = ref('')
 const loadLogs = ref([])
 const logContainer = ref(null)
 const expandedRowKeys = ref([])
+
+function onExpandChange(row, expandedRows) {
+  // 手动展开/收起时同步受控展开状态（加载/卸载/重启的自动展开仍走 expandedRowKeys 赋值）
+  expandedRowKeys.value = expandedRows.map(r => r.name)
+}
 let pollTimer = null
 let logTimer = null
 
