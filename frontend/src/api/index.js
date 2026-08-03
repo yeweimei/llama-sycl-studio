@@ -76,6 +76,7 @@ export const deleteTask = (tid) => api.delete(`/downloads/tasks/${tid}`).then(r 
 
 // ---------- 监控 ----------
 export const gpuStatus = () => api.get('/gpu').then(r => r.data)
+export const getSelectableGpus = () => api.get('/gpu/selectable').then(r => r.data)
 export const systemStatus = () => api.get('/gpu/system').then(r => r.data)
 
 // ---------- 设置 ----------

@@ -16,12 +16,14 @@ class ServiceCreate(BaseModel):
     name: str
     model_path: str
     args: dict = {}
+    gpu_id: Optional[str] = None
 
 
 class ServiceUpdate(BaseModel):
     args: Optional[dict] = None
     name: Optional[str] = None
     model_path: Optional[str] = None
+    gpu_id: Optional[str] = None
 
 
 @router.get("")
@@ -90,6 +92,7 @@ def list_services():
             "name": mid,
             "model_path": db_info.get("model_path", f"/models/{mid}.gguf"),
             "args": db_info.get("args", {}),
+            "gpu_id": db_info.get("gpu_id", ""),
             "status": state,
             "loaded": is_loaded,
             "loaded_info": loaded_detail,
@@ -105,6 +108,7 @@ def list_services():
                 "name": name,
                 "model_path": db_info["model_path"],
                 "args": db_info["args"],
+                "gpu_id": db_info.get("gpu_id", ""),
                 "status": "unavailable",
                 "loaded": False,
                 "loaded_info": {},
@@ -135,9 +139,9 @@ def create_service(body: ServiceCreate):
         if dup:
             raise HTTPException(400, f"模型 {body.name} 已注册")
         cur = conn.execute(
-            "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
-            "VALUES (?,?,?, 'unloaded', ?, ?)",
-            (body.name, body.model_path, json.dumps(body.args or {}), now(), now()),
+            "INSERT INTO services (name, model_path, args, gpu_id, status, created_at, updated_at) "
+            "VALUES (?,?,?,?, 'unloaded', ?, ?)",
+            (body.name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
         )
         sid = cur.lastrowid
     return {"id": sid, "name": body.name, "status": "unloaded"}
@@ -199,9 +203,10 @@ def update_service(sid: int, body: ServiceUpdate):
         args = json.loads(d["args"] or "{}") if body.args is None else body.args
         name = d["name"] if body.name is None else body.name
         model_path = d["model_path"] if body.model_path is None else body.model_path
+        gpu_id = d.get("gpu_id", "") if body.gpu_id is None else (body.gpu_id or "")
         conn.execute(
-            "UPDATE services SET name=?, model_path=?, args=?, updated_at=? WHERE id=?",
-            (name, model_path, json.dumps(args), now(), sid),
+            "UPDATE services SET name=?, model_path=?, args=?, gpu_id=?, updated_at=? WHERE id=?",
+            (name, model_path, json.dumps(args), gpu_id, now(), sid),
         )
     return {"ok": True}
 

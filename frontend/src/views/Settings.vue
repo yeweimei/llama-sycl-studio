@@ -227,6 +227,9 @@
         <el-form-item label="Jinja 模板">
           <el-switch v-model="editingPreset.jinja" />
         </el-form-item>
+        <el-form-item label="mmap">
+          <el-switch v-model="editingPreset.mmap" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="presetDialog = false">取消</el-button>
@@ -266,7 +269,7 @@ const editingPreset = ref({})
 const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99,
+  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true,
 }
 
 async function doChangePassword() {

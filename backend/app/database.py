@@ -27,6 +27,7 @@ def init_db():
                 name TEXT UNIQUE NOT NULL,
                 model_path TEXT NOT NULL,
                 args TEXT NOT NULL DEFAULT '{}',
+                gpu_id TEXT DEFAULT '',
                 api_key TEXT,
                 status TEXT DEFAULT 'unloaded',
                 created_at INTEGER,
@@ -81,12 +82,22 @@ def init_db():
                 flash_attn INTEGER DEFAULT 1,
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
+                mmap INTEGER DEFAULT 1,
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER
             );
             """
         )
+
+    # Migrations: add columns if not exist
+    with get_conn() as conn:
+        preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
+        if "mmap" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
+        svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
+        if "gpu_id" not in svc_cols:
+            conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
 
 
 def now() -> int:

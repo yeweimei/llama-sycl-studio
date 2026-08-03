@@ -201,6 +201,36 @@ def _query_inference_metrics() -> dict:
     return result
 
 
+@router.get("/selectable")
+def selectable_gpus():
+    """返回可选 GPU 设备列表（扫描 /dev/dri）"""
+    import glob
+    gpus = []
+    for card in sorted(glob.glob("/dev/dri/card*")):
+        idx = card.split("card")[-1]
+        render = f"/dev/dri/renderD{128 + int(idx)}"
+        gpus.append({
+            "id": f"card{idx}",
+            "name": f"GPU card{idx}",
+            "card": card,
+            "render": render,
+        })
+    # 尝试从 xpu-smi 获取实际设备名
+    if shutil.which("xpu-smi"):
+        dump = _run(["xpu-smi"], timeout=10)
+        for g in gpus:
+            idx = int(g["id"].replace("card", ""))
+            # 在 xpu-smi 输出中找设备名
+            for line in dump.splitlines():
+                if 'Arc' in line or 'Iris' in line or 'Graphics' in line:
+                    import re
+                    m = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'\-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'\-]*)', line)
+                    if m:
+                        g["name"] = m.group(1).strip()
+                        break
+    return gpus
+
+
 @router.get("")
 def gpu_status():
     """GPU 状态：结构化输出（xpu-smi）"""

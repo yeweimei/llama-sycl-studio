@@ -111,15 +111,28 @@
     </el-card>
 
     <!-- 注册模型对话框 -->
-    <el-dialog v-model="createVisible" title="注册模型" width="560px" top="10vh">
-      <el-form :model="form" label-width="100px">
+    <el-dialog v-model="createVisible" title="注册模型" width="720px" top="8vh">
+      <el-form :model="form" label-width="110px">
         <el-form-item label="模型名称" required>
           <el-input v-model="form.name" placeholder="如 qwen3.5-9b" />
         </el-form-item>
         <el-form-item label="模型路径" required>
-          <el-input v-model="form.model_path" placeholder="/models/xxx.gguf" />
-          <div class="form-tip">模型文件在容器内的路径，通常为 /models/&lt;文件名&gt;.gguf</div>
+          <el-select v-if="!useManualPath" v-model="form.model_path" filterable placeholder="选择已下载模型" style="width:100%">
+            <el-option v-for="m in modelList" :key="m.path" :label="`${m.name} (${m.size_human}${m.quantization ? ' ' + m.quantization : ''})`" :value="m.path" />
+          </el-select>
+          <el-input v-else v-model="form.model_path" placeholder="/models/xxx.gguf" />
+          <el-button link type="primary" @click="useManualPath = !useManualPath" style="margin-top:4px">
+            {{ useManualPath ? '选择已下载模型' : '手动输入路径' }}
+          </el-button>
+          <div class="form-tip">支持 .gguf 文件或 HF 目录（含 config.json）</div>
         </el-form-item>
+        <el-form-item label="显卡">
+          <el-select v-model="form.gpu_id" placeholder="选择 GPU" style="width:100%" clearable>
+            <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+        </el-form-item>
+        <el-divider content-position="left">推理参数</el-divider>
+        <ParamForm v-model="form.preset" />
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -134,88 +147,21 @@
           <el-input v-model="editForm.name" />
         </el-form-item>
         <el-form-item label="模型路径" required>
-          <el-input v-model="editForm.model_path" placeholder="/models/xxx.gguf" />
+          <el-select v-if="!editUseManualPath" v-model="editForm.model_path" filterable placeholder="选择已下载模型" style="width:100%">
+            <el-option v-for="m in modelList" :key="m.path" :label="`${m.name} (${m.size_human}${m.quantization ? ' ' + m.quantization : ''})`" :value="m.path" />
+          </el-select>
+          <el-input v-else v-model="editForm.model_path" placeholder="/models/xxx.gguf" />
+          <el-button link type="primary" @click="editUseManualPath = !editUseManualPath" style="margin-top:4px">
+            {{ editUseManualPath ? '选择已下载模型' : '手动输入路径' }}
+          </el-button>
         </el-form-item>
-
+        <el-form-item label="显卡">
+          <el-select v-model="editForm.gpu_id" placeholder="选择 GPU" style="width:100%" clearable>
+            <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+        </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
-
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="上下文长度">
-              <el-input-number v-model="editForm.preset.ctx_size" :min="512" :max="262144" :step="1024" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="GPU 层数">
-              <el-input-number v-model="editForm.preset.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="线程数">
-              <el-input-number v-model="editForm.preset.threads" :min="1" :max="64" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="批大小">
-              <el-input-number v-model="editForm.preset.batch_size" :min="32" :max="8192" :step="512" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="ubatch">
-              <el-input-number v-model="editForm.preset.ubatch_size" :min="32" :max="4096" :step="256" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="并行数">
-              <el-input-number v-model="editForm.preset.parallel" :min="1" :max="64" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="温度">
-              <el-input-number v-model="editForm.preset.temp" :min="0" :max="2" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="KV 缓存 K">
-              <el-select v-model="editForm.preset.cache_type_k" style="width:100%">
-                <el-option label="f16" value="f16" />
-                <el-option label="q8_0" value="q8_0" />
-                <el-option label="q4_0" value="q4_0" />
-                <el-option label="q4_1" value="q4_1" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="KV 缓存 V">
-              <el-select v-model="editForm.preset.cache_type_v" style="width:100%">
-                <el-option label="f16" value="f16" />
-                <el-option label="q8_0" value="q8_0" />
-                <el-option label="q4_0" value="q4_0" />
-                <el-option label="q4_1" value="q4_1" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="Flash Attn">
-              <el-switch v-model="editForm.preset.flash_attn" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="Jinja 模板">
-              <el-switch v-model="editForm.preset.jinja" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+        <ParamForm v-model="editForm.preset" />
         <div class="form-tip" style="margin-top:4px">推理参数通过模型预设(config.ini)生效，保存后需重启容器加载。</div>
       </el-form>
       <template #footer>
@@ -230,10 +176,12 @@
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
+import ParamForm from '../components/ParamForm.vue'
 import {
   listServices, startService, stopService, deleteService, routerStatus,
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
+  listModels, getSelectableGpus,
 } from '../api'
 
 const services = ref([])
@@ -255,7 +203,11 @@ let logTimer = null
 // 新建/编辑对话框
 const createVisible = ref(false)
 const creating = ref(false)
-const form = ref({ name: '', model_path: '' })
+const form = ref({ name: '', model_path: '', gpu_id: '', preset: { ...DEFAULT_PRESET } })
+const useManualPath = ref(false)
+const editUseManualPath = ref(false)
+const modelList = ref([])
+const gpuList = ref([])
 const editVisible = ref(false)
 const saving = ref(false)
 const DEFAULT_PRESET = {
@@ -446,7 +398,8 @@ async function doUnload(row) {
 // ---------- 新建/编辑 ----------
 
 function openCreate() {
-  form.value = { name: '', model_path: '' }
+  form.value = { name: '', model_path: '', gpu_id: gpuList.value[0]?.id || '', preset: { ...DEFAULT_PRESET } }
+  useManualPath.value = false
   createVisible.value = true
 }
 
@@ -457,7 +410,13 @@ async function doCreate() {
   }
   creating.value = true
   try {
-    await createService(form.value)
+    await createService({ name: form.value.name, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null })
+    // 保存推理参数为预设
+    try {
+      await createPreset({ model_name: form.value.name, ...form.value.preset })
+    } catch (e) {
+      // 预设已存在则忽略，用户可在编辑时更新
+    }
     ElMessage.success('已注册，点击「启动」加载模型')
     createVisible.value = false
     refresh()
@@ -480,9 +439,11 @@ async function openEdit(row) {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
+    gpu_id: row.gpu_id || '',
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
   }
+  editUseManualPath.value = !modelList.value.some(m => m.path === row.model_path)
   editVisible.value = true
 }
 
@@ -497,6 +458,7 @@ async function doSaveEdit() {
     await updateService(editForm.value.id, {
       name: editForm.value.name,
       model_path: editForm.value.model_path,
+      gpu_id: editForm.value.gpu_id || null,
     })
     // 2. 保存推理参数到 model_presets 表（upsert）
     const p = editForm.value.preset
@@ -590,7 +552,14 @@ async function doDelete(row) {
   }
 }
 
-onMounted(refresh)
+onMounted(async () => {
+  refresh()
+  try {
+    const [models, gpus] = await Promise.all([listModels(), getSelectableGpus()])
+    modelList.value = models
+    gpuList.value = gpus
+  } catch (e) { /* ignore */ }
+})
 onUnmounted(clearTimers)
 </script>
 

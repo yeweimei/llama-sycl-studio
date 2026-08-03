@@ -84,22 +84,23 @@ def _search_modelscope(query: str) -> list[dict]:
     import json
     from urllib.parse import quote
 
-    url = f"https://modelscope.cn/api/v1/dolphin/models?PageSize=12&PageNumber=1&SortBy=Default&Target=&SingleCriterion={quote(query)}"
+    url = f"https://modelscope.cn/openapi/v1/models?search={quote(query)}&page_number=1&page_size=12"
     req = urllib.request.Request(url, headers={"User-Agent": "llama-studio/0.1"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = json.loads(resp.read())
 
     results = []
-    for m in data.get("Data", {}).get("Model", {}).get("Models", []) or []:
+    for m in data.get("data", {}).get("models", []) or []:
+        repo_id = m.get("id", "")
         results.append({
-            "repo_id": m.get("Path", ""),
-            "name": m.get("Name", ""),
-            "author": m.get("Owner", {}).get("Name", "") if isinstance(m.get("Owner"), dict) else "",
-            "description": (m.get("Description") or "")[:200],
-            "downloads": m.get("Downloads", 0),
-            "likes": m.get("Likes", 0),
-            "tags": m.get("Tags", [])[:6],
-            "modified": "",
+            "repo_id": repo_id,
+            "name": m.get("display_name", repo_id),
+            "author": repo_id.split("/")[0] if "/" in repo_id else "",
+            "description": (m.get("description") or "")[:200],
+            "downloads": m.get("downloads", 0),
+            "likes": m.get("likes", 0),
+            "tags": m.get("tags", [])[:6],
+            "modified": (m.get("last_modified") or "")[:10],
         })
     return [r for r in results if r["repo_id"]]
 
