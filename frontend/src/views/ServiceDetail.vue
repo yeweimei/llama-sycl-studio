@@ -110,7 +110,7 @@
                       <span>🤔 思考过程</span>
                       <el-icon class="thinking-arrow" :class="{ collapsed: !thinkingExpanded[i] }"><ArrowDown /></el-icon>
                     </div>
-                    <div v-show="thinkingExpanded[i]" class="thinking-body">{{ m.thinking }}</div>
+                    <div v-show="thinkingExpanded[i]" class="thinking-body" :ref="el => setThinkingRef(el, i)">{{ m.thinking }}</div>
                   </div>
                 </div>
                 <div class="chat-meta">
@@ -236,9 +236,9 @@ function highlightCode() {
           const btn = document.createElement('button')
           btn.className = 'code-copy-btn'
           btn.textContent = '复制'
-          btn.onclick = () => {
-            navigator.clipboard.writeText(block.textContent)
-            btn.textContent = '✓'
+          btn.onclick = async () => {
+            const ok = await copyText(block.textContent)
+            btn.textContent = ok ? '✓' : '✗'
             setTimeout(() => { btn.textContent = '复制' }, 1500)
           }
           pre.style.position = 'relative'
@@ -260,10 +260,36 @@ function fmtTime(ts) {
 }
 
 async function copyMessage(m) {
-  try {
-    await navigator.clipboard.writeText(m.content)
+  const text = m.content || m.thinking || ''
+  if (await copyText(text)) {
     ElMessage.success('已复制')
-  } catch (e) { ElMessage.error('复制失败') }
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+
+// 通用复制：优先 Clipboard API，非 HTTPS 环境降级 textarea+execCommand
+async function copyText(text) {
+  if (!text) return false
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch (e) { /* 继续走降级 */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch (e) {
+    return false
+  }
 }
 
 async function deleteMessage(i) {
@@ -411,6 +437,8 @@ async function switchSession(sessionId) {
   currentSessionId.value = sessionId
   messages.value = []
   thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
   await loadHistory()
 }
 
@@ -463,9 +491,32 @@ function stripThink(text) {
 
 // thinking 折叠状态
 const thinkingExpanded = ref({})
+// 用户手动折叠/展开过的消息索引（流式过程中尊重用户操作，不再强制展开）
+const thinkingUserToggled = ref({})
+// thinking 滚动容器 refs
+const thinkingRefs = ref({})
+
+function setThinkingRef(el, index) {
+  if (el) thinkingRefs.value[index] = el
+}
+
+// 思考框滚动到底部（内容增长时跟随最新思考）
+function scrollThinking(index) {
+  const el = thinkingRefs.value[index]
+  if (!el) return
+  // Vue DOM 更新异步：等渲染完成再滚动，避免 scrollHeight 读到旧值
+  nextTick(() => {
+    el.scrollTop = el.scrollHeight
+  })
+}
 
 function toggleThinking(index) {
   thinkingExpanded.value[index] = !thinkingExpanded.value[index]
+  thinkingUserToggled.value[index] = true
+  // 展开后滚动到底部
+  if (thinkingExpanded.value[index]) {
+    setTimeout(() => scrollThinking(index), 50)
+  }
 }
 
 async function sendChat() {
@@ -545,10 +596,15 @@ async function sendChat() {
           const chunk = JSON.parse(data)
           const delta = chunk.choices?.[0]?.delta || {}
           if (delta.reasoning_content) {
+            const firstThinking = !aiMsg.thinking
             aiMsg.thinking += delta.reasoning_content
-            // 流式过程中自动展开
+            // 首次出现思考内容时自动展开；之后尊重用户手动折叠状态
             const idx = messages.value.indexOf(aiMsg)
-            if (idx >= 0) thinkingExpanded.value[idx] = true
+            if (idx >= 0 && firstThinking && !thinkingUserToggled.value[idx]) {
+              thinkingExpanded.value[idx] = true
+            }
+            // 思考内容增长时滚动到底部（跟随最新思考）
+            if (idx >= 0) scrollThinking(idx)
           }
           if (delta.content) {
             aiMsg.content += delta.content
@@ -572,9 +628,11 @@ async function sendChat() {
     } else if (!aiMsg.content && aiMsg.thinking) {
       aiMsg.content = '（模型仅返回了思考内容，未生成正式回答）'
     } else {
-      // 流式结束后默认折叠思考内容
+      // 流式结束后默认折叠思考内容（用户手动操作过的保持原状）
       const idx = messages.value.indexOf(aiMsg)
-      if (idx >= 0 && aiMsg.thinking) thinkingExpanded.value[idx] = false
+      if (idx >= 0 && aiMsg.thinking && !thinkingUserToggled.value[idx]) {
+        thinkingExpanded.value[idx] = false
+      }
     }
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -601,6 +659,8 @@ async function sendChat() {
 async function clearChat() {
   messages.value = []
   thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
   try { await clearChatHistory(sid, currentSessionId.value) } catch (e) { /* ignore */ }
   try { await loadSessions() } catch (e) { /* ignore */ }
 }
@@ -675,11 +735,6 @@ async function loadClientConfig() {
   } catch (e) {
     clientCfg.value = { curl: '', openclaw: '', python: '' }
   }
-}
-
-function copyText(t) {
-  navigator.clipboard.writeText(t)
-  ElMessage.success('已复制')
 }
 
 // ---------- 模型操作 ----------
