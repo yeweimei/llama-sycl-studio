@@ -88,11 +88,13 @@
         <el-col :span="12">
           <el-form-item label="Top-K">
             <el-input-number v-model="model.sampling.top_k" :min="0" :max="200" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('top_k')">❓</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
           <el-form-item label="Top-P">
             <el-input-number v-model="model.sampling.top_p" :min="0" :max="1" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('top_p')">❓</span>
           </el-form-item>
         </el-col>
       </el-row>
@@ -100,11 +102,13 @@
         <el-col :span="12">
           <el-form-item label="Min-P">
             <el-input-number v-model="model.sampling.min_p" :min="0" :max="1" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('min_p')">❓</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
           <el-form-item label="Typical-P">
             <el-input-number v-model="model.sampling.typical_p" :min="0" :max="1" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('typical_p')">❓</span>
           </el-form-item>
         </el-col>
       </el-row>
@@ -112,11 +116,13 @@
         <el-col :span="12">
           <el-form-item label="重复惩罚">
             <el-input-number v-model="model.sampling.repeat_penalty" :min="1" :max="2" :step="0.05" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('repeat_penalty')">❓</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
           <el-form-item label="存在惩罚">
             <el-input-number v-model="model.sampling.presence_penalty" :min="0" :max="2" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('presence_penalty')">❓</span>
           </el-form-item>
         </el-col>
       </el-row>
@@ -124,12 +130,13 @@
         <el-col :span="12">
           <el-form-item label="频率惩罚">
             <el-input-number v-model="model.sampling.frequency_penalty" :min="0" :max="2" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('frequency_penalty')">❓</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
           <el-form-item label="随机种子">
             <el-input-number v-model="model.sampling.seed" :min="-1" :max="2147483647" controls-position="right" style="width:100%" />
-            <div class="form-tip" style="margin-top:2px">-1 = 每次随机</div>
+            <span class="param-help-btn" title="查看说明" @click="showHelp('seed')">❓</span>
           </el-form-item>
         </el-col>
       </el-row>
@@ -141,15 +148,31 @@
               <el-option :value="1" label="v1 (1)" />
               <el-option :value="2" label="v2 (2)" />
             </el-select>
+            <span class="param-help-btn" title="查看说明" @click="showHelp('mirostat')">❓</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
           <el-form-item label="Mirostat LR">
             <el-input-number v-model="model.sampling.mirostat_lr" :min="0" :max="1" :step="0.01" :precision="3" controls-position="right" style="width:100%" />
+            <span class="param-help-btn" title="查看说明" @click="showHelp('mirostat_lr')">❓</span>
           </el-form-item>
         </el-col>
       </el-row>
     </div>
+
+    <!-- 参数说明弹窗 -->
+    <el-dialog v-model="helpVisible" :title="helpData?.name || '参数说明'" width="420px" append-to-body>
+      <div v-if="helpData" style="line-height:1.8">
+        <p style="margin:0 0 8px;color:#606266">{{ helpData.desc }}</p>
+        <div style="background:#f5f7fa;border-radius:6px;padding:10px 12px;font-size:13px">
+          <div><b>怎么调：</b>{{ helpData.tip }}</div>
+          <div style="margin-top:6px"><b>推荐值：</b>{{ helpData.recommend }}</div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="helpVisible = false">知道了</el-button>
+      </template>
+    </el-dialog>
   </el-form>
 </template>
 
@@ -163,6 +186,84 @@ const emit = defineEmits(['update:modelValue'])
 
 const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const samplingOpen = ref(false)
+
+// 参数说明数据（name/desc/tip/recommend）
+const HELP_MAP = {
+  top_k: {
+    name: 'Top-K（候选词截断）',
+    desc: '每次生成时，模型只从概率最高的前 K 个词里选一个。K 越小，回答越保守、越可预测；K 越大，越有创意但也越容易跑偏。',
+    tip: '想稳定可控就调小（10~30）；想多样有趣就调大（60~100）；0 表示完全关闭这个限制。',
+    recommend: '40（默认）｜代码/数学任务 10~30，创意写作 60~100',
+  },
+  top_p: {
+    name: 'Top-P（核采样）',
+    desc: '累计概率达到 P 的词才会被候选。相当于"从最可能的一批词里选"，是 Top-K 的另一种筛选方式。两者可同时用。',
+    tip: '越小越保守（0.7~0.8），越大越自由（0.95~1.0）。1.0 表示不限制。',
+    recommend: '0.95（默认）｜严谨任务 0.8，创意任务 0.9~0.95',
+  },
+  min_p: {
+    name: 'Min-P（最低概率过滤）',
+    desc: '把概率低于"最高概率 × Min-P"的词全部排除。比如最高词概率 0.5、Min-P=0.05，则概率低于 0.025 的词都被淘汰。',
+    tip: '一种较新的防跑偏手段，配合 Top-P 用效果不错。0 表示关闭。一般 0.02~0.1 之间微调即可。',
+    recommend: '0.05（默认）｜想要更稳可试 0.1',
+  },
+  typical_p: {
+    name: 'Typical-P（典型采样）',
+    desc: '只选"信息量符合预期"的词，避免模型选太意外或太无聊的词。适合让文本更自然。',
+    tip: '1.0 表示关闭。调低到 0.9 左右会让输出更"典型"，减少跳跃。和 Top-P 二选一用即可，不用都开。',
+    recommend: '1.0（默认，即关闭）｜需要时可试 0.9',
+  },
+  repeat_penalty: {
+    name: '重复惩罚',
+    desc: '对已经出现过的词降权，数值越大越不愿意重复。能明显减少"复读机"现象（比如一直说同一句话）。',
+    tip: '1.0 = 不惩罚。聊天模型 1.05~1.15 效果较好；太高（>1.3）会让句子变得生硬、不自然。',
+    recommend: '1.0~1.1（默认 1.0）｜中文对话推荐 1.05~1.15',
+  },
+  presence_penalty: {
+    name: '存在惩罚',
+    desc: '只要某个词"出现过"就给它降权，不管出现多少次。鼓励模型谈论新话题、换着花样表达。',
+    tip: '0 = 不惩罚。想要话题多样、避免车轱辘话可以调到 0.2~0.6。',
+    recommend: '0.0（默认）｜需要多样化输出时 0.3~0.6',
+  },
+  frequency_penalty: {
+    name: '频率惩罚',
+    desc: '词"出现得越频繁"惩罚越重。跟存在惩罚类似，但更针对反复刷屏的词，能有效压住啰嗦重复。',
+    tip: '0 = 不惩罚。和存在惩罚二选一用即可；两者都开容易让回答过于简短。',
+    recommend: '0.0（默认）｜压复读 0.3~0.5',
+  },
+  seed: {
+    name: '随机种子',
+    desc: '生成随机数的"起点"。固定同一个种子，相同输入会得到几乎一样的输出，方便复现和对比实验。',
+    tip: '-1 = 每次随机（默认）。调试时固定一个数（比如 42），改参数对比效果更公平。',
+    recommend: '-1（默认，每次随机）｜实验对比时固定 42',
+  },
+  mirostat: {
+    name: 'Mirostat（自适应采样）',
+    desc: '一种"智能"采样算法，会动态调整生成策略，让输出始终维持在一个合适的"惊喜度"，减少重复又不至于太乱。',
+    tip: '0 = 关闭（推荐大多数情况）。追求更流畅自然的输出可开 v2（2）。开启后建议配合下方 LR 和 Ent 使用。',
+    recommend: '0（默认，关闭）｜追求自然可试 v2',
+  },
+  mirostat_lr: {
+    name: 'Mirostat LR（学习率）',
+    desc: 'Mirostat 调整策略的"反应速度"。越大调整越快、输出变化越剧烈；越小越平稳。',
+    tip: '仅在 Mirostat 开启时有意义。一般保持默认即可，感觉输出太跳可调小到 0.05。',
+    recommend: '0.1（默认）',
+  },
+  mirostat_ent: {
+    name: 'Mirostat Ent（目标熵）',
+    desc: 'Mirostat 想要维持的"惊喜度"目标值。越大输出越多样，越小越保守。',
+    tip: '仅在 Mirostat 开启时有意义。输出太重复就调大（5.5~6），太发散就调小（3~4）。',
+    recommend: '5.0（默认）',
+  },
+}
+
+const helpVisible = ref(false)
+const helpData = ref(null)
+
+function showHelp(key) {
+  helpData.value = HELP_MAP[key] || null
+  helpVisible.value = true
+}
 
 const DEFAULT_ARGS = {
   ctx_size: 8192,
@@ -235,3 +336,17 @@ watch(
   { deep: true }
 )
 </script>
+
+<style scoped>
+.param-help-btn {
+  cursor: pointer;
+  color: #909399;
+  margin-left: 4px;
+  font-size: 13px;
+  user-select: none;
+  vertical-align: middle;
+}
+.param-help-btn:hover {
+  color: #409eff;
+}
+</style>
