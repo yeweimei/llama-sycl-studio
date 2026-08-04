@@ -7,11 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-venv curl ca-certificates xpu-smi \
     && rm -rf /var/lib/apt/lists/*
 
-# 保留原有 LD_LIBRARY_PATH（Intel oneAPI），追加 /app
-# （具体 oneAPI 版本路径在 entrypoint.sh 运行时动态收集，避免镜像升级后路径失效）
-ENV LD_LIBRARY_PATH=/app
+# 升级 Intel GPU 驱动（compute-runtime 26.18 -> 26.27 + IGC 2.38.2）
+# 目的：修复 ext_intel_free_memory 问题（虽 A770M 上仍不支持，但驱动保持最新）
+# 注：不用 PPA（网络不稳定），用本地 deb 包离线安装
+COPY deps/intel-gpu/*.deb /tmp/deps/
+RUN dpkg -i /tmp/deps/intel-igc-core-2_2.38.2+22051_amd64.deb /tmp/deps/intel-igc-opencl-2_2.38.2+22051_amd64.deb \
+    /tmp/deps/intel-opencl-icd_26.27.deb /tmp/deps/libze-intel-gpu1_26.27.deb \
+    || apt-get install -f -y && rm -rf /tmp/deps
 
-# 创建工作目录
 WORKDIR /app/studio
 
 # 拷贝后端
