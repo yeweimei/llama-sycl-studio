@@ -290,8 +290,12 @@ async function switchSession(sessionId) {
   await loadHistory()
 }
 
+let renamingSession = false
+
 async function startRenameSession(s) {
   if (s.id === 0) return
+  if (renamingSession) return  // 防重复打开叠加
+  renamingSession = true
   try {
     const { value } = await ElMessageBox.prompt('会话标题', '重命名会话', {
       inputValue: s.title, confirmButtonText: '保存', cancelButtonText: '取消',
@@ -300,7 +304,9 @@ async function startRenameSession(s) {
       await renameSession(currentSid.value, s.id, { title: value.trim() })
       s.title = value.trim()
     }
-  } catch (e) { /* cancel */ }
+  } catch (e) { /* cancel */ } finally {
+    renamingSession = false
+  }
 }
 
 async function removeSession(s) {

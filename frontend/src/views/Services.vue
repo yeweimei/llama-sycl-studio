@@ -647,10 +647,8 @@ async function onMore(cmd, row) {
 }
 
 async function doRestart(row) {
-  if (loadingModel.value) {
-    ElMessage.warning('已有操作正在进行，请等待完成')
-    return
-  }
+  // 重启不依赖 loading/unloading 锁：即使刚停止（锁未释放）也能重启，
+  // 后端 stop_instance 对未运行实例安全返回，start 会重新拉起
   loadingModel.value = row.name
   restartingModel.value = row.name
   loadProgress.value = 10

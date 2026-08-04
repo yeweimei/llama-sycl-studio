@@ -215,19 +215,24 @@ def _get_current_version() -> str:
 
 
 def _list_local_versions() -> list[dict]:
-    """列出本地已安装的二进制版本"""
+    """列出本地已安装的二进制版本（去重：当前版本只出现一次）"""
     versions = []
     current = _get_current_version()
     versions.append({"version": current, "active": True, "path": str(CURRENT_BIN)})
+    seen = {current}
     if BIN_DIR.exists():
         # 新格式: 备份目录 BIN_DIR/bXXXX
         for d in sorted(BIN_DIR.iterdir()):
-            if d.is_dir() and d.name.startswith("b"):
+            if d.is_dir() and d.name.startswith("b") and d.name not in seen:
                 versions.append({"version": d.name, "active": False, "path": str(d)})
+                seen.add(d.name)
         # 旧格式: 单文件 BIN_DIR/llama-server-bXXXX
         for f in sorted(BIN_DIR.glob("llama-server-b*")):
             ver = f.name.replace("llama-server-", "")
+            if ver in seen:
+                continue
             versions.append({"version": ver, "active": False, "path": str(f)})
+            seen.add(ver)
     return versions
 
 
