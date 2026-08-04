@@ -20,6 +20,42 @@ def _normalize_device(v) -> str:
     return "SYCL0"
 
 
+def _find_mmproj(model_name: str) -> str:
+    """在模型 gguf 同目录中查找 mmproj 文件（mmproj*.gguf）
+    通过 services 表 model_path 定位模型文件所在目录，返回绝对路径或空串"""
+    from pathlib import Path as _P
+    base = _P(settings.model_dir)
+    if not base.exists():
+        return ""
+    # 1) 通过 services 表拿到 model_path，找同目录
+    search_dirs = []
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT model_path FROM services WHERE name=?", (model_name,)).fetchone()
+        if row and row["model_path"]:
+            mp = row["model_path"].replace("/models/", "")
+            p = base / mp
+            search_dirs.append(p.parent if p.suffix else p)
+    except Exception:
+        pass
+    # 2) 兜底：模型名是 gguf 文件名时，其目录 = base；否则扫描子目录
+    if not search_dirs:
+        if base.glob(f"{model_name}.gguf"):
+            search_dirs.append(base)
+        else:
+            for d in base.iterdir():
+                if d.is_dir() and d.name in model_name:
+                    search_dirs.append(d)
+    seen = set()
+    for d in search_dirs:
+        if not d.exists() or d in seen:
+            continue
+        seen.add(d)
+        for p in sorted(d.glob("mmproj*.gguf")):
+            return str(p)
+    return ""
+
+
 def _write_config_ini() -> dict:
     """从 DB 全量生成 config.ini 并写入模型目录（幂等：先清空再重建）
     返回 {"ok": bool, "path": str, "content": str, "error": str?}
@@ -50,6 +86,10 @@ def _write_config_ini() -> dict:
         lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
         dev = _normalize_device(d.get("device"))
         lines.append(f"device = {dev}")
+        # 自动检测 mmproj 并写入（多模态投影文件）
+        mmproj = _find_mmproj(d["model_name"])
+        if mmproj:
+            lines.append(f"mmproj = {mmproj}")
         extra = json.loads(d["extra_args"] or "{}")
         for k, v in extra.items():
             lines.append(f"{k} = {v}")

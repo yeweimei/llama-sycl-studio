@@ -24,6 +24,7 @@ class DownloadRequest(BaseModel):
     repo_id: str
     filename: Optional[str] = None       # 指定文件；None = 列出可选
     mirror: Optional[str] = None         # hf-mirror.com 等
+    include_mmproj: bool = True          # 是否联动下载 mmproj 投影文件
 
 
 @router.get("/sources")
@@ -131,7 +132,11 @@ def _list_huggingface(repo_id: str) -> list[dict]:
         fn = s.get("rfilename", "")
         if fn.endswith(".gguf"):
             size = s.get("size")
-            files.append({"filename": fn, "size": size})
+            files.append({
+                "filename": fn,
+                "size": size,
+                "is_mmproj": fn.startswith("mmproj"),
+            })
 
     import urllib.error
     for f in files[:8]:
@@ -160,7 +165,11 @@ def _list_modelscope(repo_id: str) -> list[dict]:
     for item in data.get("Data", {}).get("Files", []):
         fn = item.get("Path", "")
         if fn.endswith(".gguf"):
-            files.append({"filename": fn, "size": item.get("Size")})
+            files.append({
+                "filename": fn,
+                "size": item.get("Size"),
+                "is_mmproj": Path(fn).name.startswith("mmproj"),
+            })
     return files
 
 
@@ -170,7 +179,7 @@ def _list_modelscope(repo_id: str) -> list[dict]:
 
 @router.post("")
 def start_download(body: DownloadRequest):
-    """启动下载任务"""
+    """启动下载任务；仓库含 mmproj 时自动联动下载（可关闭）"""
     if not body.filename:
         raise HTTPException(400, "请先选择要下载的文件")
 
@@ -189,7 +198,38 @@ def start_download(body: DownloadRequest):
         tid = cur.lastrowid
 
     _launch_worker(tid, body.source, body.repo_id, body.filename, str(target), body.mirror)
-    return _tasks.get(tid, {"id": tid, "status": "error", "error": "启动失败"})
+
+    # 联动下载 mmproj：若仓库含 mmproj 文件且主文件不是 mmproj 本身
+    linked = []
+    if body.include_mmproj and not Path(body.filename).name.startswith("mmproj"):
+        try:
+            if body.source == "modelscope":
+                repo_files = _list_modelscope(body.repo_id)
+            else:
+                repo_files = _list_huggingface(body.repo_id)
+            mmproj_files = [f for f in repo_files if f.get("is_mmproj")]
+            if mmproj_files:
+                mm = mmproj_files[0]
+                mm_name = Path(mm["filename"]).name
+                mm_target = target_dir / mm_name
+                if not mm_target.exists():
+                    with get_conn() as conn:
+                        cur2 = conn.execute(
+                            "INSERT INTO download_tasks (source, repo_id, filename, local_path, status, created_at, updated_at) "
+                            "VALUES (?,?,?,?, 'downloading', ?, ?)",
+                            (body.source, body.repo_id, mm["filename"], str(mm_target), now(), now()),
+                        )
+                        mm_tid = cur2.lastrowid
+                    _launch_worker(mm_tid, body.source, body.repo_id, mm["filename"], str(mm_target), body.mirror)
+                    linked.append({"id": mm_tid, "filename": mm["filename"]})
+        except Exception:
+            pass  # 联动失败不阻断主下载
+
+    resp = _tasks.get(tid, {"id": tid, "status": "error", "error": "启动失败"})
+    if linked:
+        resp["mmproj_linked"] = linked
+        resp["message"] = "检测到多模态投影文件，已联动下载 mmproj"
+    return resp
 
 
 def _launch_worker(tid: int, source: str, repo_id: str, filename: str, local_path: str, mirror: str = None):

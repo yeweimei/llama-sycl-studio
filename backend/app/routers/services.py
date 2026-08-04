@@ -163,6 +163,20 @@ def list_services():
         is_loaded = state == "loaded"
         loaded_detail = loaded_map.get(mid, {})
         proc = _extract_proc_info(loaded_detail) if is_loaded else {"port": None, "device": None, "device_label": None, "pid": None, "loaded_at": None}
+        # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
+        has_mmproj = False
+        mmproj_path = ""
+        mp = db_info.get("model_path", "")
+        if mp:
+            from pathlib import Path as _P
+            mm_dir = _P(settings.model_dir) / mp.replace("/models/", "").rsplit("/", 1)[0]
+            try:
+                found = sorted(mm_dir.glob("mmproj*.gguf"))
+                if found:
+                    has_mmproj = True
+                    mmproj_path = str(found[0])
+            except Exception:
+                pass
         result.append({
             "id": db_info.get("id", 0),
             "name": mid,
@@ -177,6 +191,8 @@ def list_services():
             "device_label": proc["device_label"],
             "pid": proc["pid"],
             "loaded_at": proc["loaded_at"],
+            "has_mmproj": has_mmproj,
+            "mmproj_path": mmproj_path,
             "created_at": db_info.get("created_at"),
             "updated_at": db_info.get("updated_at"),
         })
@@ -274,6 +290,21 @@ def get_service(sid: int):
         d["loaded"] = False
         d["status"] = "unavailable"
         d["loaded_info"] = {}
+
+    # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
+    d["has_mmproj"] = False
+    d["mmproj_path"] = ""
+    mp = d.get("model_path", "")
+    if mp:
+        from pathlib import Path as _P
+        mm_dir = _P(settings.model_dir) / mp.replace("/models/", "").rsplit("/", 1)[0]
+        try:
+            found = sorted(mm_dir.glob("mmproj*.gguf"))
+            if found:
+                d["has_mmproj"] = True
+                d["mmproj_path"] = str(found[0])
+        except Exception:
+            pass
 
     return d
 

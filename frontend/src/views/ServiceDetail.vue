@@ -452,10 +452,8 @@ function stopChat() {
 }
 
 const canChat = computed(() => service.value?.loaded)
-const isVisionModel = computed(() => {
-  const name = (service.value?.name || '').toLowerCase()
-  return ['vl', 'vlm', 'vision', 'visual'].some(k => name.includes(k))
-})
+// 图片上传能力：以后端实际检测为准（模型目录有 mmproj 才显示）
+const isVisionModel = computed(() => !!service.value?.has_mmproj)
 
 function stripThink(text) {
   if (!text) return text
