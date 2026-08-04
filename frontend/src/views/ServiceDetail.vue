@@ -492,6 +492,8 @@ async function sendChat() {
     if (hasReal) {
       try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '', session_id: currentSessionId.value }) } catch (e) { /* ignore */ }
     }
+    // 刷新会话列表（消息数实时更新）
+    try { await loadSessions() } catch (e) { /* ignore */ }
   }
 }
 
@@ -499,6 +501,7 @@ async function clearChat() {
   messages.value = []
   thinkingExpanded.value = {}
   try { await clearChatHistory(sid, currentSessionId.value) } catch (e) { /* ignore */ }
+  try { await loadSessions() } catch (e) { /* ignore */ }
 }
 
 function scrollChat() {
