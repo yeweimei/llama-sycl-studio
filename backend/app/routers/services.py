@@ -147,25 +147,28 @@ def list_services():
 
     # 从 DB 获取注册的模型元信息，并自动注册 router 发现的新模型（按 name upsert）
     db_models = {}
-    hidden_names = set()
+    # 已删除墓碑：这些 router ID 不再自动注册（硬删除语义）
+    deleted_names = set()
     # 子目录模型的 router ID（目录名）-> 实际文件路径映射，用于自动注册和输出
     path_by_id = _model_path_from_loaded(loaded_info)
     with get_conn() as conn:
+        try:
+            del_rows = conn.execute("SELECT name FROM deleted_models").fetchall()
+            deleted_names = {r["name"] for r in del_rows}
+        except Exception:
+            pass
         rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
         for r in rows:
             d = dict(r)
             d["args"] = json.loads(d["args"] or "{}")
-            if d.get("hidden"):
-                hidden_names.add(d["name"])
-                continue  # 软删除的模型不参与合并/输出
             db_models[d["name"]] = d
-        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件 + 已软删除的）
+        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件 + 已删除墓碑）
         for rm in router_models:
             mid = rm["id"]
             if mid.startswith("mmproj"):
                 continue
-            if mid in hidden_names:
-                continue  # 已软删除，阻止自动复活
+            if mid in deleted_names:
+                continue  # 已被用户删除，不自动复活
             if mid not in db_models:
                 # 优先用 router 报告的实际文件路径（子目录模型 ID=目录名，不能拼 /models/{id}.gguf）
                 real_path = path_by_id.get(mid) or f"/models/{mid}.gguf"
@@ -188,8 +191,8 @@ def list_services():
         mid = rm["id"]
         if mid.startswith("mmproj"):
             continue  # mmproj 投影文件不是可加载模型，输出层也排除
-        if mid in hidden_names:
-            continue  # 已软删除，输出层也排除
+        if mid in deleted_names:
+            continue  # 已删除，输出层也排除
         seen.add(mid)
         db_info = db_models.get(mid, {})
         # 状态：优先 router /models 的 status.value，回退 /v1/models 的 status
@@ -305,13 +308,13 @@ def create_service(body: ServiceCreate):
     if not name:
         name = _match_router_id(body.model_path) or _derive_router_id(body.model_path)
     with get_conn() as conn:
-        dup = conn.execute("SELECT id FROM services WHERE name=?", (body.name,)).fetchone()
+        dup = conn.execute("SELECT id FROM services WHERE name=?", (name,)).fetchone()
         if dup:
-            raise HTTPException(400, f"模型 {body.name} 已注册")
+            raise HTTPException(400, f"模型 {name} 已注册")
         cur = conn.execute(
             "INSERT INTO services (name, model_path, args, gpu_id, status, created_at, updated_at) "
             "VALUES (?,?,?,?, 'unloaded', ?, ?)",
-            (body.name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
+            (name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
         )
         sid = cur.lastrowid
     # 校验：model_path 能否匹配到 router 模型 ID（避免注册后加载必 404）
@@ -322,7 +325,7 @@ def create_service(body: ServiceCreate):
             warning = f"模型文件 {body.model_path} 无法匹配到 router 模型 ID，加载可能失败"
     except Exception:
         pass
-    resp = {"id": sid, "name": body.name, "status": "unloaded"}
+    resp = {"id": sid, "name": name, "status": "unloaded"}
     if warning:
         resp["warning"] = warning
     return resp
@@ -557,8 +560,8 @@ def restart_service(sid: int):
 
 @router.delete("/{sid}")
 def delete_service(sid: int):
-    """软删除模型注册（不删文件）：卸载进程 + 标记 hidden=1，
-    阻止 list_services 自动注册复活"""
+    """硬删除模型注册：物理删除 DB 记录 + 清理关联数据（预设/标签/聊天/统计），
+    并写入墓碑表阻止 router 自动注册复活。模型文件保留。"""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
         if not row:
@@ -567,16 +570,30 @@ def delete_service(sid: int):
         model_name = d["name"]
         router_id = _match_router_id(d.get("model_path", "")) or model_name
 
-    # 若已加载，先卸载进程（用 router ID，参照 restart 逻辑，失败不阻断删除）
+    # 若已加载，先卸载进程（用 router ID，失败不阻断删除）
     try:
         router_client.unload_model_sync(router_id)
     except RuntimeError:
-        pass  # 卸载失败不阻断删除流程
+        pass
 
-    # 软删除：标记 hidden=1（不物理删除，避免自动注册 INSERT 新记录丢失标记）
     with get_conn() as conn:
-        conn.execute("UPDATE services SET hidden=1, status='unloaded', updated_at=? WHERE id=?", (now(), sid))
-    return {"ok": True, "hidden": True}
+        # 物理删除 services 记录
+        conn.execute("DELETE FROM services WHERE id=?", (sid,))
+        # 写墓碑：阻止 router 自动注册复活（硬删除语义，持久化）
+        # 记 router_id（自动注册按 router ID 匹配）；自定义 name 与 router_id 不同时都记
+        for tname in {model_name, router_id}:
+            if tname:
+                conn.execute(
+                    "INSERT OR IGNORE INTO deleted_models (name, created_at) VALUES (?,?)",
+                    (tname, now()),
+                )
+        # 清理关联数据：预设 / 标签 / 聊天历史 / 会话 / 统计
+        conn.execute("DELETE FROM model_presets WHERE model_name=?", (model_name,))
+        conn.execute("DELETE FROM model_tags WHERE model_name=?", (model_name,))
+        conn.execute("DELETE FROM chat_history WHERE sid=?", (sid,))
+        conn.execute("DELETE FROM chat_sessions WHERE sid=?", (sid,))
+        conn.execute("DELETE FROM api_stats WHERE model_name=?", (model_name,))
+    return {"ok": True, "deleted": True, "tombstone": model_name}
 
 
 @router.get("/{sid}/logs")

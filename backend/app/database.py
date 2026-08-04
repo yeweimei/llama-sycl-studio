@@ -97,6 +97,13 @@ def init_db():
                 updated_at INTEGER
             );
 
+            -- 已删除模型墓碑：阻止 router 自动注册时复活（硬删除后的持久标记）
+            CREATE TABLE IF NOT EXISTS deleted_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                created_at INTEGER
+            );
+
             CREATE TABLE IF NOT EXISTS api_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 model_name TEXT UNIQUE NOT NULL,
@@ -145,6 +152,19 @@ def init_db():
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
         if "hidden" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN hidden INTEGER DEFAULT 0")
+        # 迁移：旧软删除(hidden=1)记录 -> 墓碑表，然后物理删除（硬删除策略）
+        try:
+            hidden_rows = conn.execute(
+                "SELECT name FROM services WHERE hidden=1"
+            ).fetchall()
+            for hr in hidden_rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO deleted_models (name, created_at) VALUES (?,?)",
+                    (hr["name"], now()),
+                )
+            conn.execute("DELETE FROM services WHERE hidden=1")
+        except Exception:
+            pass  # 表或列不存在时跳过
         # 迁移: chat_history 加 session_id 列
         ch_cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
         if "session_id" not in ch_cols:
