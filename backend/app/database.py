@@ -111,10 +111,19 @@ def init_db():
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sid INTEGER NOT NULL,
+                session_id INTEGER DEFAULT 0,
                 role TEXT NOT NULL,
                 content TEXT DEFAULT '',
                 thinking TEXT DEFAULT '',
                 created_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sid INTEGER NOT NULL,
+                title TEXT DEFAULT '新会话',
+                created_at INTEGER,
+                updated_at INTEGER
             );
             """
         )
@@ -134,6 +143,10 @@ def init_db():
         svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
         if "gpu_id" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
+        # 迁移: chat_history 加 session_id 列
+        ch_cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
+        if "session_id" not in ch_cols:
+            conn.execute("ALTER TABLE chat_history ADD COLUMN session_id INTEGER DEFAULT 0")
 
 
 def now() -> int:

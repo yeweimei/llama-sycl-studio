@@ -686,41 +686,110 @@ class HistoryItem(BaseModel):
     role: str
     content: str = ""
     thinking: str = ""
+    session_id: int = 0
+
+
+class SessionCreate(BaseModel):
+    title: str = ""
+
+
+class SessionRename(BaseModel):
+    title: str
+
+
+@router.get("/{sid}/sessions")
+def list_sessions(sid: int):
+    """列出服务的所有会话（含消息数、更新时间）"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT s.*, (SELECT COUNT(*) FROM chat_history h WHERE h.session_id = s.id AND h.sid = s.sid) as msg_count "
+            "FROM chat_sessions s WHERE s.sid=? ORDER BY s.updated_at DESC",
+            (sid,),
+        ).fetchall()
+        # 也加入默认会话(session_id=0)的消息数
+        default_count = conn.execute(
+            "SELECT COUNT(*) as c FROM chat_history WHERE sid=? AND (session_id=0 OR session_id IS NULL)", (sid,)
+        ).fetchone()["c"]
+    result = [dict(r) for r in rows]
+    # 默认会话始终存在
+    result.append({"id": 0, "sid": sid, "title": "默认会话", "created_at": 0, "updated_at": 0, "msg_count": default_count})
+    return result
+
+
+@router.post("/{sid}/sessions")
+def create_session(sid: int, body: SessionCreate):
+    """新建会话"""
+    title = body.title or f"新会话"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO chat_sessions (sid, title, created_at, updated_at) VALUES (?,?,?,?)",
+            (sid, title, now(), now()),
+        )
+        session_id = cur.lastrowid
+    return {"id": session_id, "sid": sid, "title": title}
+
+
+@router.patch("/{sid}/sessions/{session_id}")
+def rename_session(sid: int, session_id: int, body: SessionRename):
+    """重命名会话"""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE chat_sessions SET title=?, updated_at=? WHERE id=? AND sid=?",
+            (body.title, now(), session_id, sid),
+        )
+    return {"ok": True}
+
+
+@router.delete("/{sid}/sessions/{session_id}")
+def delete_session(sid: int, session_id: int):
+    """删除会话（连带历史）"""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM chat_history WHERE sid=? AND session_id=?", (sid, session_id))
+        conn.execute("DELETE FROM chat_sessions WHERE id=? AND sid=?", (session_id, sid))
+    return {"ok": True}
 
 
 @router.get("/{sid}/history")
-def get_history(sid: int):
-    """获取聊天历史"""
+def get_history(sid: int, session_id: int = 0):
+    """获取聊天历史（按会话隔离）"""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT role, content, thinking, created_at FROM chat_history WHERE sid=? ORDER BY id",
-            (sid,),
+            "SELECT role, content, thinking, created_at FROM chat_history "
+            "WHERE sid=? AND (session_id=? OR (session_id IS NULL AND ?=0)) ORDER BY id",
+            (sid, session_id, session_id),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 @router.post("/{sid}/history")
 def add_history(sid: int, body: HistoryItem):
-    """追加聊天历史（连续重复的 user 消息自动去重，防双击/重复调用）"""
+    """追加聊天历史"""
+    sess = body.session_id or 0
     with get_conn() as conn:
         last = conn.execute(
-            "SELECT role, content FROM chat_history WHERE sid=? ORDER BY id DESC LIMIT 1",
-            (sid,),
+            "SELECT role, content FROM chat_history WHERE sid=? AND (session_id=? OR (session_id IS NULL AND ?=0)) ORDER BY id DESC LIMIT 1",
+            (sid, sess, sess),
         ).fetchone()
         if body.role == 'user' and last and last['role'] == 'user' and last['content'] == body.content:
             return {"ok": True, "skipped": "duplicate"}
         conn.execute(
-            "INSERT INTO chat_history (sid, role, content, thinking, created_at) VALUES (?,?,?,?,?)",
-            (sid, body.role, body.content, body.thinking, now()),
+            "INSERT INTO chat_history (sid, session_id, role, content, thinking, created_at) VALUES (?,?,?,?,?,?)",
+            (sid, sess, body.role, body.content, body.thinking, now()),
         )
+        # 更新会话 updated_at
+        if sess > 0:
+            conn.execute("UPDATE chat_sessions SET updated_at=? WHERE id=? AND sid=?", (now(), sess, sid))
     return {"ok": True}
 
 
 @router.delete("/{sid}/history")
-def clear_history(sid: int):
-    """清空聊天历史"""
+def clear_history(sid: int, session_id: int = 0):
+    """清空指定会话的聊天历史"""
     with get_conn() as conn:
-        conn.execute("DELETE FROM chat_history WHERE sid=?", (sid,))
+        conn.execute(
+            "DELETE FROM chat_history WHERE sid=? AND (session_id=? OR (session_id IS NULL AND ?=0))",
+            (sid, session_id, session_id),
+        )
     return {"ok": True}
 
 

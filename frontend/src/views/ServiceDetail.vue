@@ -73,7 +73,29 @@
 
       <!-- ================= 聊天测试台 ================= -->
       <el-tab-pane label="💬 聊天测试台" name="chat">
-        <div class="chat-panel">
+        <div class="chat-layout">
+          <!-- 会话侧栏 -->
+          <div class="session-sidebar">
+            <div class="session-header">
+              <span style="font-size:13px;font-weight:600">会话</span>
+              <el-button size="small" link @click="createNewSession"><el-icon><Plus /></el-icon></el-button>
+            </div>
+            <div class="session-list">
+              <div
+                v-for="s in sessions"
+                :key="s.id"
+                class="session-item"
+                :class="{ active: s.id === currentSessionId }"
+                @click="switchSession(s.id)"
+              >
+                <span class="session-title" @click.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
+                <span class="session-meta">{{ s.msg_count || 0 }} 条</span>
+                <el-button v-if="s.id !== 0" size="small" link class="session-del" @click.stop="removeSession(s)"><el-icon><Delete /></el-icon></el-button>
+              </div>
+            </div>
+          </div>
+          <!-- 聊天主区 -->
+          <div class="chat-panel">
           <div class="chat-messages" ref="chatView">
             <div v-if="!messages.length" class="chat-empty">输入消息开始测试（需模型已加载）</div>
             <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
@@ -131,6 +153,7 @@
             @keydown.enter.exact.prevent="sendChat"
           />
         </div>
+        </div>
       </el-tab-pane>
 
       <!-- ================= 接入配置 ================= -->
@@ -161,11 +184,12 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Delete } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
   chatProxy, clientConfig,
   getChatHistory, addChatHistory, clearChatHistory, parsePdf,
+  listSessions, createSession, renameSession, deleteSession,
 } from '../api'
 import { marked } from 'marked'
 
@@ -263,6 +287,59 @@ const chatMaxTokens = ref(localStorage.getItem(CHAT_SET_KEY) ? JSON.parse(localS
 const chatView = ref(null)
 const fileParsing = ref(false)
 const pendingImage = ref(null) // base64 data URL
+
+// ---------- 会话管理 ----------
+const sessions = ref([])
+const currentSessionId = ref(0)
+
+async function loadSessions() {
+  try {
+    sessions.value = await listSessions(sid)
+  } catch (e) { /* ignore */ }
+}
+
+async function createNewSession() {
+  try {
+    const s = await createSession(sid, { title: `新会话 ${sessions.value.length}` })
+    sessions.value.unshift(s)
+    await switchSession(s.id)
+  } catch (e) { ElMessage.error('创建会话失败') }
+}
+
+async function switchSession(sessionId) {
+  currentSessionId.value = sessionId
+  messages.value = []
+  thinkingExpanded.value = {}
+  await loadHistory()
+}
+
+async function startRenameSession(s) {
+  if (s.id === 0) return // 默认会话不可重命名
+  try {
+    const { value } = await ElMessageBox.prompt('会话标题', '重命名会话', {
+      inputValue: s.title,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    if (value && value.trim()) {
+      await renameSession(sid, s.id, { title: value.trim() })
+      s.title = value.trim()
+    }
+  } catch (e) { /* cancel */ }
+}
+
+async function removeSession(s) {
+  try {
+    await ElMessageBox.confirm(`确认删除会话「${s.title}」及其历史记录？`, '删除确认', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    })
+    await deleteSession(sid, s.id)
+    sessions.value = sessions.value.filter(x => x.id !== s.id)
+    if (currentSessionId.value === s.id) {
+      await switchSession(0)
+    }
+  } catch (e) { /* cancel */ }
+}
 // 打断控制器
 let chatAbort = null
 
@@ -307,7 +384,7 @@ async function sendChat() {
   }
   messages.value.push({ role: 'user', content: text })
   // 持久化用户消息（仅一次）
-  try { await addChatHistory(sid, { role: 'user', content: text }) } catch (e) { /* ignore */ }
+  try { await addChatHistory(sid, { role: 'user', content: text, session_id: currentSessionId.value }) } catch (e) { /* ignore */ }
   chatInput.value = ''
   pendingImage.value = null
   messages.value.push({ role: 'assistant', content: '', thinking: '' })
@@ -413,7 +490,7 @@ async function sendChat() {
     // 持久化助手回复（跳过占位提示/错误/空回复；仅思考无正式回答也不存）
     const hasReal = aiMsg.content && !aiMsg.content.startsWith('（') && !aiMsg.content.startsWith('❌')
     if (hasReal) {
-      try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '' }) } catch (e) { /* ignore */ }
+      try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '', session_id: currentSessionId.value }) } catch (e) { /* ignore */ }
     }
   }
 }
@@ -421,7 +498,7 @@ async function sendChat() {
 async function clearChat() {
   messages.value = []
   thinkingExpanded.value = {}
-  try { await clearChatHistory(sid) } catch (e) { /* ignore */ }
+  try { await clearChatHistory(sid, currentSessionId.value) } catch (e) { /* ignore */ }
 }
 
 function scrollChat() {
@@ -464,7 +541,7 @@ async function handleImageUpload(file) {
 // ---------- 加载历史 ----------
 async function loadHistory() {
   try {
-    const list = await getChatHistory(sid)
+    const list = await getChatHistory(sid, currentSessionId.value)
     if (list.length) {
       // 过滤占位提示/错误消息，并去重连续重复的 user 消息
       const cleaned = []
@@ -546,7 +623,7 @@ async function load() {
 
 onMounted(() => {
   load()
-  loadHistory()
+  loadSessions().then(() => loadHistory())
   window.addEventListener('keydown', onGlobalKey)
 })
 onUnmounted(() => {
@@ -576,7 +653,18 @@ function onGlobalKey(e) {
 }
 .form-tip { font-size: 12px; color: #909399; margin-top: 6px; }
 
-.chat-panel { display: flex; flex-direction: column; gap: 10px; }
+.chat-layout { display: flex; gap: 12px; height: 540px; }
+.session-sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid #ebeef5; display: flex; flex-direction: column; }
+.session-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; border-bottom: 1px solid #f0f0f0; }
+.session-list { flex: 1; overflow-y: auto; }
+.session-item { display: flex; align-items: center; gap: 4px; padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+.session-item:hover { background: #f5f7fa; }
+.session-item.active { background: #ecf5ff; color: #409eff; }
+.session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.session-meta { font-size: 11px; color: #c0c4cc; flex-shrink: 0; }
+.session-del { opacity: 0; flex-shrink: 0; }
+.session-item:hover .session-del { opacity: 1; }
+.chat-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; }
 .chat-messages {
   height: 420px; overflow-y: auto; background: #fafafa; border-radius: 8px;
   padding: 16px; border: 1px solid #ebeef5;
@@ -628,6 +716,8 @@ function onGlobalKey(e) {
   .log-toolbar :deep(.el-date-editor) { width: 100% !important; }
   .chat-messages { height: 320px; padding: 10px; }
   .chat-bubble { max-width: 90%; }
+  .chat-layout { flex-direction: column; height: auto; }
+  .session-sidebar { width: 100%; border-right: none; border-bottom: 1px solid #ebeef5; max-height: 120px; }
   .el-col + .el-col { margin-top: 12px; }
 }
 </style>

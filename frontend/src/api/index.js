@@ -108,9 +108,15 @@ export const autoModelTags = (name) => api.post(`/model-tags/${encodeURIComponen
 export const getStats = () => api.get('/stats').then(r => r.data)
 
 // ---------- 聊天历史 ----------
-export const getChatHistory = (sid) => api.get(`/services/${sid}/history`).then(r => r.data)
+export const getChatHistory = (sid, sessionId = 0) => api.get(`/services/${sid}/history`, { params: { session_id: sessionId } }).then(r => r.data)
 export const addChatHistory = (sid, data) => api.post(`/services/${sid}/history`, data).then(r => r.data)
-export const clearChatHistory = (sid) => api.delete(`/services/${sid}/history`).then(r => r.data)
+export const clearChatHistory = (sid, sessionId = 0) => api.delete(`/services/${sid}/history`, { params: { session_id: sessionId } }).then(r => r.data)
+
+// ---------- 聊天会话 ----------
+export const listSessions = (sid) => api.get(`/services/${sid}/sessions`).then(r => r.data)
+export const createSession = (sid, data = {}) => api.post(`/services/${sid}/sessions`, data).then(r => r.data)
+export const renameSession = (sid, sessionId, data) => api.patch(`/services/${sid}/sessions/${sessionId}`, data).then(r => r.data)
+export const deleteSession = (sid, sessionId) => api.delete(`/services/${sid}/sessions/${sessionId}`).then(r => r.data)
 export const parsePdf = (sid, file) => {
   const formData = new FormData()
   formData.append('file', file)
