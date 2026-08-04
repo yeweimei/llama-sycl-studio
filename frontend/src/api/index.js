@@ -124,4 +124,10 @@ export const parsePdf = (sid, file) => {
   return api.post(`/services/${sid}/parse-pdf`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
 }
 
+// ---------- 引擎管理 ----------
+export const getEngineVersion = () => api.get('/engine/version').then(r => r.data)
+export const getEngineUpgrades = () => api.get('/engine/upgrades').then(r => r.data)
+export const upgradeEngine = (version) => api.post('/engine/upgrade', { version }).then(r => r.data)
+export const rollbackEngine = (version) => api.post('/engine/rollback', { version }).then(r => r.data)
+
 export default api

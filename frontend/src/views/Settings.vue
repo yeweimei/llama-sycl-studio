@@ -97,6 +97,48 @@
           <el-empty v-if="!presets.length" description="暂无预设" :image-size="60" />
         </el-card>
 
+        <!-- 引擎管理 -->
+        <el-card shadow="never" style="margin-top:16px">
+          <div class="card-title">
+            <span>🔧 引擎管理</span>
+            <el-button size="small" @click="loadEngineInfo"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
+          </div>
+          <el-descriptions :column="2" size="small" border style="margin-bottom:12px" v-if="engineInfo">
+            <el-descriptions-item label="当前版本">
+              <el-tag type="success">{{ engineInfo.current }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="已安装版本">{{ engineInfo.installed?.length || 0 }} 个</el-descriptions-item>
+          </el-descriptions>
+
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">已安装版本（可回滚）</div>
+          <el-table :data="engineInfo?.installed || []" size="small" stripe style="margin-bottom:16px">
+            <el-table-column prop="version" label="版本" width="120" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag v-if="row.active" size="small" type="success">当前</el-tag>
+                <span v-else style="color:#909399">已备份</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button v-if="!row.active" size="small" link @click="doRollback(row.version)">回滚</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">可用升级（GitHub Release）</div>
+          <el-table :data="engineUpgrades" size="small" stripe v-loading="engineLoading" style="margin-bottom:12px">
+            <el-table-column prop="version" label="版本" width="120" />
+            <el-table-column prop="size_human" label="大小" width="100" />
+            <el-table-column prop="published_at" label="发布时间" min-width="160" />
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link :loading="engineUpgrading === row.version" @click="doUpgrade(row.version)">升级</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
         <!-- 网络代理 -->
         <el-card shadow="never" style="margin-top:16px">
           <div class="card-title"><span>🌐 网络代理</span></div>
@@ -241,13 +283,15 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listApiKeys, createApiKey, deleteApiKey, toggleApiKey,
   listTemplates, deleteTemplate, containerInfo,
   getProxySettings, saveProxySettings, authChangePassword,
   listPresets, createPreset, updatePreset, deletePreset, generateConfigIni,
+  getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine,
 } from '../api'
+import { Refresh } from '@element-plus/icons-vue'
 
 const keys = ref([])
 const templates = ref([])
@@ -265,6 +309,60 @@ const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
 const changingPwd = ref(false)
 const presetDialog = ref(false)
 const editingPreset = ref({})
+
+// ---------- 引擎管理 ----------
+const engineInfo = ref(null)
+const engineUpgrades = ref([])
+const engineLoading = ref(false)
+const engineUpgrading = ref('')
+
+async function loadEngineInfo() {
+  engineLoading.value = true
+  try {
+    const [info, upgrades] = await Promise.all([getEngineVersion(), getEngineUpgrades()])
+    engineInfo.value = info
+    engineUpgrades.value = upgrades
+  } catch (e) {
+    ElMessage.error('引擎信息加载失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    engineLoading.value = false
+  }
+}
+
+async function doUpgrade(version) {
+  try {
+    await ElMessageBox.confirm(
+      `确认升级 llama.cpp 到 ${version}？升级后需重启容器生效。`,
+      '升级确认', { confirmButtonText: '升级', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) { return }
+  engineUpgrading.value = version
+  try {
+    const r = await upgradeEngine(version)
+    ElMessage.success(r.message || `已升级到 ${version}`)
+    await loadEngineInfo()
+  } catch (e) {
+    ElMessage.error('升级失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    engineUpgrading.value = ''
+  }
+}
+
+async function doRollback(version) {
+  try {
+    await ElMessageBox.confirm(
+      `确认回滚到 ${version}？回滚后需重启容器生效。`,
+      '回滚确认', { confirmButtonText: '回滚', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) { return }
+  try {
+    const r = await rollbackEngine(version)
+    ElMessage.success(r.message || `已回滚到 ${version}`)
+    await loadEngineInfo()
+  } catch (e) {
+    ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
 
 const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
@@ -392,7 +490,7 @@ async function generateConfig() {
 }
 
 onMounted(() => {
-  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets()
+  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets(); loadEngineInfo()
 })
 </script>
 
