@@ -75,7 +75,12 @@
       </div>
       <div v-loading="listingFiles" style="min-height:60px">
         <el-table v-if="files.length" :data="files" stripe size="small" class="mobile-table">
-          <el-table-column prop="filename" label="文件" min-width="300" show-overflow-tooltip />
+          <el-table-column prop="filename" label="文件" min-width="300" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ row.filename }}</span>
+              <el-tag v-if="row.is_mmproj" size="small" type="warning" effect="plain" style="margin-left:6px">投影</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="量化" width="100">
             <template #default="{ row }">
               <el-tag size="small" :type="quantType(row.filename)">{{ quantName(row.filename) }}</el-tag>
