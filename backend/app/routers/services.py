@@ -277,7 +277,20 @@ def create_service(body: ServiceCreate):
             (body.name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
         )
         sid = cur.lastrowid
-    return {"id": sid, "name": body.name, "status": "unloaded"}
+    # 校验：model_path 推导的 router ID 是否在 router 发现列表（避免注册后加载必 404）
+    warning = None
+    try:
+        derived = _derive_router_id(body.model_path)
+        if derived:
+            known = {m["id"] for m in router_client.list_models_sync()}
+            if derived not in known and derived.lower() not in {k.lower() for k in known}:
+                warning = f"模型文件 {body.model_path} 不在 router 发现列表中（router ID 应为 {derived}），加载可能失败"
+    except Exception:
+        pass
+    resp = {"id": sid, "name": body.name, "status": "unloaded"}
+    if warning:
+        resp["warning"] = warning
+    return resp
 
 
 @router.get("/{sid}")
@@ -364,62 +377,102 @@ def update_service(sid: int, body: ServiceUpdate):
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router"""
-    model_name = _resolve_model_name(sid)
+    """加载模型到 router（用 router ID 而非自定义 name）"""
+    svc = _resolve_model_name(sid)
+    name = svc["name"]
+    router_id = _match_router_id(svc.get("model_path", "")) or name
     try:
-        result = router_client.load_model_sync(model_name)
+        result = router_client.load_model_sync(router_id)
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
         return {"ok": True, "status": "loaded", "detail": result}
     except RuntimeError as e:
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), model_name))
+            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
         raise HTTPException(400, str(e))
 
 
 @router.post("/{sid}/stop")
 def stop_service(sid: int):
-    """从 router 卸载模型（支持 DB id 或按名称）"""
-    model_name = _resolve_model_name(sid)
+    """从 router 卸载模型（用 router ID）"""
+    svc = _resolve_model_name(sid)
+    name = svc["name"]
+    router_id = _match_router_id(svc.get("model_path", "")) or name
     try:
-        result = router_client.unload_model_sync(model_name)
+        result = router_client.unload_model_sync(router_id)
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE name=?", (now(), model_name))
+            conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE name=?", (now(), name))
         return {"ok": True, "status": "unloaded", "detail": result}
     except RuntimeError as e:
         raise HTTPException(400, str(e))
 
 
-def _resolve_model_name(sid) -> str:
-    """将 DB id 解析为模型名；若 DB 无记录则尝试直接按名称（router 发现模式）"""
+def _resolve_model_name(sid) -> dict:
+    """将 DB id 解析为服务记录（name + model_path + router_id）"""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-    if row:
-        return dict(row)["name"]
-    # DB 无记录：sid 可能是模型名（字符串）？不，路由是 int。尝试用 router 发现列表匹配序号
-    raise HTTPException(404, "模型不存在，请先刷新模型列表")
+    if not row:
+        raise HTTPException(404, "模型不存在，请先刷新模型列表")
+    d = dict(row)
+    # 从 model_path 推导 router ID（router 以文件 basename 去扩展名作模型 ID）
+    d["router_id"] = _derive_router_id(d.get("model_path", ""))
+    return d
+
+
+def _derive_router_id(model_path: str) -> str:
+    """从 model_path 推导路由器模型 ID：
+    - .gguf/.safetensors 文件 -> basename 去扩展名
+    - 目录 -> 目录名
+    如 /models/Qwen3.5-9B-Q6_K.gguf -> Qwen3.5-9B-Q6_K"""
+    if not model_path:
+        return ""
+    from pathlib import Path as _P
+    p = _P(model_path)
+    if p.suffix in (".gguf", ".safetensors", ".bin"):
+        return p.stem
+    return p.name
+
+
+def _match_router_id(model_path: str) -> str:
+    """推导 router ID 并与 router 实际发现列表校验匹配，找不到则兜底用推导值"""
+    derived = _derive_router_id(model_path)
+    if not derived:
+        return derived
+    try:
+        known = {m["id"] for m in router_client.list_models_sync()}
+        if derived in known:
+            return derived
+        # 推导值不在列表，尝试精确匹配（大小写/前缀）
+        for kid in known:
+            if kid.lower() == derived.lower():
+                return kid
+    except Exception:
+        pass
+    return derived
 
 
 @router.post("/{sid}/restart")
 def restart_service(sid: int):
-    """重启模型：先卸载再加载（尽力而为）"""
-    model_name = _resolve_model_name(sid)
+    """重启模型：先卸载再加载（用 router ID）"""
+    svc = _resolve_model_name(sid)
+    name = svc["name"]
+    router_id = _match_router_id(svc.get("model_path", "")) or name
     # 先尝试卸载（失败不阻断，继续加载）
     try:
-        router_client.unload_model_sync(model_name)
+        router_client.unload_model_sync(router_id)
         import time
         time.sleep(2)  # 等待 router 完成卸载清理
     except RuntimeError:
         pass  # 卸载失败不阻断重启流程
     # 重新加载
     try:
-        result = router_client.load_model_sync(model_name)
+        result = router_client.load_model_sync(router_id)
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), model_name))
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
         return {"ok": True, "status": "loaded", "detail": result}
     except RuntimeError as e:
         with get_conn() as conn:
-            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), model_name))
+            conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
         raise HTTPException(400, str(e))
 
 
@@ -433,10 +486,11 @@ def delete_service(sid: int):
             raise HTTPException(404, "模型不存在")
         d = dict(row)
         model_name = d["name"]
+        router_id = _match_router_id(d.get("model_path", "")) or model_name
 
-    # 若已加载，先卸载进程（参照 restart 逻辑，失败不阻断删除）
+    # 若已加载，先卸载进程（用 router ID，参照 restart 逻辑，失败不阻断删除）
     try:
-        router_client.unload_model_sync(model_name)
+        router_client.unload_model_sync(router_id)
     except RuntimeError:
         pass  # 卸载失败不阻断删除流程
 

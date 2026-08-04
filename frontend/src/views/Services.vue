@@ -133,7 +133,7 @@
     <el-dialog v-model="createVisible" title="注册模型" width="720px" top="8vh">
       <el-form :model="form" label-width="110px">
         <el-form-item label="模型名称" required>
-          <el-input v-model="form.name" placeholder="如 qwen3.5-9b" />
+          <el-input v-model="form.name" placeholder="显示名（加载按模型文件自动匹配）" />
         </el-form-item>
         <el-form-item label="模型路径" required>
           <el-select v-if="!useManualPath" v-model="form.model_path" filterable placeholder="选择已下载模型" style="width:100%">
