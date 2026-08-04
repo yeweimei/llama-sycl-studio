@@ -117,8 +117,10 @@ def _scan_models():
     if not base.exists():
         return models
 
-    # 1) 直接 gguf 文件
+    # 1) 直接 gguf 文件（排除 mmproj 投影文件）
     for f in sorted(base.glob("*.gguf")):
+        if f.name.startswith("mmproj"):
+            continue
         meta = parse_gguf_meta(f)
         size = f.stat().st_size
         models.append({
@@ -141,6 +143,8 @@ def _scan_models():
             continue
         if ggufs:
             for f in ggufs[:3]:  # 每目录最多 3 个 gguf，避免大目录卡死
+                if f.name.startswith("mmproj"):
+                    continue
                 meta = parse_gguf_meta(f)
                 size = f.stat().st_size
                 models.append({

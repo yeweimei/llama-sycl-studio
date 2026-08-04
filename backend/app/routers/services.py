@@ -129,9 +129,11 @@ def list_services():
             d = dict(r)
             d["args"] = json.loads(d["args"] or "{}")
             db_models[d["name"]] = d
-        # 自动注册 router 发现但 DB 没有的模型
+        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件）
         for rm in router_models:
             mid = rm["id"]
+            if mid.startswith("mmproj"):
+                continue
             if mid not in db_models:
                 cur = conn.execute(
                     "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
@@ -164,13 +166,14 @@ def list_services():
         loaded_detail = loaded_map.get(mid, {})
         proc = _extract_proc_info(loaded_detail) if is_loaded else {"port": None, "device": None, "device_label": None, "pid": None, "loaded_at": None}
         # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
+        # （路径统一用 Path().parent，兼容根目录/子目录模型）
         has_mmproj = False
         mmproj_path = ""
         mp = db_info.get("model_path", "")
         if mp:
             from pathlib import Path as _P
-            mm_dir = _P(settings.model_dir) / mp.replace("/models/", "").rsplit("/", 1)[0]
             try:
+                mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
                 found = sorted(mm_dir.glob("mmproj*.gguf"))
                 if found:
                     has_mmproj = True
@@ -200,6 +203,20 @@ def list_services():
     # DB 中有但 router 未发现的模型（可能文件不存在）
     for name, db_info in db_models.items():
         if name not in seen:
+            # 检测 mmproj（同样路径逻辑）
+            hm = False
+            hmp = ""
+            mp_ = db_info.get("model_path", "")
+            if mp_:
+                from pathlib import Path as _P
+                try:
+                    mm_dir = (_P(settings.model_dir) / mp_.replace("/models/", "")).parent
+                    found = sorted(mm_dir.glob("mmproj*.gguf"))
+                    if found:
+                        hm = True
+                        hmp = str(found[0])
+                except Exception:
+                    pass
             result.append({
                 "id": db_info["id"],
                 "name": name,
@@ -214,6 +231,8 @@ def list_services():
                 "device_label": None,
                 "pid": None,
                 "loaded_at": None,
+                "has_mmproj": hm,
+                "mmproj_path": hmp,
                 "created_at": db_info.get("created_at"),
                 "updated_at": db_info.get("updated_at"),
             })
@@ -292,13 +311,14 @@ def get_service(sid: int):
         d["loaded_info"] = {}
 
     # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
+    # （路径统一用 Path().parent，兼容根目录/子目录模型）
     d["has_mmproj"] = False
     d["mmproj_path"] = ""
     mp = d.get("model_path", "")
     if mp:
         from pathlib import Path as _P
-        mm_dir = _P(settings.model_dir) / mp.replace("/models/", "").rsplit("/", 1)[0]
         try:
+            mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
             found = sorted(mm_dir.glob("mmproj*.gguf"))
             if found:
                 d["has_mmproj"] = True
