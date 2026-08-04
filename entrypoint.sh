@@ -7,9 +7,9 @@ ROUTER_PORT="${ROUTER_PORT:-8070}"
 WEBUI_PORT="${WEBUI_PORT:-9100}"
 MODELS_DIR="${MODELS_DIR:-/models}"
 MODELS_MAX="${MODELS_MAX:-3}"
-# router 全局上下文预算：子模型 ctx 被钳制在此值（llama.cpp router 行为），
-# 需要大上下文模型时调大（如 32768 / 131072）
-ROUTER_CTX="${ROUTER_CTX:-8192}"
+# router 全局上下文预算：0 = 从各模型 preset 的 ctx-size 加载（推荐，
+# 支持每个模型单独控制上下文）；>0 时钳制所有子模型 ctx 为此值
+ROUTER_CTX="${ROUTER_CTX:-0}"
 LLAMA_SERVER="/app/llama-server"
 STUDIO_DIR="/app/studio"
 

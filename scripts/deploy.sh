@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_HOST_DIR="${MODELS_HOST_DIR:-}"
 WEBUI_PORT="${WEBUI_PORT:-9100}"
 MODELS_MAX="${MODELS_MAX:-3}"
-ROUTER_CTX="${ROUTER_CTX:-8192}"
+ROUTER_CTX="${ROUTER_CTX:-0}"  # 0=各模型 preset 独立控制
 CONTAINER_NAME="${CONTAINER_NAME:-llama-studio}"
 DATA_VOLUME="${DATA_VOLUME:-llama-studio-data}"
 
