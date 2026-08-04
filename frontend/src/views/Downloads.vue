@@ -150,6 +150,29 @@
       <el-empty v-if="!tasks.length" description="暂无下载任务" :image-size="60" />
     </el-card>
     <!-- 标签编辑对话框 -->
+    <!-- mmproj 版本选择弹窗 -->
+    <el-dialog v-model="mmprojDialogVisible" title="多模态投影文件（mmproj）" width="520px">
+      <div style="margin-bottom:12px;color:#606266;font-size:13px">
+        该仓库包含多模态投影文件。选择要联动下载的版本（用于图片识别能力）：
+      </div>
+      <el-radio-group v-model="mmprojChoice" style="display:flex;flex-direction:column;gap:8px">
+        <el-radio :value="'__auto__'" border style="width:100%">
+          自动选择（第一个版本）
+        </el-radio>
+        <el-radio v-for="f in mmprojFiles" :key="f.filename" :value="f.filename" border style="width:100%">
+          <span>{{ f.filename }}</span>
+          <el-tag size="small" style="margin-left:6px">{{ fmtSize(f.size) }}</el-tag>
+        </el-radio>
+        <el-radio :value="'__none__'" border style="width:100%">
+          不下载 mmproj（纯文本）
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="mmprojDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="!!downloadingFile" @click="confirmDownload">开始下载</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="tagDialogVisible" :title="`编辑标签 - ${editingTagModel}`" width="480px">
       <div style="margin-bottom:12px">
         <div style="font-size:13px;color:#606266;margin-bottom:8px">预置标签</div>
@@ -185,6 +208,10 @@ const selectedRepo = ref(null)
 const files = ref([])
 const listingFiles = ref(false)
 const downloadingFile = ref('')
+const mmprojDialogVisible = ref(false)
+const mmprojFiles = ref([])
+const mmprojChoice = ref('__auto__')
+const pendingDownload = ref(null)  // 待确认下载的 {row}
 const tasks = ref([])
 const showHot = ref(true)
 const tagMap = ref({})
@@ -294,15 +321,57 @@ async function selectRepo(row) {
 }
 
 async function doDownload(row) {
+  // 主文件是 mmproj 本身时直接下载；否则检查仓库 mmproj 并弹窗选择
+  if (row.is_mmproj) {
+    downloadingFile.value = row.filename
+    try {
+      await startDownload({ source: form.value.source, repo_id: selectedRepo.value.repo_id, filename: row.filename, include_mmproj: false })
+      ElMessage.success(`开始下载 ${row.filename}`)
+      loadTasks()
+    } catch (e) {
+      ElMessage.error(e.response?.data?.detail || '下载启动失败')
+    } finally {
+      downloadingFile.value = ''
+    }
+    return
+  }
+  // 找仓库里的 mmproj 文件
+  const mmprojs = files.value.filter(f => f.is_mmproj)
+  if (mmprojs.length) {
+    pendingDownload.value = row
+    mmprojFiles.value = mmprojs
+    mmprojChoice.value = '__auto__'
+    mmprojDialogVisible.value = true
+  } else {
+    await confirmDownload()
+  }
+}
+
+async function confirmDownload() {
+  const row = pendingDownload.value
+  if (!row) return
+  mmprojDialogVisible.value = false
   downloadingFile.value = row.filename
   try {
-    await startDownload({ source: form.value.source, repo_id: selectedRepo.value.repo_id, filename: row.filename })
+    // mmproj 参数：__none__ → 不联动；__auto__ → 后端自动选第一个；其他 → 指定版本
+    let mmprojFilename = null
+    let includeMmproj = true
+    if (mmprojChoice.value === '__none__') includeMmproj = false
+    else if (mmprojChoice.value && mmprojChoice.value !== '__auto__') mmprojFilename = mmprojChoice.value
+    await startDownload({
+      source: form.value.source,
+      repo_id: selectedRepo.value.repo_id,
+      filename: row.filename,
+      include_mmproj: includeMmproj,
+      mmproj_filename: mmprojFilename,
+    })
     ElMessage.success(`开始下载 ${row.filename}`)
     loadTasks()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '下载启动失败')
   } finally {
     downloadingFile.value = ''
+    pendingDownload.value = null
   }
 }
 

@@ -25,6 +25,7 @@ class DownloadRequest(BaseModel):
     filename: Optional[str] = None       # 指定文件；None = 列出可选
     mirror: Optional[str] = None         # hf-mirror.com 等
     include_mmproj: bool = True          # 是否联动下载 mmproj 投影文件
+    mmproj_filename: Optional[str] = None  # 手动指定 mmproj 版本（如 mmproj-Q8_0.gguf）；空=自动选第一个
 
 
 @router.get("/sources")
@@ -208,20 +209,26 @@ def start_download(body: DownloadRequest):
             else:
                 repo_files = _list_huggingface(body.repo_id)
             mmproj_files = [f for f in repo_files if f.get("is_mmproj")]
-            if mmproj_files:
-                mm = mmproj_files[0]
-                mm_name = Path(mm["filename"]).name
+            # 手动指定版本优先；否则自动选第一个
+            picked = None
+            if body.mmproj_filename:
+                wanted = Path(body.mmproj_filename).name
+                picked = next((f for f in mmproj_files if Path(f["filename"]).name == wanted), None)
+            if picked is None and mmproj_files:
+                picked = mmproj_files[0]
+            if picked:
+                mm_name = Path(picked["filename"]).name
                 mm_target = target_dir / mm_name
                 if not mm_target.exists():
                     with get_conn() as conn:
                         cur2 = conn.execute(
                             "INSERT INTO download_tasks (source, repo_id, filename, local_path, status, created_at, updated_at) "
                             "VALUES (?,?,?,?, 'downloading', ?, ?)",
-                            (body.source, body.repo_id, mm["filename"], str(mm_target), now(), now()),
+                            (body.source, body.repo_id, picked["filename"], str(mm_target), now(), now()),
                         )
                         mm_tid = cur2.lastrowid
-                    _launch_worker(mm_tid, body.source, body.repo_id, mm["filename"], str(mm_target), body.mirror)
-                    linked.append({"id": mm_tid, "filename": mm["filename"]})
+                    _launch_worker(mm_tid, body.source, body.repo_id, picked["filename"], str(mm_target), body.mirror)
+                    linked.append({"id": mm_tid, "filename": picked["filename"]})
         except Exception:
             pass  # 联动失败不阻断主下载
 
