@@ -104,12 +104,72 @@ def health():
 _V1_PROXY_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
 
 
+def _resolve_instance_base(model_name: str) -> str | None:
+    """按模型名解析实例 base url（per-model 架构）"""
+    try:
+        from app.database import get_conn
+        from app import instance_mgr
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM services WHERE name=?", (model_name,)
+            ).fetchone()
+        if not row:
+            # 尝试用 router_id 匹配
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT id FROM services WHERE model_path LIKE ?", (f"%/{model_name}.gguf",)
+                ).fetchone()
+        if not row:
+            return None
+        sid = row["id"]
+        st = instance_mgr.instance_status(sid)
+        if st.get("running"):
+            return instance_mgr.url_for(sid)
+        return None
+    except Exception:
+        return None
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def v1_proxy(path: str, request: Request):
-    """反向代理 /v1/* 到内部 router（支持 SSE 流式）"""
-    import httpx
+    """反向代理 /v1/* 到对应模型实例（per-model 架构，支持 SSE 流式）
 
-    target_url = f"{settings.router_url}/v1/{path}"
+    根据请求体 model 字段路由到该模型的独立 llama-server 实例；
+    无法解析模型（如 /v1/models）时回退到 router（若仍存在）。
+    """
+    import httpx
+    import json as _json
+
+    # 读取请求体（先解析 model 字段用于路由）
+    body = await request.body()
+    model_name = ""
+    if body:
+        try:
+            _payload = _json.loads(body)
+            model_name = str(_payload.get("model") or _payload.get("model_id") or "")
+        except Exception:
+            pass
+
+    # 路由到模型实例
+    target_base = None
+    if model_name:
+        target_base = _resolve_instance_base(model_name)
+    if not target_base:
+        # 回退：旧 router（兼容）
+        target_base = settings.router_url
+    target_url = f"{target_base}/v1/{path}"
+
+    # 记录模型调用时间（空闲自动卸载用）
+    if model_name:
+        idle_unload.touch_model_usage(model_name)
+    elif body:
+        try:
+            _payload = _json.loads(body)
+            _m2 = _payload.get("model") or _payload.get("model_id") or ""
+            if _m2:
+                idle_unload.touch_model_usage(str(_m2))
+        except Exception:
+            pass
 
     # 转发请求头
     headers = dict(request.headers)

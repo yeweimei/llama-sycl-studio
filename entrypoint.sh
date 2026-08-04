@@ -61,52 +61,32 @@ else
     echo "⬢ 无卷内激活版本，使用镜像内置引擎（b387 默认）"
 fi
 
-# ========== 启动 llama-server (router mode) ==========
-echo "⬢ 启动 llama-server router..."
-
-# 构建 router 启动参数
-ROUTER_ARGS=(
-    --models-dir "${MODELS_DIR}"
-    --models-max "${MODELS_MAX}"
-    --embeddings
-    --metrics
-    -c "${ROUTER_CTX}"
-    --flash-attn on
-    --jinja
-    --host 0.0.0.0
-    --port "${ROUTER_PORT}"
-)
-
-# 如果有 config.ini，加 --models-preset
-if [ -f "${MODELS_DIR}/config.ini" ]; then
-    echo "  发现 config.ini，启用 --models-preset"
-    ROUTER_ARGS+=(--models-preset "${MODELS_DIR}/config.ini")
+# ========== 模型实例模式（per-model）==========
+# 架构：每个模型一个独立 llama-server 实例（由 WebUI 进程管理），
+# 不再启动中心 router。如需旧 router 模式，设 LLAMA_START_ROUTER=1。
+ROUTER_PID=""
+if [ "${LLAMA_START_ROUTER:-0}" = "1" ]; then
+    echo "⬢ 启动 llama-server router（兼容模式）..."
+    ROUTER_ARGS=(
+        --models-dir "${MODELS_DIR}"
+        --models-max "${MODELS_MAX}"
+        --embeddings --metrics
+        -c "${ROUTER_CTX}"
+        --flash-attn on --jinja
+        --host 0.0.0.0 --port "${ROUTER_PORT}"
+    )
+    if [ -f "${MODELS_DIR}/config.ini" ]; then
+        ROUTER_ARGS+=(--models-preset "${MODELS_DIR}/config.ini")
+    fi
+    DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
+    LOG_FILE="${DATA_DIR}/router.log"
+    mkdir -p "${DATA_DIR}"
+    "${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > >(while IFS= read -r line; do echo "$(date '+%Y-%m-%d %H:%M:%S') ${line}"; done > "${LOG_FILE}") 2>&1 &
+    ROUTER_PID=$!
+    echo "  Router PID: ${ROUTER_PID}"
+else
+    echo "⬢ per-model 实例模式（模型由 WebUI 按需启动，ctx 各自独立）"
 fi
-
-DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
-LOG_FILE="${DATA_DIR}/router.log"
-mkdir -p "${DATA_DIR}"
-
-# 启动 llama-server，stdout/stderr 经 while read 加 ISO 时间戳前缀后写入 router.log
-# （llama.cpp 原生日志是相对时间戳 0.00.859.603，无法按时间过滤，加前缀后支持 since/until）
-# 注：用 while read 而非 awk —— mawk 对非 tty 输出全缓冲，fflush 不生效导致日志写不出去
-"${LLAMA_SERVER}" "${ROUTER_ARGS[@]}" > >(while IFS= read -r line; do echo "$(date '+%Y-%m-%d %H:%M:%S') ${line}"; done > "${LOG_FILE}") 2>&1 &
-ROUTER_PID=$!
-echo "  Router PID: ${ROUTER_PID}"
-echo "  Log file:   ${LOG_FILE}"
-
-# 等待 router 就绪
-echo "⬢ 等待 router 就绪..."
-for i in $(seq 1 60); do
-    if curl -s "http://127.0.0.1:${ROUTER_PORT}/health" > /dev/null 2>&1; then
-        echo "  Router 就绪 (${i}s)"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo "  ⚠ Router 60s 内未就绪，继续启动 WebUI..."
-    fi
-    sleep 1
-done
 
 # ========== 启动 WebUI ==========
 echo "⬢ 启动 WebUI..."
@@ -121,7 +101,7 @@ WEBUI_PID=$!
 echo "  WebUI PID: ${WEBUI_PID}"
 
 # ========== 优雅退出 ==========
-trap 'echo "⬢ 收到终止信号，正在关闭..."; kill -TERM $ROUTER_PID $WEBUI_PID 2>/dev/null; wait $ROUTER_PID $WEBUI_PID 2>/dev/null; echo "⬢ 已关闭"; exit 0' TERM INT
+trap 'echo "⬢ 收到终止信号，正在关闭..."; [ -n "$ROUTER_PID" ] && kill -TERM $ROUTER_PID 2>/dev/null; kill -TERM $WEBUI_PID 2>/dev/null; wait $WEBUI_PID 2>/dev/null; echo "⬢ 已关闭"; exit 0' TERM INT
 
 echo "⬢ 所有服务已启动"
 echo "  WebUI:  http://0.0.0.0:${WEBUI_PORT}"

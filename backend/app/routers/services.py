@@ -186,31 +186,117 @@ def _extract_proc_info(loaded_detail: dict) -> dict:
 
 
 @router.get("")
+
+def _resolve_model_name(sid) -> dict:
+    """将 DB id 解析为服务记录（name + model_path）"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "模型不存在，请先刷新模型列表")
+    d = dict(row)
+    d["router_id"] = _derive_router_id(d.get("model_path", ""))
+    return d
+
+
+def _preset_params(model_name: str) -> dict:
+    """从 model_presets 表读取预设参数，转为 llama.cpp 启动参数 dict
+    （kebab-case 键名）。查不到时返回空 dict。"""
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_presets WHERE model_name=?", (model_name,)
+            ).fetchone()
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    d = dict(row)
+    params = {}
+    mapping = {
+        "ctx_size": "ctx-size", "temp": "temperature", "threads": "threads",
+        "batch_size": "batch-size", "ubatch_size": "ubatch-size", "parallel": "parallel",
+        "cache_type_k": "cache-type-k", "cache_type_v": "cache-type-v",
+        "n_gpu_layers": "n-gpu-layers",
+    }
+    for db_key, router_key in mapping.items():
+        v = d.get(db_key)
+        if v not in (None, ""):
+            params[router_key] = v
+    if d.get("flash_attn"):
+        params["flash-attn"] = "on"
+    if d.get("jinja"):
+        params["jinja"] = "on"
+    if not d.get("mmap", 1):
+        params["no-mmap"] = "on"
+    dev = d.get("device") or ""
+    if dev and dev != "0":
+        params["device"] = dev if dev.startswith("SYCL") or dev.startswith("CPU") else f"SYCL{dev}"
+    try:
+        extra = json.loads(d.get("extra_args") or "{}")
+    except Exception:
+        extra = {}
+    sampling = extra.pop("sampling", None) if isinstance(extra, dict) else None
+    if isinstance(sampling, dict):
+        smap = {
+            "top_k": "top-k", "top_p": "top-p", "min_p": "min-p",
+            "typical_p": "typical-p", "repeat_penalty": "repeat-penalty",
+            "presence_penalty": "presence-penalty",
+            "frequency_penalty": "frequency-penalty",
+            "seed": "seed", "mirostat": "mirostat",
+            "mirostat_lr": "mirostat-lr", "mirostat_ent": "mirostat-ent",
+        }
+        for db_key, router_key in smap.items():
+            v = sampling.get(db_key)
+            if v in (None, ""):
+                continue
+            params[router_key] = v
+    for k, v in extra.items():
+        params[k] = v
+    return params
+
+
+def _derive_router_id(model_path: str) -> str:
+    """从 model_path 推导模型 ID：
+    - .gguf/.safetensors 文件 -> basename 去扩展名
+    - 目录 -> 目录名
+    如 /models/Qwen3.5-9B-Q6_K.gguf -> Qwen3.5-9B-Q6_K"""
+    if not model_path:
+        return ""
+    from pathlib import Path as _P
+    p = _P(model_path)
+    if p.suffix in (".gguf", ".safetensors", ".bin"):
+        return p.stem
+    return p.name
+
+
+def _match_router_id(model_path: str) -> str:
+    """从 model_path 推导模型 ID（per-model 实例架构，不依赖 router）：
+    - 文件名去扩展名；子目录模型取父目录名
+    如 /models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf -> Qwen3.5-9B-GGUF"""
+    derived = _derive_router_id(model_path)
+    if not derived:
+        return derived
+    from pathlib import Path as _P
+    parent = _P(model_path).parent.name
+    if parent and parent != "/" and parent != "models" and parent != derived:
+        return parent
+    return derived
+
+
 def list_services():
-    """列出模型池：合并 DB 注册的模型 + router 发现的模型（自动注册发现的新模型）"""
-    # 从 router 获取实时状态
-    router_models = router_client.list_models_sync()
-    loaded_info = router_client.get_loaded_models_sync()
+    """列出模型池：DB 注册模型 + 目录扫描自动注册 + 实例状态
 
-    # 构建 loaded 模型的详情映射（router /models 接口，data 数组）
-    loaded_map = {}
-    if isinstance(loaded_info, list):
-        for m in loaded_info:
-            mid = m.get("model", m.get("id", ""))
-            if mid:
-                loaded_map[mid] = m
-    elif isinstance(loaded_info, dict):
-        for m in loaded_info.get("data", []):
-            mid = m.get("model", m.get("id", ""))
-            if mid:
-                loaded_map[mid] = m
+    架构（per-model 实例）：每个服务一个独立 llama-server 进程，
+    状态从 instance_mgr 读取；目录扫描自动注册新模型。
+    """
+    from app import instance_mgr
+    from app.routers.models import _scan_models
 
-    # 从 DB 获取注册的模型元信息，并自动注册 router 发现的新模型（按 name upsert）
+    # 目录扫描发现的模型（自动注册新模型）
+    scanned = _scan_models()
+
     db_models = {}
-    # 已删除墓碑：这些 router ID 不再自动注册（硬删除语义）
     deleted_names = set()
-    # 子目录模型的 router ID（目录名）-> 实际文件路径映射，用于自动注册和输出
-    path_by_id = _model_path_from_loaded(loaded_info)
     with get_conn() as conn:
         try:
             del_rows = conn.execute("SELECT name FROM deleted_models").fetchall()
@@ -222,52 +308,56 @@ def list_services():
             d = dict(r)
             d["args"] = json.loads(d["args"] or "{}")
             db_models[d["name"]] = d
-        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件 + 已删除墓碑）
-        for rm in router_models:
-            mid = rm["id"]
+        # 自动注册目录扫描发现的模型（排除 mmproj + 已删除墓碑）
+        for sm in scanned:
+            mid = sm["name"]
             if mid.startswith("mmproj"):
                 continue
             if mid in deleted_names:
-                continue  # 已被用户删除，不自动复活
+                continue
             if mid not in db_models:
-                # 优先用 router 报告的实际文件路径（子目录模型 ID=目录名，不能拼 /models/{id}.gguf）
-                real_path = path_by_id.get(mid) or f"/models/{mid}.gguf"
                 cur = conn.execute(
                     "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
                     "VALUES (?,?, '{}', 'unloaded', ?, ?)",
-                    (mid, real_path, now(), now()),
+                    (mid, sm["path"], now(), now()),
                 )
                 db_models[mid] = {
-                    "id": cur.lastrowid, "name": mid, "model_path": real_path,
+                    "id": cur.lastrowid, "name": mid, "model_path": sm["path"],
                     "args": {}, "status": "unloaded",
                     "created_at": now(), "updated_at": now(),
                 }
 
-    # 合并：router 发现的所有模型 + DB 注册的模型
+    # 实例状态映射
+    inst_map = instance_mgr.all_instances()
+
     result = []
     seen = set()
-
-    for rm in router_models:
-        mid = rm["id"]
+    # 输出：先目录扫描到的（有实例状态），再 DB 有但文件不在的
+    for mid, db_info in db_models.items():
         if mid.startswith("mmproj"):
-            continue  # mmproj 投影文件不是可加载模型，输出层也排除
+            continue
         if mid in deleted_names:
-            continue  # 已删除，输出层也排除
+            continue
         seen.add(mid)
-        db_info = db_models.get(mid, {})
-        # 状态：优先 router /models 的 status.value，回退 /v1/models 的 status
-        state = rm.get("status", "unloaded")
-        if mid in loaded_map:
-            st = loaded_map[mid].get("status")
-            if isinstance(st, dict):
-                state = router_client._parse_status(st.get("value", ""))
-            elif isinstance(st, str):
-                state = router_client._parse_status(st)
-        is_loaded = state == "loaded"
-        loaded_detail = loaded_map.get(mid, {})
-        proc = _extract_proc_info(loaded_detail) if is_loaded else {"port": None, "device": None, "device_label": None, "pid": None, "loaded_at": None}
-        # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
-        # （路径统一用 Path().parent，兼容根目录/子目录模型）
+        sid = db_info.get("id", 0)
+        ist = inst_map.get(sid, {})
+        running = bool(ist)
+        loaded_detail = {}
+        # 尝试从实例 /models 拿 meta（端口探测）
+        port = ist.get("port")
+        if port:
+            try:
+                import httpx
+                with httpx.Client(timeout=2) as c:
+                    r = c.get(f"http://127.0.0.1:{port}/models")
+                if r.status_code == 200:
+                    data = r.json()
+                    arr = data.get("data", []) if isinstance(data, dict) else data
+                    if arr:
+                        loaded_detail = arr[0]
+            except Exception:
+                pass
+        # 检测 mmproj
         has_mmproj = False
         mmproj_path = ""
         mp = db_info.get("model_path", "")
@@ -282,69 +372,27 @@ def list_services():
             except Exception:
                 pass
         result.append({
-            "id": db_info.get("id", 0),
+            "id": sid,
             "name": mid,
-            "model_path": db_info.get("model_path") or path_by_id.get(mid) or f"/models/{mid}.gguf",
+            "model_path": db_info.get("model_path") or "",
             "args": db_info.get("args", {}),
             "gpu_id": db_info.get("gpu_id", ""),
             "idle_unload_min": db_info.get("idle_unload_min", 0),
             "last_used_at": db_info.get("last_used_at", 0),
-            "status": state,
-            "loaded": is_loaded,
+            "status": "loaded" if running else "unloaded",
+            "loaded": running,
             "loaded_info": loaded_detail,
-            "port": proc["port"],
-            "device": proc["device"],
-            "device_label": proc["device_label"],
-            "pid": proc["pid"],
-            "loaded_at": proc["loaded_at"],
+            "port": port,
+            "device": None,
+            "device_label": None,
+            "pid": ist.get("pid"),
+            "loaded_at": ist.get("started_at"),
             "supports_chat": _supports_chat(mid, loaded_detail),
             "has_mmproj": has_mmproj,
             "mmproj_path": mmproj_path,
             "created_at": db_info.get("created_at"),
             "updated_at": db_info.get("updated_at"),
         })
-
-    # DB 中有但 router 未发现的模型（可能文件不存在）
-    for name, db_info in db_models.items():
-        if name.startswith("mmproj"):
-            continue  # 防御：旧脏数据也不输出
-        if name not in seen:
-            # 检测 mmproj（同样路径逻辑）
-            hm = False
-            hmp = ""
-            mp_ = db_info.get("model_path", "")
-            if mp_:
-                from pathlib import Path as _P
-                try:
-                    mm_dir = (_P(settings.model_dir) / mp_.replace("/models/", "")).parent
-                    found = sorted(mm_dir.glob("mmproj*.gguf"))
-                    if found:
-                        hm = True
-                        hmp = str(found[0])
-                except Exception:
-                    pass
-            result.append({
-                "id": db_info["id"],
-                "name": name,
-                "model_path": db_info["model_path"],
-                "args": db_info["args"],
-                "gpu_id": db_info.get("gpu_id", ""),
-                "idle_unload_min": db_info.get("idle_unload_min", 0),
-                "last_used_at": db_info.get("last_used_at", 0),
-                "status": "unavailable",
-                "loaded": False,
-                "loaded_info": {},
-                "port": None,
-                "device": None,
-                "device_label": None,
-                "pid": None,
-                "loaded_at": None,
-                "supports_chat": _supports_chat(name, {}),
-                "has_mmproj": hm,
-                "mmproj_path": hmp,
-                "created_at": db_info.get("created_at"),
-                "updated_at": db_info.get("updated_at"),
-            })
 
     return result
 
@@ -420,37 +468,29 @@ def get_service(sid: int):
         raise HTTPException(404, "模型不存在")  # mmproj 投影文件不是模型
     d["args"] = json.loads(d["args"] or "{}")
 
-    # 查 router 实时状态
-    router_models = router_client.list_models_sync()
-    loaded_info = router_client.get_loaded_models_sync()
-    loaded_map = {}
-    if isinstance(loaded_info, list):
-        for m in loaded_info:
-            mid = m.get("model", m.get("id", ""))
-            if mid:
-                loaded_map[mid] = m
-    elif isinstance(loaded_info, dict):
-        for m in loaded_info.get("data", []):
-            mid = m.get("model", m.get("id", ""))
-            if mid:
-                loaded_map[mid] = m
-
-    rm = next((m for m in router_models if m["id"] == d["name"]), None)
-    if rm:
-        state = rm.get("status", "unloaded")
-        if d["name"] in loaded_map:
-            st = loaded_map[d["name"]].get("status")
-            if isinstance(st, dict):
-                state = router_client._parse_status(st.get("value", ""))
-            elif isinstance(st, str):
-                state = router_client._parse_status(st)
-        d["loaded"] = state == "loaded"
-        d["status"] = state
-        d["loaded_info"] = loaded_map.get(d["name"], {})
-    else:
-        d["loaded"] = False
-        d["status"] = "unavailable"
-        d["loaded_info"] = {}
+    # 实例状态（per-model 独立进程）
+    from app import instance_mgr
+    ist = instance_mgr.instance_status(sid)
+    running = ist.get("running", False)
+    d["loaded"] = running
+    d["status"] = "loaded" if running else "unloaded"
+    d["port"] = ist.get("port")
+    d["pid"] = ist.get("pid")
+    d["loaded_at"] = ist.get("started_at")
+    # 从实例 /models 拿 meta（若运行中）
+    d["loaded_info"] = {}
+    if running:
+        try:
+            import httpx
+            with httpx.Client(timeout=2) as c:
+                r = c.get(f"{instance_mgr.url_for(sid)}/models")
+            if r.status_code == 200:
+                data = r.json()
+                arr = data.get("data", []) if isinstance(data, dict) else data
+                if arr:
+                    d["loaded_info"] = arr[0]
+        except Exception:
+            pass
     d["supports_chat"] = _supports_chat(d.get("name", ""), d.get("loaded_info") or {})
 
     # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
@@ -497,48 +537,40 @@ def update_service(sid: int, body: ServiceUpdate):
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router（用 router ID 而非自定义 name，携带预设参数）
+    """启动模型独立实例（per-model ctx，用预设的 ctx_size）
 
-    注意：router 的 /models/load 是异步接口（spawn 后立即返回），
-    模型实际加载需数秒到数十秒。这里轮询等待真正 ready 再返回，
-    避免前端在模型未就绪时立即对话导致请求挂起。
+    每个服务一个独立 llama-server 进程，上下文由该模型预设控制。
+    轮询等待健康检查通过再返回（避免前端在未就绪时对话）。
     """
+    from app import instance_mgr
     svc = _resolve_model_name(sid)
     name = svc["name"]
-    router_id = _match_router_id(svc.get("model_path", "")) or name
-    params = _preset_params(name)
+    model_path = svc.get("model_path", "")
     try:
-        result = router_client.load_model_sync(router_id, params or None)
-        # 轮询等待模型完全就绪（子进程 listening，meta 有值）
+        result = instance_mgr.start_instance(sid, name, model_path)
+        # 轮询等待实例健康（最多 150s）
         import time as _t
+        import httpx
         ready = False
-        for _ in range(40):  # 最多等 120s（每 3s 一次）
+        base = instance_mgr.url_for(sid)
+        for _ in range(50):
             _t.sleep(3)
             try:
-                loaded_info = router_client.get_loaded_models_sync()
-                items = loaded_info
-                if isinstance(loaded_info, dict):
-                    items = loaded_info.get("data", [])
-                if isinstance(items, list):
-                    for m in items:
-                        if m.get("id") == router_id:
-                            st = m.get("status") if isinstance(m.get("status"), dict) else {}
-                            meta = m.get("meta") or {}
-                            if st.get("value") == "loaded" and meta.get("n_ctx"):
-                                ready = True
-                            break
+                with httpx.Client(timeout=3) as c:
+                    r = c.get(f"{base}/health")
+                if r.status_code == 200:
+                    ready = True
+                    break
             except Exception:
                 pass
-            if ready:
-                break
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
         return {
-            "ok": True, "status": "loaded", "detail": result, "preset_params": params,
+            "ok": True, "status": "loaded", "detail": result, "port": result.get("port"),
             "ready": ready,
             "ready_hint": "模型已就绪" if ready else "模型仍在加载中（加载完成前对话请求会排队等待）",
         }
-    except RuntimeError as e:
+    except Exception as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
         raise HTTPException(400, str(e))
@@ -546,231 +578,58 @@ def start_service(sid: int):
 
 @router.post("/{sid}/stop")
 def stop_service(sid: int):
-    """从 router 卸载模型（用 router ID）"""
+    """停止模型实例（终止独立进程）"""
+    from app import instance_mgr
     svc = _resolve_model_name(sid)
     name = svc["name"]
-    router_id = _match_router_id(svc.get("model_path", "")) or name
     try:
-        result = router_client.unload_model_sync(router_id)
+        result = instance_mgr.stop_instance(sid)
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='unloaded', updated_at=? WHERE name=?", (now(), name))
         return {"ok": True, "status": "unloaded", "detail": result}
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(400, str(e))
-
-
-def _resolve_model_name(sid) -> dict:
-    """将 DB id 解析为服务记录（name + model_path + router_id）"""
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-    if not row:
-        raise HTTPException(404, "模型不存在，请先刷新模型列表")
-    d = dict(row)
-    # 从 model_path 推导 router ID（router 以文件 basename 去扩展名作模型 ID）
-    d["router_id"] = _derive_router_id(d.get("model_path", ""))
-    return d
-
-
-def _preset_params(model_name: str) -> dict:
-    """从 model_presets 表读取预设参数，转为 router /models/load 请求体格式
-    （kebab-case 键名，与 llama.cpp 参数一致）。查不到时返回空 dict。"""
-    try:
-        with get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM model_presets WHERE model_name=?", (model_name,)
-            ).fetchone()
-    except Exception:
-        return {}
-    if not row:
-        return {}
-    d = dict(row)
-    params = {}
-    # 基本参数（跳过空值）
-    mapping = {
-        "ctx_size": "ctx-size",
-        "temp": "temperature",
-        "threads": "threads",
-        "batch_size": "batch-size",
-        "ubatch_size": "ubatch-size",
-        "parallel": "parallel",
-        "cache_type_k": "cache-type-k",
-        "cache_type_v": "cache-type-v",
-        "n_gpu_layers": "n-gpu-layers",
-    }
-    for db_key, router_key in mapping.items():
-        v = d.get(db_key)
-        if v not in (None, ""):
-            params[router_key] = v
-    # 布尔开关
-    if d.get("flash_attn"):
-        params["flash-attn"] = "on"
-    if d.get("jinja"):
-        params["jinja"] = "on"
-    if not d.get("mmap", 1):
-        params["no-mmap"] = "on"
-    # 设备
-    dev = d.get("device") or ""
-    if dev and dev != "0":
-        params["device"] = dev if dev.startswith("SYCL") or dev.startswith("CPU") else f"SYCL{dev}"
-    # extra_args（直接透传，如 mmproj 等）
-    try:
-        extra = json.loads(d.get("extra_args") or "{}")
-    except Exception:
-        extra = {}
-    # sampling 子对象：转 llama.cpp kebab-case 参数（跳过默认值/禁用值）
-    sampling = extra.pop("sampling", None) if isinstance(extra, dict) else None
-    if isinstance(sampling, dict):
-        # 参数名映射（kebab-case）
-        smap = {
-            "top_k": "top-k", "top_p": "top-p", "min_p": "min-p",
-            "typical_p": "typical-p", "repeat_penalty": "repeat-penalty",
-            "presence_penalty": "presence-penalty",
-            "frequency_penalty": "frequency-penalty",
-            "seed": "seed", "mirostat": "mirostat",
-            "mirostat_lr": "mirostat-lr", "mirostat_ent": "mirostat-ent",
-        }
-        for db_key, router_key in smap.items():
-            v = sampling.get(db_key)
-            if v in (None, ""):
-                continue
-            # 跳过 llama.cpp 的默认/禁用值（不传 = 用默认）
-            if db_key == "top_k" and v == 40: continue
-            if db_key in ("top_p", "min_p", "typical_p", "repeat_penalty") and float(v) in (1.0, 0.0):
-                # top_p=1.0 / typical_p=1.0 / repeat_penalty=1.0 表示禁用，min_p=0.0 禁用
-                if db_key == "top_p" and float(v) >= 0.999: continue
-                if db_key == "typical_p" and float(v) >= 0.999: continue
-                if db_key == "repeat_penalty" and abs(float(v) - 1.0) < 1e-6: continue
-                if db_key == "min_p" and float(v) < 1e-6: continue
-            if db_key == "presence_penalty" and abs(float(v)) < 1e-6: continue
-            if db_key == "frequency_penalty" and abs(float(v)) < 1e-6: continue
-            if db_key == "seed" and int(v) == -1: continue
-            if db_key == "mirostat" and int(v) == 0: continue
-            params[router_key] = v
-    for k, v in extra.items():
-        params[k] = v
-    return params
-
-
-def _derive_router_id(model_path: str) -> str:
-    """从 model_path 推导路由器模型 ID：
-    - .gguf/.safetensors 文件 -> basename 去扩展名
-    - 目录 -> 目录名
-    如 /models/Qwen3.5-9B-Q6_K.gguf -> Qwen3.5-9B-Q6_K"""
-    if not model_path:
-        return ""
-    from pathlib import Path as _P
-    p = _P(model_path)
-    if p.suffix in (".gguf", ".safetensors", ".bin"):
-        return p.stem
-    return p.name
-
-
-def _match_router_id(model_path: str) -> str:
-    """推导 router ID 并与 router 实际发现列表校验匹配，找不到则兜底用推导值
-
-    匹配优先级：
-    1. 文件名推导值（basename 去扩展名）精确匹配
-    2. 大小写不敏感匹配
-    3. 子目录模型：父目录名匹配（llama.cpp router 对 models-dir 下子目录
-       用目录名作为模型 ID，如 /models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
-       -> ID 为 Qwen3.5-9B-GGUF）
-    4. 按 --model 实际启动参数反查（最可靠，覆盖自定义 preset 场景）
-    """
-    derived = _derive_router_id(model_path)
-    if not derived:
-        return derived
-    try:
-        known = {m["id"] for m in router_client.list_models_sync()}
-        if derived in known:
-            return derived
-        # 推导值不在列表，尝试精确匹配（大小写/前缀）
-        for kid in known:
-            if kid.lower() == derived.lower():
-                return kid
-    except Exception:
-        pass
-
-    # 子目录模型：父目录名匹配（llama.cpp router 以目录名做 ID）
-    try:
-        from pathlib import Path as _P
-        parent_name = _P(model_path).parent.name
-        if parent_name and parent_name != "/":
-            known = {m["id"] for m in router_client.list_models_sync()}
-            if parent_name in known:
-                return parent_name
-            for kid in known:
-                if kid.lower() == parent_name.lower():
-                    return kid
-    except Exception:
-        pass
-
-    # 按 --model 实际启动参数反查（覆盖 preset 名与路径不一致的场景）
-    try:
-        loaded = router_client.get_loaded_models_sync()
-        if isinstance(loaded, dict):
-            loaded = loaded.get("data", [])
-        for m in loaded:
-            st = m.get("status") if isinstance(m.get("status"), dict) else {}
-            args = st.get("args") or []
-            if isinstance(args, str):
-                args = args.split()
-            for i, a in enumerate(args):
-                if a == "--model" and i + 1 < len(args):
-                    if args[i + 1] == model_path:
-                        return m.get("id", m.get("model", ""))
-    except Exception:
-        pass
-
-    return derived
 
 
 @router.post("/{sid}/restart")
 def restart_service(sid: int):
-    """重启模型：先卸载再加载（用 router ID，携带预设参数，等待真正就绪）"""
+    """重启模型：停止实例再启动（等待真正就绪）"""
+    from app import instance_mgr
     svc = _resolve_model_name(sid)
     name = svc["name"]
-    router_id = _match_router_id(svc.get("model_path", "")) or name
-    params = _preset_params(name)
-    # 先尝试卸载（失败不阻断，继续加载）
+    model_path = svc.get("model_path", "")
+    # 先停止（失败不阻断）
     try:
-        router_client.unload_model_sync(router_id)
+        instance_mgr.stop_instance(sid)
         import time
-        time.sleep(2)  # 等待 router 完成卸载清理
-    except RuntimeError:
-        pass  # 卸载失败不阻断重启流程
-    # 重新加载
+        time.sleep(2)
+    except Exception:
+        pass
+    # 启动
     try:
-        result = router_client.load_model_sync(router_id, params or None)
-        # 轮询等待真正就绪（同 start_service）
+        result = instance_mgr.start_instance(sid, name, model_path)
         import time as _t
+        import httpx
         ready = False
-        for _ in range(40):
+        base = instance_mgr.url_for(sid)
+        for _ in range(50):
             _t.sleep(3)
             try:
-                loaded_info = router_client.get_loaded_models_sync()
-                items = loaded_info
-                if isinstance(loaded_info, dict):
-                    items = loaded_info.get("data", [])
-                if isinstance(items, list):
-                    for m in items:
-                        if m.get("id") == router_id:
-                            st = m.get("status") if isinstance(m.get("status"), dict) else {}
-                            meta = m.get("meta") or {}
-                            if st.get("value") == "loaded" and meta.get("n_ctx"):
-                                ready = True
-                            break
+                with httpx.Client(timeout=3) as c:
+                    r = c.get(f"{base}/health")
+                if r.status_code == 200:
+                    ready = True
+                    break
             except Exception:
                 pass
-            if ready:
-                break
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
         return {
-            "ok": True, "status": "loaded", "detail": result, "preset_params": params,
+            "ok": True, "status": "loaded", "detail": result, "port": result.get("port"),
             "ready": ready,
             "ready_hint": "模型已就绪" if ready else "模型仍在加载中（加载完成前对话请求会排队等待）",
         }
-    except RuntimeError as e:
+    except Exception as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
         raise HTTPException(400, str(e))
@@ -788,10 +647,11 @@ def delete_service(sid: int):
         model_name = d["name"]
         router_id = _match_router_id(d.get("model_path", "")) or model_name
 
-    # 若已加载，先卸载进程（用 router ID，失败不阻断删除）
+    # 若已加载，先停止实例进程（失败不阻断删除）
     try:
-        router_client.unload_model_sync(router_id)
-    except RuntimeError:
+        from app import instance_mgr
+        instance_mgr.stop_instance(sid)
+    except Exception:
         pass
 
     with get_conn() as conn:
@@ -827,7 +687,10 @@ def service_logs(sid: int, tail: int = 200, since: Optional[str] = None, until: 
         raise HTTPException(404, "模型不存在")
     d = dict(row)
 
-    log_file = Path(settings.data_dir) / "router.log"
+    # per-model 实例日志：instances/{name}.log
+    from app import instance_mgr
+    inst_log = Path(settings.data_dir) / "instances" / f"{d['name']}.log"
+    log_file = inst_log if inst_log.exists() else Path(settings.data_dir) / "router.log"
     if not log_file.exists():
         return {"logs": "（日志文件不存在，模型未启动或未产生日志）", "total": 0, "file": str(log_file)}
 
@@ -965,7 +828,7 @@ def _normalize_messages(messages: list) -> list:
 
 @router.post("/{sid}/chat")
 async def chat_proxy(sid: int, body: ChatRequest):
-    """转发到 router 的 OpenAI 兼容端点（支持流式）"""
+    """转发到该模型实例的 OpenAI 兼容端点（支持流式）"""
     import httpx
     from fastapi.responses import StreamingResponse
 
@@ -974,11 +837,17 @@ async def chat_proxy(sid: int, body: ChatRequest):
     if not row:
         raise HTTPException(404, "模型不存在")
     d = dict(row)
-    # 用 router ID（与启停同一套匹配逻辑）作为请求 model 字段，
-    # 避免自定义 name 与 router 模型 ID 不一致导致 chat 404
+    # 用 router ID（与启停同一套匹配逻辑）作为请求 model 字段
     model_name = _match_router_id(d.get("model_path", "")) or d["name"]
 
-    url = f"{settings.router_url}/v1/chat/completions"
+    # per-model 实例路由
+    from app import instance_mgr
+    ist = instance_mgr.instance_status(sid)
+    if not ist.get("running"):
+        raise HTTPException(400, f"模型 {model_name} 未启动，请先启动模型")
+    url = f"{instance_mgr.url_for(sid)}/v1/chat/completions"
+    # 记录调用时间（空闲自动卸载）
+    instance_mgr.touch_usage(sid)
     headers = {"Content-Type": "application/json"}
 
     payload = {

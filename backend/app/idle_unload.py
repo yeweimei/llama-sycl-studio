@@ -31,29 +31,20 @@ def touch_model_usage(model_name: str):
 
 
 def _check_once():
-    """执行一次检查：找出超时的已加载模型并卸载"""
-    from app import router_client
+    """执行一次检查：找出超时的已运行实例并停止"""
+    from app import instance_mgr
 
     unloaded = []
     try:
-        # 已加载模型列表
-        loaded_info = router_client.get_loaded_models_sync()
-        items = loaded_info
-        if isinstance(loaded_info, dict):
-            items = loaded_info.get("data", [])
-        loaded_ids = set()
-        if isinstance(items, list):
-            for m in items:
-                st = m.get("status") if isinstance(m.get("status"), dict) else {}
-                if st.get("value") == "loaded":
-                    loaded_ids.add(m.get("id", ""))
-        if not loaded_ids:
+        # 运行中的实例
+        inst_map = instance_mgr.all_instances()
+        if not inst_map:
             return unloaded
 
         # 查所有服务的空闲阈值和最后调用时间
         with get_conn() as conn:
             rows = conn.execute(
-                "SELECT name, model_path, idle_unload_min, last_used_at FROM services"
+                "SELECT id, name, model_path, idle_unload_min, last_used_at FROM services"
             ).fetchall()
             del_names = {r["name"] for r in conn.execute("SELECT name FROM deleted_models").fetchall()}
 
@@ -63,7 +54,8 @@ def _check_once():
             name = d["name"]
             if name in del_names:
                 continue
-            if name not in loaded_ids:
+            sid = d["id"]
+            if sid not in inst_map:
                 continue
             idle_min = d.get("idle_unload_min") or 0
             if idle_min <= 0:
@@ -72,15 +64,12 @@ def _check_once():
             last_used = d.get("last_used_at") or 0
             idle_seconds = t_now - last_used
             if idle_seconds >= idle_min * 60:
-                # 匹配 router ID 并卸载
                 try:
-                    from app.routers.services import _match_router_id
-                    router_id = _match_router_id(d.get("model_path", "")) or name
-                    router_client.unload_model_sync(router_id)
+                    instance_mgr.stop_instance(sid)
                     with get_conn() as conn:
                         conn.execute(
-                            "UPDATE services SET status='unloaded', updated_at=? WHERE name=?",
-                            (now(), name),
+                            "UPDATE services SET status='unloaded', updated_at=? WHERE id=?",
+                            (now(), sid),
                         )
                     unloaded.append({"model": name, "idle_minutes": idle_min})
                     logger.info("空闲超时自动卸载模型: %s（空闲 %ds > %dmin）", name, idle_seconds, idle_min)
@@ -88,6 +77,7 @@ def _check_once():
                     logger.warning("自动卸载 %s 失败: %s", name, e)
     except Exception as e:
         logger.error("idle check 异常: %s", e)
+    return unloaded
     return unloaded
 
 
