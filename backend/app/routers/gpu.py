@@ -24,73 +24,77 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
 def _parse_xpu_smi_query() -> list[dict]:
     """解析 xpu-smi 输出，返回设备列表
     XE1 硬件不支持 memory.utilization / clocks.current.soc / temperature，
-    所以从 table 输出解析（更可靠），同时用 --query-gpu 补充精确数值。
+    核显（id=0）的 power/energy 也是 N/A，需逐字段容错。
+    双 GPU（核显 id=0 + 独显 id=1）分别查询。
     """
-    # 1) 用 --query-gpu 获取精确数值（只查支持的 5 个字段）
-    out = _run([
-        "xpu-smi", "--query-gpu=memory.used,memory.total,power.draw,power.limit,energy.consumed",
-        "--format=csv,noheader", "--id=0"
-    ], timeout=10)
-    if not out.strip():
-        return []
-    parts = [p.strip() for p in out.strip().split(",")]
-    if len(parts) < 5:
-        return []
-    try:
-        mem_used = float(parts[0])
-        mem_total = float(parts[1])
-        power_draw = float(parts[2])
-        power_limit = float(parts[3])
-        energy_j = float(parts[4])
-    except (ValueError, IndexError):
-        return []
+    devices = []
+    # 遍历两个 GPU id（0=核显, 1=独显），每个独立查询，N/A 字段容错
+    for gpu_id in (0, 1):
+        out = _run([
+            "xpu-smi", "--query-gpu=memory.used,memory.total,power.draw,power.limit,energy.consumed",
+            "--format=csv,noheader", f"--id={gpu_id}"
+        ], timeout=10)
+        if not out.strip():
+            continue
+        parts = [p.strip() for p in out.strip().split(",")]
+        if len(parts) < 5:
+            continue
 
-    # 2) 从 table 输出提取设备名、PCI BDF、显存利用率（从百分比推算）
-    name = "Intel GPU"
-    pci_bdf = ""
-    mem_util_pct = None
-    dump = _run(["xpu-smi"], timeout=10)
-    if dump:
-        for line in dump.splitlines():
-            line_s = line.strip()
-            # 匹配 PCI BDF（格式 0000:03:00.0）
-            m_bdf = re.search(r'(0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])', line_s, re.IGNORECASE)
-            if m_bdf and not pci_bdf:
-                pci_bdf = m_bdf.group(1)
-            # 匹配设备名 - 从 Driver 行之后的第一行或 Name 列
-            # table 格式: |   0                          Off             | 0000:03:00.0      Off      |
-            # 实际设备名在 GPU 行，但 XE1 可能不显示名。用 Intel GPU 兜底
-            if 'Arc' in line_s or 'Iris' in line_s or 'Graphics' in line_s:
-                m_name = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'-]*)', line_s)
-                if m_name:
-                    name = m_name.group(1).strip()
-            # 匹配显存百分比: | 28MiB / 16288MiB           |      N/A       Default |
-            # 也尝试从 | N/A  26W / 117W 行解析功耗（已有 query-gpu，跳过）
-            m_mem = re.search(r'(\d+)MiB\s*/\s*(\d+)MiB', line_s)
-            if m_mem:
-                used_mib = int(m_mem.group(1))
-                total_mib = int(m_mem.group(2))
-                if total_mib > 0:
-                    mem_util_pct = round(used_mib / total_mib * 100)
+        def _f(v):
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return None
 
-    mem_total_mib = int(round(mem_total))
-    mem_used_mib = int(round(mem_used))
-    if mem_util_pct is None and mem_total_mib > 0:
-        mem_util_pct = round(mem_used_mib / mem_total_mib * 100)
+        mem_used = _f(parts[0])
+        mem_total = _f(parts[1])
+        power_draw = _f(parts[2])
+        power_limit = _f(parts[3])
+        energy_j = _f(parts[4])
+        if mem_used is None or mem_total is None:
+            continue  # 该设备查不到内存，跳过
 
-    return [{
-        "id": 0,
-        "pci_bdf": pci_bdf or None,
-        "name": name,
-        "memory_used_mib": mem_used_mib,
-        "memory_total_mib": mem_total_mib,
-        "memory_util_pct": mem_util_pct,
-        "power_draw_w": round(power_draw, 1),
-        "power_limit_w": round(power_limit, 1),
-        "frequency_mhz": None,  # XE1 不支持 clocks.current.soc
-        "energy_consumed_j": int(round(energy_j)),
-        "temperature_c": None,  # XE1 硬件限制，N/A
-    }]
+        # 从 table 输出提取 PCI BDF、设备名、显存百分比
+        name = "Intel GPU"
+        pci_bdf = ""
+        mem_util_pct = None
+        dump = _run(["xpu-smi"], timeout=10)
+        if dump:
+            for line in dump.splitlines():
+                line_s = line.strip()
+                m_bdf = re.search(r'(0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])', line_s, re.IGNORECASE)
+                if m_bdf and not pci_bdf:
+                    pci_bdf = m_bdf.group(1)
+                if 'Arc' in line_s or 'Iris' in line_s or 'Graphics' in line_s:
+                    m_name = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'-]*)', line_s)
+                    if m_name:
+                        name = m_name.group(1).strip()
+                m_mem = re.search(r'(\d+)MiB\s*/\s*(\d+)MiB', line_s)
+                if m_mem:
+                    used_mib = int(m_mem.group(1))
+                    total_mib = int(m_mem.group(2))
+                    if total_mib > 0:
+                        mem_util_pct = round(used_mib / total_mib * 100)
+
+        mem_total_mib = int(round(mem_total))
+        mem_used_mib = int(round(mem_used))
+        if mem_util_pct is None and mem_total_mib > 0:
+            mem_util_pct = round(mem_used_mib / mem_total_mib * 100)
+
+        devices.append({
+            "id": gpu_id,
+            "pci_bdf": pci_bdf or None,
+            "name": name,
+            "memory_used_mib": mem_used_mib,
+            "memory_total_mib": mem_total_mib,
+            "memory_util_pct": mem_util_pct,
+            "power_draw_w": round(power_draw, 1) if power_draw is not None else None,
+            "power_limit_w": round(power_limit, 1) if power_limit is not None else None,
+            "frequency_mhz": None,  # XE1 不支持 clocks.current.soc
+            "energy_consumed_j": int(round(energy_j)) if energy_j is not None else None,
+            "temperature_c": None,  # XE1 硬件限制，N/A
+        })
+    return devices
 
 
 def _parse_xpu_smi_processes() -> list[dict]:
