@@ -206,24 +206,16 @@ def _list_local_versions() -> list[dict]:
 
 
 def _fetch_releases(per_page: int = 10) -> list[dict]:
-    """从 GitHub API 获取可用版本列表"""
+    """从 GitHub API 获取可用版本列表（走设置页代理，与模型下载一致）"""
     import urllib.request
     url = f"{GITHUB_API}?per_page={per_page}"
     req = urllib.request.Request(url, headers={
         "User-Agent": "llama-studio/1.0",
         "Accept": "application/vnd.github+json",
     })
-    # 走代理
-    proxy_settings = proxy.get_settings()
-    if proxy_settings.get("proxy_enabled") == "1" and proxy_settings.get("proxy_url"):
-        handler = urllib.request.ProxyHandler({
-            "http": proxy_settings["proxy_url"],
-            "https": proxy_settings["proxy_url"],
-        })
-        opener = urllib.request.build_opener(handler)
-        urllib.request.install_opener(opener)
-
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    # 走代理（复用 downloads.py 同款逻辑：每次请求独立 opener，不污染全局）
+    opener = proxy.build_opener()
+    with opener.open(req, timeout=30) as resp:
         data = json.loads(resp.read())
 
     result = []
@@ -314,17 +306,10 @@ def engine_upgrade(body: UpgradeRequest):
     archive_path = tmp_dir / f"llama-{version}.tar.gz"
 
     try:
-        proxy_settings = proxy.get_settings()
         req = urllib.request.Request(download_url, headers={"User-Agent": "llama-studio/1.0"})
-        if proxy_settings.get("proxy_enabled") == "1" and proxy_settings.get("proxy_url"):
-            handler = urllib.request.ProxyHandler({
-                "http": proxy_settings["proxy_url"],
-                "https": proxy_settings["proxy_url"],
-            })
-            opener = urllib.request.build_opener(handler)
-            urllib.request.install_opener(opener)
-
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        # 走代理（同 downloads.py：独立 opener，不污染全局）
+        opener = proxy.build_opener()
+        with opener.open(req, timeout=600) as resp:
             with open(archive_path, "wb") as f:
                 shutil.copyfileobj(resp, f)
 
