@@ -7,6 +7,9 @@ ROUTER_PORT="${ROUTER_PORT:-8070}"
 WEBUI_PORT="${WEBUI_PORT:-9100}"
 MODELS_DIR="${MODELS_DIR:-/models}"
 MODELS_MAX="${MODELS_MAX:-3}"
+# router 全局上下文预算：子模型 ctx 被钳制在此值（llama.cpp router 行为），
+# 需要大上下文模型时调大（如 32768 / 131072）
+ROUTER_CTX="${ROUTER_CTX:-8192}"
 LLAMA_SERVER="/app/llama-server"
 STUDIO_DIR="/app/studio"
 
@@ -67,7 +70,7 @@ ROUTER_ARGS=(
     --models-max "${MODELS_MAX}"
     --embeddings
     --metrics
-    -c 8192
+    -c "${ROUTER_CTX}"
     --flash-attn on
     --jinja
     --host 0.0.0.0

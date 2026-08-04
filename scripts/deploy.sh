@@ -26,6 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_HOST_DIR="${MODELS_HOST_DIR:-}"
 WEBUI_PORT="${WEBUI_PORT:-9100}"
 MODELS_MAX="${MODELS_MAX:-3}"
+ROUTER_CTX="${ROUTER_CTX:-8192}"
 CONTAINER_NAME="${CONTAINER_NAME:-llama-studio}"
 DATA_VOLUME="${DATA_VOLUME:-llama-studio-data}"
 
@@ -85,6 +86,7 @@ ssh "$TARGET" "docker rm -f ${CONTAINER_NAME} 2>/dev/null || true; \
     -p ${WEBUI_PORT}:9100 \
     -e HOST_LAN_IP=${HOST_LAN_IP} \
     -e MODELS_MAX=${MODELS_MAX} \
+    -e ROUTER_CTX=${ROUTER_CTX} \
     -v '${MODELS_HOST_DIR}':/models \
     -v ${DATA_VOLUME}:/root/.llama-studio \
     ${DEVICE_ARGS} \
