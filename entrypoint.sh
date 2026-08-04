@@ -37,6 +37,20 @@ export LLAMA_STUDIO_DATA="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
 python3 -c "from app.routers.presets import _write_config_ini; r = _write_config_ini(); print('  config.ini:', 'OK' if r.get('ok') else 'SKIP/ERR', r.get('path',''))" 2>&1 | tail -2
 cd "${STUDIO_DIR}"
 
+# ========== 启动前：从卷激活引擎版本（升级成果跨重建持久化）==========
+DATA_DIR="${LLAMA_STUDIO_DATA:-/root/.llama-studio}"
+BIN_DIR="${DATA_DIR}/bin"
+ACTIVE_VERSION=""
+if [ -f "${BIN_DIR}/active_version" ]; then
+    ACTIVE_VERSION="$(cat "${BIN_DIR}/active_version" | tr -d '[:space:]')"
+fi
+if [ -n "${ACTIVE_VERSION}" ] && [ -d "${BIN_DIR}/${ACTIVE_VERSION}" ] && [ -e "${BIN_DIR}/${ACTIVE_VERSION}/llama-server" ]; then
+    echo "⬢ 激活卷内引擎版本: ${ACTIVE_VERSION}（从 ${BIN_DIR}/${ACTIVE_VERSION} 恢复到 /app/）"
+    cp -a "${BIN_DIR}/${ACTIVE_VERSION}/." /app/
+else
+    echo "⬢ 无卷内激活版本，使用镜像内置引擎（b387 默认）"
+fi
+
 # ========== 启动 llama-server (router mode) ==========
 echo "⬢ 启动 llama-server router..."
 

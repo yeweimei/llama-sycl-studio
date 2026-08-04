@@ -166,24 +166,50 @@ def _upsert_setting(conn, key: str, value: str):
         conn.execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, value))
 
 
+def _write_active_version(version: str):
+    """把当前生效版本写入卷内激活文件（BIN_DIR/active_version），
+    供 entrypoint.sh 启动时从卷恢复（重建容器不丢升级成果）"""
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    (BIN_DIR / "active_version").write_text(version)
+
+
+def _read_active_version() -> str:
+    """读取卷内激活版本号；无则返回空串"""
+    try:
+        f = BIN_DIR / "active_version"
+        if f.exists():
+            v = f.read_text().strip()
+            if v and (BIN_DIR / v).is_dir():
+                return v
+    except Exception:
+        pass
+    return ""
+
+
 def _get_current_version() -> str:
-    """检测当前 llama-server 版本"""
+    """检测当前 llama-server 版本，统一返回 bXXXXX 规范格式。
+    兼容两种输出：
+      - 新版: llama-server --version  b10246 (sha...)  -> b10246
+      - 旧版: version: 10200 (5f55650a7) built_with... -> b10200"""
     try:
         r = subprocess.run(
             [str(CURRENT_BIN), "--version"],
             capture_output=True, text=True, timeout=10,
         )
         output = (r.stdout + r.stderr).strip()
-        # 版本输出类似: llama-server --version  b387 (sha...)
+        import re
         for line in output.splitlines():
             line = line.strip()
-            if line.startswith("b") or "version" in line.lower():
-                # 提取 bXXXX 格式版本号
-                import re
-                m = re.search(r"b\d+", line)
-                if m:
-                    return m.group(0)
-        return output[:50] if output else "unknown"
+            # 优先 bXXXXX 格式
+            m = re.search(r"\bb\d+\b", line)
+            if m:
+                return m.group(0)
+        # 兼容旧版: version: 10200 (sha) -> 补 b 前缀
+        for line in output.splitlines():
+            m = re.search(r"version:\s*(\d+)", line)
+            if m:
+                return f"b{m.group(1)}"
+        return "unknown"
     except Exception:
         return "unknown"
 
@@ -336,7 +362,10 @@ def engine_upgrade(body: UpgradeRequest):
         if not replaced:
             raise RuntimeError("解压目录中未找到需要替换的 llama-server*/lib*")
 
-        # 记录到 DB
+        # 记录到 DB + 卷内激活文件（重建容器不丢）
+        # 确保新版本完整集在卷内有备份目录（entrypoint 恢复依赖 BIN_DIR/{version}/）
+        _backup_current_set(version)
+        _write_active_version(version)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
             _upsert_setting(conn, "engine_last_upgrade", str(now()))
@@ -372,6 +401,9 @@ def engine_rollback(body: RollbackRequest):
     try:
         _restore_set(version)
         _cleanup_residue(version)
+        # 确保回滚目标版本在卷内有目录备份（兼容旧格式单文件回滚场景）
+        _backup_current_set(version)
+        _write_active_version(version)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
         return {"ok": True, "version": version, "previous": current_ver,
