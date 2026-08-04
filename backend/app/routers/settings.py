@@ -12,6 +12,20 @@ from app import proxy
 router = APIRouter()
 
 
+# ---------- Router 全局上下文 ----------
+
+@router.get("/router-ctx")
+def get_router_ctx():
+    """读取 router 全局上下文（ROUTER_CTX 环境变量）
+
+    说明：llama.cpp router 模式下，所有子模型 ctx 被全局 -c 钳制，
+    模型预设里的 ctx_size 不生效。修改需在部署时设 ROUTER_CTX 并重启容器。
+    """
+    import os
+    val = os.environ.get("ROUTER_CTX", "8192")
+    return {"router_ctx": int(val) if str(val).isdigit() else 8192}
+
+
 # ---------- 网络代理 ----------
 
 class ProxySettings(BaseModel):

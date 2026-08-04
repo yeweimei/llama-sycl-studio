@@ -90,6 +90,7 @@ export const deleteTemplate = (id) => api.delete(`/settings/templates/${id}`).th
 export const getProxySettings = () => api.get('/settings/proxy').then(r => r.data)
 export const saveProxySettings = (data) => api.put('/settings/proxy', data).then(r => r.data)
 export const containerInfo = () => api.get('/settings/container-info').then(r => r.data)
+export const getRouterCtx = () => api.get('/settings/router-ctx').then(r => r.data)
 
 // ---------- 模型预设 ----------
 export const listPresets = () => api.get('/presets').then(r => r.data)

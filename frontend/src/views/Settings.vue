@@ -65,7 +65,14 @@
             </el-descriptions-item>
             <el-descriptions-item label="模型目录">{{ containerInfoData.model_dir || '-' }}</el-descriptions-item>
             <el-descriptions-item label="最大驻留">{{ containerInfoData.models_max || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="全局上下文">
+              <span class="mono">{{ routerCtx || '-' }}</span>
+              <el-tag size="small" type="warning" style="margin-left:6px">所有模型共用</el-tag>
+            </el-descriptions-item>
           </el-descriptions>
+          <el-alert type="warning" :closable="false" show-icon title="上下文说明"
+            description="llama.cpp router 模式下，所有模型的实际上下文由全局值统一控制（模型预设里的'上下文长度'不生效）。调整方式：部署时设置 ROUTER_CTX（如 ROUTER_CTX=32768）并重启容器。"
+            style="margin-top:8px" />
         </el-card>
 
         <!-- 模型预设 -->
@@ -286,7 +293,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listApiKeys, createApiKey, deleteApiKey, toggleApiKey,
-  listTemplates, deleteTemplate, containerInfo,
+  listTemplates, deleteTemplate, containerInfo, getRouterCtx,
   getProxySettings, saveProxySettings, authChangePassword,
   listPresets, createPreset, updatePreset, deletePreset, generateConfigIni,
   getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine,
@@ -297,6 +304,7 @@ const keys = ref([])
 const templates = ref([])
 const presets = ref([])
 const containerInfoData = ref({})
+const routerCtx = ref(null)
 const createKeyDialog = ref(false)
 const showKeyDialog = ref(false)
 const newKeyName = ref('')
@@ -393,7 +401,10 @@ function maskKey(k) {
 
 async function loadKeys() { keys.value = await listApiKeys() }
 async function loadTemplates() { templates.value = await listTemplates() }
-async function loadContainerInfo() { containerInfoData.value = await containerInfo() }
+async function loadContainerInfo() {
+  containerInfoData.value = await containerInfo()
+  try { const r = await getRouterCtx(); routerCtx.value = r.router_ctx } catch (e) { routerCtx.value = null }
+}
 async function loadPresets() { presets.value = await listPresets() }
 async function loadProxy() { proxyForm.value = await getProxySettings() }
 
