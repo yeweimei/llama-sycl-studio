@@ -481,14 +481,28 @@ function stopChat() {
 }
 
 const canChat = computed(() => service.value?.loaded)
-// 当前模型可用上下文（预设 ctx_size 优先，loaded_info 兜底），默认 8192
+// 当前模型可用上下文（决定 max_tokens 上限）
+// llama.cpp 机制：总 ctx(--ctx-size) 按 parallel(slot) 均分，meta.n_ctx 即每 slot 上下文；
+// max_tokens 上限 = 每 slot 上下文 × 0.75（预留 25% 给对话历史 prompt）
 const presets = ref([])
 const maxTokensLimit = computed(() => {
   const svc = service.value
   if (!svc) return 8192
   const preset = presets.value.find(p => p.model_name === svc.name)
-  const ctx = preset?.ctx_size || svc.loaded_info?.ctx_size || 8192
-  return Math.max(512, Math.min(8192, ctx))
+  // 每 slot 上下文：加载后 meta.n_ctx 最准（已均分），否则 ctx/parallel 推算
+  let perSlot = svc.loaded_info?.meta?.n_ctx
+  if (!perSlot) {
+    const ctx = preset?.ctx_size || svc.loaded_info?.ctx_size || 8192
+    // parallel：预设优先，loaded_info args 里 --parallel 兜底
+    let parallel = preset?.parallel
+    if (!parallel && svc.loaded_info?.args) {
+      const args = svc.loaded_info.args
+      const pi = Array.isArray(args) ? args.indexOf('--parallel') : -1
+      if (pi >= 0 && pi + 1 < args.length) parallel = parseInt(args[pi + 1])
+    }
+    perSlot = Math.floor(ctx / Math.max(1, parallel || 1))
+  }
+  return Math.max(512, Math.floor(perSlot * 0.75))
 })
 // 图片上传能力：以后端实际检测为准（模型目录有 mmproj 才显示）
 const isVisionModel = computed(() => !!service.value?.has_mmproj)
