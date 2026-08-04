@@ -36,10 +36,14 @@ ssh "$TARGET" "cd ~/projects/llama-sycl-studio && \
 
 # 4. 重启容器（保留数据卷 llama-studio-data）
 echo "[4/4] 重启容器..."
+# 探测宿主机局域网 IP（供客户端接入配置展示；容器内无法直接获取宿主机 IP）
+HOST_LAN_IP=$(ssh "$TARGET" "hostname -I | awk '{print \$1}'")
+echo "  LAN IP: ${HOST_LAN_IP}"
 ssh "$TARGET" "docker rm -f llama-studio 2>/dev/null || true; \
   docker volume create llama-studio-data >/dev/null 2>&1 || true; \
   docker run -d --name llama-studio --restart unless-stopped \
     -p 9100:9100 \
+    -e HOST_LAN_IP=${HOST_LAN_IP} \
     -v /home/zhangjiyu/models:/models \
     -v llama-studio-data:/root/.llama-studio \
     --device /dev/dri/card0 --device /dev/dri/renderD128 \
@@ -47,6 +51,7 @@ ssh "$TARGET" "docker rm -f llama-studio 2>/dev/null || true; \
     -e ZES_ENABLE_SYSMAN=1 -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
     llama-studio:latest && \
   sleep 8 && \
-  echo '✅ WebUI: http://\$(hostname -I | awk \"{print \\\$1}\"):9100'"
+  echo '✅ WebUI: http://\$(hostname -I | awk "{print \\\$1}"):9100'"
+
 
 echo "✅ 部署完成"

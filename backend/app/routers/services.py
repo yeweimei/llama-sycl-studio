@@ -908,6 +908,29 @@ async def chat_proxy(sid: int, body: ChatRequest):
 
 # ---------- 客户端配置导出 ----------
 
+def _detect_lan_ip() -> str:
+    """探测宿主机局域网 IP（供客户端接入配置使用）
+
+    优先顺序：
+    1. 环境变量 HOST_LAN_IP（部署脚本注入，最可靠）
+    2. 环境变量 LLAMA_HOST_IP（兼容旧配置）
+    3. socket 探测（容器内会拿到容器 IP，仅兜底）
+    """
+    import os as _os
+    for env in ("HOST_LAN_IP", "LLAMA_HOST_IP"):
+        v = (_os.environ.get(env) or "").strip()
+        if v and v != "<HOST-IP>":
+            return v
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "<HOST-IP>"
+
+
 @router.get("/{sid}/client-config")
 def client_config(sid: int):
     """生成 curl / openclaw / python 三种客户端配置片段"""
@@ -920,13 +943,7 @@ def client_config(sid: int):
     d = dict(row)
     model_name = d["name"]
 
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        host_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        host_ip = "<HOST-IP>"
+    host_ip = _detect_lan_ip()
 
     base = f"http://{host_ip}:{settings.webui_port}/v1"
     # 从 api_keys 表取第一个启用的 key 作为示例
