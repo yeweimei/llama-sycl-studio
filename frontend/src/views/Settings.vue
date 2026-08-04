@@ -71,7 +71,7 @@
             </el-descriptions-item>
           </el-descriptions>
           <el-alert type="warning" :closable="false" show-icon title="上下文说明"
-            description="llama.cpp router 模式下，所有模型的实际上下文由全局值统一控制（模型预设里的'上下文长度'不生效）。调整方式：部署时设置 ROUTER_CTX（如 ROUTER_CTX=32768）并重启容器。"
+            description="llama.cpp router 模式下，每个模型使用自身 GGUF 默认上下文（9B≈131K、小模型≈8K），模型预设里的'上下文长度'不生效。如需统一钳制所有模型，部署时设置 ROUTER_CTX（如 ROUTER_CTX=32768）并重启容器。"
             style="margin-top:8px" />
         </el-card>
 
