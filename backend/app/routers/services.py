@@ -497,6 +497,27 @@ class ChatRequest(BaseModel):
     extra: Optional[dict] = None
 
 
+def _normalize_messages(messages: list) -> list:
+    """规范化 messages：末尾必须是 user（剔除末尾空 assistant/连续 assistant）
+    防双请求/异常调用导致 llama.cpp 400 "Cannot have 2 or more assistant messages at the end"
+    """
+    msgs = [m for m in (messages or []) if isinstance(m, dict) and m.get("role")]
+    while msgs:
+        last = msgs[-1]
+        if last.get("role") == "assistant" and not str(last.get("content", "") or "").strip():
+            msgs.pop()  # 末尾空 assistant 剔除
+        else:
+            break
+    # 合并末尾连续 assistant（保留最后一条非空）
+    cleaned = []
+    for m in msgs:
+        if cleaned and m.get("role") == "assistant" and cleaned[-1].get("role") == "assistant":
+            cleaned[-1] = m  # 保留后一条
+        else:
+            cleaned.append(m)
+    return cleaned
+
+
 @router.post("/{sid}/chat")
 async def chat_proxy(sid: int, body: ChatRequest):
     """转发到 router 的 OpenAI 兼容端点（支持流式）"""
@@ -515,7 +536,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
 
     payload = {
         "model": model_name,
-        "messages": body.messages,
+        "messages": _normalize_messages(body.messages),
         "max_tokens": body.max_tokens,
         "stream": body.stream,
     }

@@ -295,6 +295,8 @@ function toggleThinking(index) {
 async function sendChat() {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value) return
+  // 同步置位防重入（必须在任何 await 之前，否则双击/连按会重复发送）
+  chatLoading.value = true
   // 构建消息内容（多模态图片）
   let userContent = text
   if (pendingImage.value) {
@@ -308,7 +310,6 @@ async function sendChat() {
   try { await addChatHistory(sid, { role: 'user', content: text }) } catch (e) { /* ignore */ }
   chatInput.value = ''
   pendingImage.value = null
-  chatLoading.value = true
   messages.value.push({ role: 'assistant', content: '', thinking: '' })
   const aiMsg = messages.value[messages.value.length - 1]
   scrollChat()
@@ -318,9 +319,11 @@ async function sendChat() {
     const payload = {
       messages: messages.value
         .filter(m => m.role !== 'thinking')
-        .map((m, idx) => {
+        // 剔除末尾空 assistant 占位（仅前端显示用，不发模型，避免末尾连续 assistant 校验失败）
+        .filter((m, i, arr) => !(m.role === 'assistant' && !m.content.trim() && i === arr.length - 1))
+        .map((m, idx, arr) => {
           // 最后一条用户消息用多模态内容
-          if (m.role === 'user' && idx === messages.value.length - 2 && Array.isArray(userContent)) {
+          if (m.role === 'user' && idx === arr.length - 1 && Array.isArray(userContent)) {
             return { role: 'user', content: userContent }
           }
           return {
