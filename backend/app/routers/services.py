@@ -418,15 +418,16 @@ def update_service(sid: int, body: ServiceUpdate):
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router（用 router ID 而非自定义 name）"""
+    """加载模型到 router（用 router ID 而非自定义 name，携带预设参数）"""
     svc = _resolve_model_name(sid)
     name = svc["name"]
     router_id = _match_router_id(svc.get("model_path", "")) or name
+    params = _preset_params(name)
     try:
-        result = router_client.load_model_sync(router_id)
+        result = router_client.load_model_sync(router_id, params or None)
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
-        return {"ok": True, "status": "loaded", "detail": result}
+        return {"ok": True, "status": "loaded", "detail": result, "preset_params": params}
     except RuntimeError as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
@@ -458,6 +459,57 @@ def _resolve_model_name(sid) -> dict:
     # 从 model_path 推导 router ID（router 以文件 basename 去扩展名作模型 ID）
     d["router_id"] = _derive_router_id(d.get("model_path", ""))
     return d
+
+
+def _preset_params(model_name: str) -> dict:
+    """从 model_presets 表读取预设参数，转为 router /models/load 请求体格式
+    （kebab-case 键名，与 llama.cpp 参数一致）。查不到时返回空 dict。"""
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_presets WHERE model_name=?", (model_name,)
+            ).fetchone()
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    d = dict(row)
+    params = {}
+    # 基本参数（跳过空值）
+    mapping = {
+        "ctx_size": "ctx-size",
+        "temp": "temperature",
+        "threads": "threads",
+        "batch_size": "batch-size",
+        "ubatch_size": "ubatch-size",
+        "parallel": "parallel",
+        "cache_type_k": "cache-type-k",
+        "cache_type_v": "cache-type-v",
+        "n_gpu_layers": "n-gpu-layers",
+    }
+    for db_key, router_key in mapping.items():
+        v = d.get(db_key)
+        if v not in (None, ""):
+            params[router_key] = v
+    # 布尔开关
+    if d.get("flash_attn"):
+        params["flash-attn"] = "on"
+    if d.get("jinja"):
+        params["jinja"] = "on"
+    if not d.get("mmap", 1):
+        params["no-mmap"] = "on"
+    # 设备
+    dev = d.get("device") or ""
+    if dev and dev != "0":
+        params["device"] = dev if dev.startswith("SYCL") or dev.startswith("CPU") else f"SYCL{dev}"
+    # extra_args（直接透传，如 mmproj 等）
+    try:
+        extra = json.loads(d.get("extra_args") or "{}")
+    except Exception:
+        extra = {}
+    for k, v in extra.items():
+        params[k] = v
+    return params
 
 
 def _derive_router_id(model_path: str) -> str:
@@ -535,10 +587,11 @@ def _match_router_id(model_path: str) -> str:
 
 @router.post("/{sid}/restart")
 def restart_service(sid: int):
-    """重启模型：先卸载再加载（用 router ID）"""
+    """重启模型：先卸载再加载（用 router ID，携带预设参数）"""
     svc = _resolve_model_name(sid)
     name = svc["name"]
     router_id = _match_router_id(svc.get("model_path", "")) or name
+    params = _preset_params(name)
     # 先尝试卸载（失败不阻断，继续加载）
     try:
         router_client.unload_model_sync(router_id)
@@ -548,10 +601,10 @@ def restart_service(sid: int):
         pass  # 卸载失败不阻断重启流程
     # 重新加载
     try:
-        result = router_client.load_model_sync(router_id)
+        result = router_client.load_model_sync(router_id, params or None)
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
-        return {"ok": True, "status": "loaded", "detail": result}
+        return {"ok": True, "status": "loaded", "detail": result, "preset_params": params}
     except RuntimeError as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
