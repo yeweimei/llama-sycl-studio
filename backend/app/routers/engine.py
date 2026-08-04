@@ -21,6 +21,23 @@ GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
 ASSET_PATTERN = "bin-ubuntu-sycl-fp16-x64.tar.gz"
 
 
+def _atomic_replace(src: Path, dst: Path):
+    """原子替换：先复制到同目录临时文件，再 os.replace 覆盖。
+    os.replace 对运行中文件是原子的（inode 替换），旧进程继续跑旧二进制，
+    新启动用新二进制。避免 Text file busy (ETXTBSY)。"""
+    tmp = dst.parent / f".{dst.name}.tmp.{os.getpid()}"
+    shutil.copy2(str(src), str(tmp))
+    os.chmod(str(tmp), 0o755)
+    os.replace(str(tmp), str(dst))
+
+
+def _upsert_setting(conn, key: str, value: str):
+    """安全的 upsert：先 UPDATE，rowcount=0 再 INSERT（兼容所有表结构）"""
+    cur = conn.execute("UPDATE app_settings SET value=? WHERE key=?", (value, key))
+    if cur.rowcount == 0:
+        conn.execute("INSERT INTO app_settings (key, value) VALUES (?,?)", (key, value))
+
+
 def _get_current_version() -> str:
     """检测当前 llama-server 版本"""
     try:
@@ -197,22 +214,13 @@ def engine_upgrade(body: UpgradeRequest):
         if new_bin.stat().st_size < 1_000_000:
             raise RuntimeError(f"二进制文件过小: {new_bin.stat().st_size} bytes")
 
-        # 步骤 5: 替换
-        shutil.copy2(str(new_bin), str(CURRENT_BIN))
-        os.chmod(str(CURRENT_BIN), 0o755)
+        # 步骤 5: 原子替换（避免 Text file busy）
+        _atomic_replace(new_bin, CURRENT_BIN)
 
         # 记录到 DB
         with get_conn() as conn:
-            conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES ('engine_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (version,),
-            )
-            conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES ('engine_last_upgrade', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(now()),),
-            )
+            _upsert_setting(conn, "engine_version", version)
+            _upsert_setting(conn, "engine_last_upgrade", str(now()))
 
         return {"ok": True, "version": version, "previous": current_ver,
                 "message": f"已升级到 {version}，需重启容器生效"}
@@ -220,8 +228,8 @@ def engine_upgrade(body: UpgradeRequest):
     except Exception as e:
         # 自动回滚
         if backup_path.exists():
-            shutil.copy2(str(backup_path), str(CURRENT_BIN))
-            os.chmod(str(CURRENT_BIN), 0o755)
+            try: _atomic_replace(backup_path, CURRENT_BIN)
+            except Exception: pass
         raise HTTPException(500, f"升级失败已回滚: {e}")
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
@@ -242,19 +250,14 @@ def engine_rollback(body: RollbackRequest):
         shutil.copy2(str(CURRENT_BIN), str(current_backup))
 
     try:
-        shutil.copy2(str(backup_path), str(CURRENT_BIN))
-        os.chmod(str(CURRENT_BIN), 0o755)
+        _atomic_replace(backup_path, CURRENT_BIN)
         with get_conn() as conn:
-            conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES ('engine_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (version,),
-            )
+            _upsert_setting(conn, "engine_version", version)
         return {"ok": True, "version": version, "previous": current_ver,
                 "message": f"已回滚到 {version}，需重启容器生效"}
     except Exception as e:
         # 恢复原版本
         if current_backup.exists():
-            shutil.copy2(str(current_backup), str(CURRENT_BIN))
-            os.chmod(str(CURRENT_BIN), 0o755)
+            try: _atomic_replace(current_backup, CURRENT_BIN)
+            except Exception: pass
         raise HTTPException(500, f"回滚失败已恢复: {e}")
