@@ -1,6 +1,7 @@
 """引擎版本管理 API - llama.cpp 二进制升级/回滚"""
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -42,41 +43,110 @@ def _is_valid_elf(path: Path) -> bool:
         return False
 
 
+def _sanitize_version(ver) -> str:
+    """版本字符串清洗：只保留 [A-Za-z0-9._-]，非法字符替换为 _；空值报错拒绝"""
+    if ver is None:
+        raise HTTPException(400, "版本号为空")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(ver)).strip("._")
+    if not cleaned:
+        raise HTTPException(400, f"版本号非法: {ver}")
+    return cleaned
+
+
+def _copy_entry(src: Path, dst: Path):
+    """复制条目：符号链接重建链接本身，普通文件 copy2（不穿透链接）"""
+    if src.is_symlink():
+        target = os.readlink(str(src))
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        os.symlink(target, str(dst))
+    elif src.is_file():
+        shutil.copy2(str(src), str(dst))
+
+
+def _restore_entry(src: Path, dst_dir: Path):
+    """恢复条目：符号链接重建，普通文件原子替换"""
+    dst = dst_dir / src.name
+    if src.is_symlink():
+        target = os.readlink(str(src))
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        os.symlink(target, str(dst))
+    elif src.is_file():
+        _atomic_replace(src, dst)
+
+
+def _replace_from_dir(src_dir: Path, dst_dir: Path) -> int:
+    """把 src_dir 中 llama-server*/lib* 条目替换到 dst_dir（符号链接重建，普通文件原子替换）
+    返回替换条目数"""
+    replaced = 0
+    for f in sorted(src_dir.iterdir()):
+        name = f.name
+        if name.startswith("llama-server") or name.startswith("lib"):
+            if f.is_symlink():
+                target = os.readlink(str(f))
+                dst = dst_dir / name
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                os.symlink(target, str(dst))
+                replaced += 1
+            elif f.is_file():
+                _atomic_replace(f, dst_dir / name)
+                replaced += 1
+    return replaced
+
+
+def _cleanup_residue(version: str):
+    """回滚后清理 /app 下不属于目标版本备份集的 lib*/llama-server* 残留（先 diff 清单）"""
+    dest = BIN_DIR / version
+    if not dest.is_dir():
+        return  # 旧格式单文件无法 diff 清单，跳过
+    backup_names = {p.name for p in dest.iterdir() if p.name.startswith("lib") or p.name.startswith("llama-server")}
+    app = _app_dir()
+    for p in list(app.glob("lib*")) + list(app.glob("llama-server*")):
+        if p.name not in backup_names:
+            try:
+                if p.is_symlink() or p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+
+
 def _app_dir() -> Path:
     return CURRENT_BIN.parent
 
 
 def _current_set_files() -> list[Path]:
-    """当前 /app 下的完整二进制集：llama-server + lib*.so"""
+    """当前 /app 下的完整二进制集：llama-server* + lib*（含 SONAME 符号链接）"""
     app = _app_dir()
     files = []
-    if CURRENT_BIN.exists():
-        files.append(CURRENT_BIN)
-    for lib in sorted(app.glob("lib*.so")):
-        files.append(lib)
+    for p in sorted(app.glob("llama-server*")):
+        files.append(p)
+    for p in sorted(app.glob("lib*")):
+        files.append(p)
     return files
 
 
 def _backup_current_set(version: str) -> Path:
-    """备份当前完整二进制集到 BIN_DIR/{version}/（幂等）"""
+    """备份当前完整二进制集到 BIN_DIR/{version}/（幂等，保留符号链接）"""
     dest = BIN_DIR / version
     dest.mkdir(parents=True, exist_ok=True)
     # 已有备份则跳过（幂等），避免覆盖
-    if (dest / "llama-server").exists():
+    if (dest / "llama-server").exists() or (dest / "llama-server").is_symlink():
         return dest
     for f in _current_set_files():
-        shutil.copy2(str(f), str(dest / f.name))
+        _copy_entry(f, dest / f.name)
     return dest
 
 
 def _restore_set(version: str):
-    """从 BIN_DIR/{version}/ 恢复完整集；兼容旧格式单文件 BIN_DIR/llama-server-bXXX"""
+    """从 BIN_DIR/{version}/ 恢复完整集（含符号链接）；兼容旧格式单文件 BIN_DIR/llama-server-bXXX"""
     dest = BIN_DIR / version
     if dest.is_dir():
         restored = False
-        for f in dest.iterdir():
-            if f.is_file():
-                _atomic_replace(f, _app_dir() / f.name)
+        for f in sorted(dest.iterdir()):
+            if f.name.startswith("lib") or f.name.startswith("llama-server"):
+                _restore_entry(f, _app_dir())
                 restored = True
         if not restored:
             raise RuntimeError(f"备份目录 {dest} 为空")
@@ -219,7 +289,7 @@ def engine_upgrade(body: UpgradeRequest):
     import tarfile
     import tempfile
 
-    version = body.version
+    version = _sanitize_version(body.version)
     if not version.startswith("b"):
         raise HTTPException(400, "版本号格式错误，应为 bXXXXX")
 
@@ -233,8 +303,8 @@ def engine_upgrade(body: UpgradeRequest):
     if not target:
         raise HTTPException(404, f"未找到版本 {version}")
 
-    # 步骤 1: 备份当前完整二进制集（llama-server + lib*.so）
-    current_ver = _get_current_version()
+    # 步骤 1: 备份当前完整二进制集（llama-server* + lib*，含符号链接）
+    current_ver = _sanitize_version(_get_current_version())
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     backup_dir = _backup_current_set(current_ver)
 
@@ -275,17 +345,11 @@ def engine_upgrade(body: UpgradeRequest):
         if not _is_valid_elf(new_bin):
             raise RuntimeError(f"llama-server 不是有效的 ELF 可执行文件: {new_bin}")
 
-        # 步骤 5: 替换完整二进制集（llama-server + lib*.so 全部原子替换到 /app/）
+        # 步骤 5: 替换完整二进制集（llama-server* + lib* 含 SONAME 符号链接）
         new_bin_dir = new_bin.parent
-        replaced = False
-        for f in sorted(new_bin_dir.iterdir()):
-            if not f.is_file():
-                continue
-            if f.name == "llama-server" or (f.name.startswith("lib") and f.suffix == ".so"):
-                _atomic_replace(f, _app_dir() / f.name)
-                replaced = True
+        replaced = _replace_from_dir(new_bin_dir, _app_dir())
         if not replaced:
-            raise RuntimeError("解压目录中未找到需要替换的 llama-server/lib*.so")
+            raise RuntimeError("解压目录中未找到需要替换的 llama-server*/lib*")
 
         # 记录到 DB
         with get_conn() as conn:
@@ -296,8 +360,10 @@ def engine_upgrade(body: UpgradeRequest):
                 "message": f"已升级到 {version}，需重启容器生效"}
 
     except Exception as e:
-        # 自动回滚（恢复完整集）
-        try: _restore_set(current_ver)
+        # 自动回滚（恢复完整集 + 清理新版本残留）
+        try:
+            _restore_set(current_ver)
+            _cleanup_residue(current_ver)
         except Exception: pass
         raise HTTPException(500, f"升级失败已回滚: {e}")
     finally:
@@ -306,26 +372,29 @@ def engine_upgrade(body: UpgradeRequest):
 
 @router.post("/rollback")
 def engine_rollback(body: RollbackRequest):
-    """回滚到已安装的旧版本（恢复完整二进制集）"""
-    version = body.version
+    """回滚到已安装的旧版本（恢复完整二进制集 + 清理残留）"""
+    version = _sanitize_version(body.version)
     # 校验备份存在（新格式目录或旧格式单文件）
     dest = BIN_DIR / version
     legacy = BIN_DIR / f"llama-server-{version}"
     if not dest.is_dir() and not legacy.exists():
         raise HTTPException(404, f"未找到版本 {version} 的备份")
 
-    current_ver = _get_current_version()
+    current_ver = _sanitize_version(_get_current_version())
     # 备份当前版本（如果尚未备份，幂等）
     _backup_current_set(current_ver)
 
     try:
         _restore_set(version)
+        _cleanup_residue(version)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
         return {"ok": True, "version": version, "previous": current_ver,
                 "message": f"已回滚到 {version}，需重启容器生效"}
     except Exception as e:
         # 恢复原版本
-        try: _restore_set(current_ver)
+        try:
+            _restore_set(current_ver)
+            _cleanup_residue(current_ver)
         except Exception: pass
         raise HTTPException(500, f"回滚失败已恢复: {e}")
