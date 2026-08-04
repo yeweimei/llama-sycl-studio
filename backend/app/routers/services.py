@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 class ServiceCreate(BaseModel):
-    name: str
+    name: Optional[str] = None   # 可选：为空时自动推导为 router ID
     model_path: str
     args: dict = {}
     gpu_id: Optional[str] = None
@@ -25,6 +25,30 @@ class ServiceUpdate(BaseModel):
     name: Optional[str] = None
     model_path: Optional[str] = None
     gpu_id: Optional[str] = None
+
+
+def _model_path_from_loaded(loaded_info) -> dict:
+    """从 router /models 返回的 loaded 详情中提取 id -> 实际模型文件路径 映射
+    （llama.cpp router 的模型 ID 可能是目录名，实际文件路径在 status.args 的 --model 里）"""
+    result = {}
+    items = loaded_info
+    if isinstance(items, dict):
+        items = items.get("data", [])
+    if not isinstance(items, list):
+        return result
+    for m in items:
+        mid = m.get("model", m.get("id", ""))
+        if not mid:
+            continue
+        st = m.get("status") if isinstance(m.get("status"), dict) else {}
+        args = st.get("args") or []
+        if isinstance(args, str):
+            args = args.split()
+        for i, a in enumerate(args):
+            if a == "--model" and i + 1 < len(args):
+                result[mid] = args[i + 1]
+                break
+    return result
 
 
 def _extract_proc_info(loaded_detail: dict) -> dict:
@@ -124,6 +148,8 @@ def list_services():
     # 从 DB 获取注册的模型元信息，并自动注册 router 发现的新模型（按 name upsert）
     db_models = {}
     hidden_names = set()
+    # 子目录模型的 router ID（目录名）-> 实际文件路径映射，用于自动注册和输出
+    path_by_id = _model_path_from_loaded(loaded_info)
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
         for r in rows:
@@ -141,13 +167,15 @@ def list_services():
             if mid in hidden_names:
                 continue  # 已软删除，阻止自动复活
             if mid not in db_models:
+                # 优先用 router 报告的实际文件路径（子目录模型 ID=目录名，不能拼 /models/{id}.gguf）
+                real_path = path_by_id.get(mid) or f"/models/{mid}.gguf"
                 cur = conn.execute(
                     "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
                     "VALUES (?,?, '{}', 'unloaded', ?, ?)",
-                    (mid, f"/models/{mid}.gguf", now(), now()),
+                    (mid, real_path, now(), now()),
                 )
                 db_models[mid] = {
-                    "id": cur.lastrowid, "name": mid, "model_path": f"/models/{mid}.gguf",
+                    "id": cur.lastrowid, "name": mid, "model_path": real_path,
                     "args": {}, "status": "unloaded",
                     "created_at": now(), "updated_at": now(),
                 }
@@ -193,7 +221,7 @@ def list_services():
         result.append({
             "id": db_info.get("id", 0),
             "name": mid,
-            "model_path": db_info.get("model_path", f"/models/{mid}.gguf"),
+            "model_path": db_info.get("model_path") or path_by_id.get(mid) or f"/models/{mid}.gguf",
             "args": db_info.get("args", {}),
             "gpu_id": db_info.get("gpu_id", ""),
             "status": state,
@@ -266,7 +294,16 @@ def router_status():
 
 @router.post("")
 def create_service(body: ServiceCreate):
-    """注册模型到模型池（仅 DB 记录，不加载）"""
+    """注册模型到模型池（仅 DB 记录，不加载）
+
+    name 可选：不填或为空时自动推导为 router 模型 ID
+    （_match_router_id：优先文件名，子目录模型用目录名），
+    保证 name 与 router ID 一致，加载/聊天/预设全链路可用。
+    """
+    # 自动推导 name（优先级：显式传入 > router ID 匹配 > 文件名推导）
+    name = (body.name or "").strip()
+    if not name:
+        name = _match_router_id(body.model_path) or _derive_router_id(body.model_path)
     with get_conn() as conn:
         dup = conn.execute("SELECT id FROM services WHERE name=?", (body.name,)).fetchone()
         if dup:
@@ -277,14 +314,12 @@ def create_service(body: ServiceCreate):
             (body.name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
         )
         sid = cur.lastrowid
-    # 校验：model_path 推导的 router ID 是否在 router 发现列表（避免注册后加载必 404）
+    # 校验：model_path 能否匹配到 router 模型 ID（避免注册后加载必 404）
     warning = None
     try:
-        derived = _derive_router_id(body.model_path)
-        if derived:
-            known = {m["id"] for m in router_client.list_models_sync()}
-            if derived not in known and derived.lower() not in {k.lower() for k in known}:
-                warning = f"模型文件 {body.model_path} 不在 router 发现列表中（router ID 应为 {derived}），加载可能失败"
+        matched = _match_router_id(body.model_path)
+        if not matched:
+            warning = f"模型文件 {body.model_path} 无法匹配到 router 模型 ID，加载可能失败"
     except Exception:
         pass
     resp = {"id": sid, "name": body.name, "status": "unloaded"}
@@ -365,8 +400,11 @@ def update_service(sid: int, body: ServiceUpdate):
             raise HTTPException(404, "模型不存在")
         d = dict(row)
         args = json.loads(d["args"] or "{}") if body.args is None else body.args
-        name = d["name"] if body.name is None else body.name
         model_path = d["model_path"] if body.model_path is None else body.model_path
+        name = d["name"] if body.name is None else (body.name or "").strip()
+        if not name:
+            # 空 name：自动推导为 router ID
+            name = _match_router_id(model_path) or _derive_router_id(model_path)
         gpu_id = d.get("gpu_id", "") if body.gpu_id is None else (body.gpu_id or "")
         conn.execute(
             "UPDATE services SET name=?, model_path=?, args=?, gpu_id=?, updated_at=? WHERE id=?",
@@ -434,7 +472,16 @@ def _derive_router_id(model_path: str) -> str:
 
 
 def _match_router_id(model_path: str) -> str:
-    """推导 router ID 并与 router 实际发现列表校验匹配，找不到则兜底用推导值"""
+    """推导 router ID 并与 router 实际发现列表校验匹配，找不到则兜底用推导值
+
+    匹配优先级：
+    1. 文件名推导值（basename 去扩展名）精确匹配
+    2. 大小写不敏感匹配
+    3. 子目录模型：父目录名匹配（llama.cpp router 对 models-dir 下子目录
+       用目录名作为模型 ID，如 /models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
+       -> ID 为 Qwen3.5-9B-GGUF）
+    4. 按 --model 实际启动参数反查（最可靠，覆盖自定义 preset 场景）
+    """
     derived = _derive_router_id(model_path)
     if not derived:
         return derived
@@ -448,6 +495,38 @@ def _match_router_id(model_path: str) -> str:
                 return kid
     except Exception:
         pass
+
+    # 子目录模型：父目录名匹配（llama.cpp router 以目录名做 ID）
+    try:
+        from pathlib import Path as _P
+        parent_name = _P(model_path).parent.name
+        if parent_name and parent_name != "/":
+            known = {m["id"] for m in router_client.list_models_sync()}
+            if parent_name in known:
+                return parent_name
+            for kid in known:
+                if kid.lower() == parent_name.lower():
+                    return kid
+    except Exception:
+        pass
+
+    # 按 --model 实际启动参数反查（覆盖 preset 名与路径不一致的场景）
+    try:
+        loaded = router_client.get_loaded_models_sync()
+        if isinstance(loaded, dict):
+            loaded = loaded.get("data", [])
+        for m in loaded:
+            st = m.get("status") if isinstance(m.get("status"), dict) else {}
+            args = st.get("args") or []
+            if isinstance(args, str):
+                args = args.split()
+            for i, a in enumerate(args):
+                if a == "--model" and i + 1 < len(args):
+                    if args[i + 1] == model_path:
+                        return m.get("id", m.get("model", ""))
+    except Exception:
+        pass
+
     return derived
 
 
@@ -660,7 +739,9 @@ async def chat_proxy(sid: int, body: ChatRequest):
     if not row:
         raise HTTPException(404, "模型不存在")
     d = dict(row)
-    model_name = d["name"]
+    # 用 router ID（与启停同一套匹配逻辑）作为请求 model 字段，
+    # 避免自定义 name 与 router 模型 ID 不一致导致 chat 404
+    model_name = _match_router_id(d.get("model_path", "")) or d["name"]
 
     url = f"{settings.router_url}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}

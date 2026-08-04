@@ -132,11 +132,17 @@
     <!-- 注册模型对话框 -->
     <el-dialog v-model="createVisible" title="注册模型" width="720px" top="8vh">
       <el-form :model="form" label-width="110px">
-        <el-form-item label="模型名称" required>
-          <el-input v-model="form.name" placeholder="显示名（加载按模型文件自动匹配）" />
+        <el-form-item label="模型名称">
+          <el-input v-model="form.name" :placeholder="autoNameHint || '自动推导（无需填写）'" :disabled="!useManualName">
+            <template #prepend><el-tag size="small" type="info" style="border:none">自动</el-tag></template>
+            <template #append>
+              <el-button @click="toggleNameManual">{{ useManualName ? '改自动' : '手动' }}</el-button>
+            </template>
+          </el-input>
+          <div class="form-tip">默认自动按模型文件/目录推导为 router ID，无需手填；也可切换手动自定义</div>
         </el-form-item>
         <el-form-item label="模型路径" required>
-          <el-select v-if="!useManualPath" v-model="form.model_path" filterable placeholder="选择已下载模型" style="width:100%">
+          <el-select v-if="!useManualPath" v-model="form.model_path" filterable placeholder="选择已下载模型" style="width:100%" @change="onPathChange">
             <el-option v-for="m in modelList" :key="m.path" :label="`${m.name} (${m.size_human}${m.quantization ? ' ' + m.quantization : ''})`" :value="m.path" />
           </el-select>
           <el-input v-else v-model="form.model_path" placeholder="/models/xxx.gguf" />
@@ -162,11 +168,17 @@
     <!-- 编辑模型对话框 -->
     <el-dialog v-model="editVisible" title="编辑模型" width="720px" top="8vh">
       <el-form :model="editForm" label-width="110px">
-        <el-form-item label="模型名称" required>
-          <el-input v-model="editForm.name" />
+        <el-form-item label="模型名称">
+          <el-input v-model="editForm.name" placeholder="自动推导（无需填写）">
+            <template #prepend><el-tag size="small" type="info" style="border:none">自动</el-tag></template>
+            <template #append>
+              <el-button @click="toggleEditNameManual">{{ editUseManualName ? '改自动' : '手动' }}</el-button>
+            </template>
+          </el-input>
+          <div class="form-tip">默认自动按模型文件/目录推导为 router ID；切换手动可自定义</div>
         </el-form-item>
         <el-form-item label="模型路径" required>
-          <el-select v-if="!editUseManualPath" v-model="editForm.model_path" filterable placeholder="选择已下载模型" style="width:100%">
+          <el-select v-if="!editUseManualPath" v-model="editForm.model_path" filterable placeholder="选择已下载模型" style="width:100%" @change="onEditPathChange">
             <el-option v-for="m in modelList" :key="m.path" :label="`${m.name} (${m.size_human}${m.quantization ? ' ' + m.quantization : ''})`" :value="m.path" />
           </el-select>
           <el-input v-else v-model="editForm.model_path" placeholder="/models/xxx.gguf" />
@@ -235,8 +247,38 @@ const DEFAULT_PRESET = {
 const form = ref({ name: '', model_path: '', gpu_id: '', preset: { ...DEFAULT_PRESET } })
 const useManualPath = ref(false)
 const editUseManualPath = ref(false)
+const useManualName = ref(false)
+const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
+
+// 从模型路径自动推导 router ID（与后端 _match_router_id 规则一致）：
+// 子目录模型取目录名（llama.cpp router 的 ID），根目录文件取文件名去扩展名
+function deriveNameFromPath(path) {
+  if (!path) return ''
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length === 0) return ''
+  const file = parts[parts.length - 1]
+  const dir = parts.length >= 2 ? parts[parts.length - 2] : ''
+  if (file.endsWith('.gguf') || file.endsWith('.safetensors') || file.endsWith('.bin')) {
+    // 子目录模型：目录名（router ID 用目录名）；根目录模型：文件名去扩展名
+    if (dir && dir !== 'models') return dir
+    return file.replace(/\.(gguf|safetensors|bin)$/i, '')
+  }
+  return file
+}
+
+function onPathChange() {
+  if (useManualName.value) return
+  const derived = deriveNameFromPath(form.value.model_path)
+  form.value.name = derived
+  autoNameHint.value = derived ? `自动：${derived}` : ''
+}
+
+function toggleNameManual() {
+  useManualName.value = !useManualName.value
+  if (!useManualName.value) onPathChange()
+}
 const svcTagMap = ref({})
 
 function svcTags(name) {
@@ -247,7 +289,19 @@ function svcTags(name) {
 const editVisible = ref(false)
 const saving = ref(false)
 const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET } })
+const editUseManualName = ref(false)
 const _allPresets = ref([])
+
+function onEditPathChange() {
+  if (editUseManualName.value) return
+  const derived = deriveNameFromPath(editForm.value.model_path)
+  if (derived) editForm.value.name = derived
+}
+
+function toggleEditNameManual() {
+  editUseManualName.value = !editUseManualName.value
+  if (!editUseManualName.value) onEditPathChange()
+}
 
 function formatSize(bytes) {
   if (!bytes) return '-'
@@ -431,17 +485,23 @@ async function doUnload(row) {
 function openCreate() {
   form.value = { name: '', model_path: '', gpu_id: gpuList.value[0]?.id || '', preset: { ...DEFAULT_PRESET } }
   useManualPath.value = false
+  useManualName.value = false
+  autoNameHint.value = ''
   createVisible.value = true
 }
 
 async function doCreate() {
-  if (!form.value.name || !form.value.model_path) {
-    ElMessage.warning('请填写模型名称和模型路径')
+  if (!form.value.model_path) {
+    ElMessage.warning('请选择模型路径')
     return
+  }
+  // 未手动指定 name 时自动推导（前端预览 + 后端兜底）
+  if (!useManualName.value || !form.value.name) {
+    form.value.name = deriveNameFromPath(form.value.model_path) || form.value.name
   }
   creating.value = true
   try {
-    await createService({ name: form.value.name, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null })
+    await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null })
     // 保存推理参数为预设
     try {
       await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0' })
@@ -475,19 +535,24 @@ async function openEdit(row) {
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
   }
   editUseManualPath.value = !modelList.value.some(m => m.path === row.model_path)
+  editUseManualName.value = false
   editVisible.value = true
 }
 
 async function doSaveEdit() {
-  if (!editForm.value.name || !editForm.value.model_path) {
-    ElMessage.warning('请填写模型名称和模型路径')
+  if (!editForm.value.model_path) {
+    ElMessage.warning('请选择模型路径')
     return
+  }
+  // 未手动指定 name 时自动推导
+  if (!editUseManualName.value || !editForm.value.name) {
+    editForm.value.name = deriveNameFromPath(editForm.value.model_path) || editForm.value.name
   }
   saving.value = true
   try {
     // 1. 保存基本信息到 services 表
     await updateService(editForm.value.id, {
-      name: editForm.value.name,
+      name: editForm.value.name || null,
       model_path: editForm.value.model_path,
       gpu_id: editForm.value.gpu_id || null,
     })
