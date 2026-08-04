@@ -108,7 +108,14 @@ const model = ref({ ...DEFAULT_ARGS, ...props.modelValue })
 
 watch(
   () => props.modelValue,
-  (v) => { model.value = { ...DEFAULT_ARGS, ...v } },
+  (v) => {
+    // 防回环：合并默认值后与当前 model 比较，只有真正不同才更新
+    // （emit 回传的值与 model 当前值相同 → 不触发更新 → 中断双向 watch 死循环）
+    const merged = { ...DEFAULT_ARGS, ...v }
+    if (JSON.stringify(merged) !== JSON.stringify(model.value)) {
+      model.value = merged
+    }
+  },
   { deep: true }
 )
 watch(
