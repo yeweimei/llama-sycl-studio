@@ -10,6 +10,10 @@
         <span>LLM Studio</span>
       </div>
       <el-menu :default-active="$route.path" router class="menu">
+        <el-menu-item index="/chat">
+          <el-icon><ChatDotRound /></el-icon>
+          <span>对话</span>
+        </el-menu-item>
         <el-menu-item index="/services">
           <el-icon><Service /></el-icon>
           <span>服务管理</span>
@@ -103,7 +107,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Service, Files, Download, Monitor, Setting, SwitchButton, Expand, DataLine } from '@element-plus/icons-vue'
+import { Service, Files, Download, Monitor, Setting, SwitchButton, Expand, DataLine, ChatDotRound } from '@element-plus/icons-vue'
 import { authLogout } from './api'
 
 const router = useRouter()

@@ -10,7 +10,8 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: () => import('./views/Login.vue'), meta: { title: '登录', public: true } },
-    { path: '/', redirect: '/services' },
+    { path: '/', redirect: '/chat' },
+    { path: '/chat', component: () => import('./views/Chat.vue'), meta: { title: '对话' } },
     { path: '/services', component: () => import('./views/Services.vue'), meta: { title: '服务管理' } },
     { path: '/services/:id', component: () => import('./views/ServiceDetail.vue'), meta: { title: '服务详情' } },
     { path: '/models', component: () => import('./views/Models.vue'), meta: { title: '模型中心' } },
