@@ -533,6 +533,35 @@ def _preset_params(model_name: str) -> dict:
         extra = json.loads(d.get("extra_args") or "{}")
     except Exception:
         extra = {}
+    # sampling 子对象：转 llama.cpp kebab-case 参数（跳过默认值/禁用值）
+    sampling = extra.pop("sampling", None) if isinstance(extra, dict) else None
+    if isinstance(sampling, dict):
+        # 参数名映射（kebab-case）
+        smap = {
+            "top_k": "top-k", "top_p": "top-p", "min_p": "min-p",
+            "typical_p": "typical-p", "repeat_penalty": "repeat-penalty",
+            "presence_penalty": "presence-penalty",
+            "frequency_penalty": "frequency-penalty",
+            "seed": "seed", "mirostat": "mirostat",
+            "mirostat_lr": "mirostat-lr", "mirostat_ent": "mirostat-ent",
+        }
+        for db_key, router_key in smap.items():
+            v = sampling.get(db_key)
+            if v in (None, ""):
+                continue
+            # 跳过 llama.cpp 的默认/禁用值（不传 = 用默认）
+            if db_key == "top_k" and v == 40: continue
+            if db_key in ("top_p", "min_p", "typical_p", "repeat_penalty") and float(v) in (1.0, 0.0):
+                # top_p=1.0 / typical_p=1.0 / repeat_penalty=1.0 表示禁用，min_p=0.0 禁用
+                if db_key == "top_p" and float(v) >= 0.999: continue
+                if db_key == "typical_p" and float(v) >= 0.999: continue
+                if db_key == "repeat_penalty" and abs(float(v) - 1.0) < 1e-6: continue
+                if db_key == "min_p" and float(v) < 1e-6: continue
+            if db_key == "presence_penalty" and abs(float(v)) < 1e-6: continue
+            if db_key == "frequency_penalty" and abs(float(v)) < 1e-6: continue
+            if db_key == "seed" and int(v) == -1: continue
+            if db_key == "mirostat" and int(v) == 0: continue
+            params[router_key] = v
     for k, v in extra.items():
         params[k] = v
     return params

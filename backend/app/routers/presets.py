@@ -91,6 +91,13 @@ def _write_config_ini() -> dict:
         if mmproj:
             lines.append(f"mmproj = {mmproj}")
         extra = json.loads(d["extra_args"] or "{}")
+        # sampling 子对象展开为独立参数行（如 top-k = 40）
+        sampling = extra.pop("sampling", None) if isinstance(extra, dict) else None
+        if isinstance(sampling, dict):
+            for k, v in sampling.items():
+                if v is None or v == "":
+                    continue
+                lines.append(f"{k.replace('_', '-')} = {v}")
         for k, v in extra.items():
             lines.append(f"{k} = {v}")
         lines.append("")
