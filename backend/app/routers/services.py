@@ -152,6 +152,8 @@ def list_services():
 
     for rm in router_models:
         mid = rm["id"]
+        if mid.startswith("mmproj"):
+            continue  # mmproj 投影文件不是可加载模型，输出层也排除
         seen.add(mid)
         db_info = db_models.get(mid, {})
         # 状态：优先 router /models 的 status.value，回退 /v1/models 的 status
@@ -202,6 +204,8 @@ def list_services():
 
     # DB 中有但 router 未发现的模型（可能文件不存在）
     for name, db_info in db_models.items():
+        if name.startswith("mmproj"):
+            continue  # 防御：旧脏数据也不输出
         if name not in seen:
             # 检测 mmproj（同样路径逻辑）
             hm = False
@@ -276,6 +280,8 @@ def get_service(sid: int):
     if not row:
         raise HTTPException(404, "模型不存在")
     d = dict(row)
+    if d.get("name", "").startswith("mmproj"):
+        raise HTTPException(404, "模型不存在")  # mmproj 投影文件不是模型
     d["args"] = json.loads(d["args"] or "{}")
 
     # 查 router 实时状态
