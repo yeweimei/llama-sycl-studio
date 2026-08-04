@@ -46,8 +46,9 @@
               :class="{ active: s.id === currentSessionId }"
               @click="switchSession(s.id)"
             >
-              <span class="session-title" @click.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
+              <span class="session-title" @dblclick.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
               <span class="session-meta">{{ s.msg_count || 0 }} 条</span>
+              <el-button v-if="s.id !== 0" size="small" link class="session-rename" @click.stop="startRenameSession(s)"><el-icon><Edit /></el-icon></el-button>
               <el-button v-if="s.id !== 0" size="small" link class="session-del" @click.stop="removeSession(s)"><el-icon><Delete /></el-icon></el-button>
             </div>
           </div>
@@ -136,7 +137,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete } from '@element-plus/icons-vue'
+import { Plus, Delete, Edit } from '@element-plus/icons-vue'
 import {
   listServices, startService, stopService, listPresets,
   listSessions, createSession, renameSession, deleteSession,
@@ -664,7 +665,9 @@ onUnmounted(() => {
 .session-item.active { background: #ecf5ff; color: #409eff; }
 .session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .session-meta { font-size: 11px; color: #c0c4cc; flex-shrink: 0; }
+.session-rename { opacity: 0; flex-shrink: 0; }
 .session-del { opacity: 0; flex-shrink: 0; }
+.session-item:hover .session-rename,
 .session-item:hover .session-del { opacity: 1; }
 .chat-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .chat-messages {

@@ -970,13 +970,14 @@ def client_config(sid: int):
     host_ip = _detect_lan_ip()
 
     base = f"http://{host_ip}:{settings.webui_port}/v1"
-    # 从 api_keys 表取第一个启用的 key 作为示例
+    # 所有启用的 key（多 token 时前端可选择展示）
     with get_conn() as conn:
-        key_row = conn.execute(
-            "SELECT key FROM api_keys WHERE enabled=1 ORDER BY id LIMIT 1"
-        ).fetchone()
-    key = key_row["key"] if key_row else "<在系统设置生成 API 密钥>"
-    auth = f'"Authorization: Bearer {key}"' if key_row else ""
+        key_rows = conn.execute(
+            "SELECT id, name, key FROM api_keys WHERE enabled=1 ORDER BY id"
+        ).fetchall()
+    keys = [dict(r) for r in key_rows] if key_rows else []
+    key = keys[0]["key"] if keys else "<在系统设置生成 API 密钥>"
+    auth = f'"Authorization: Bearer {key}"' if keys else ""
     auth_line = f'  -H {auth} \\' if auth else ""
 
     curl = f'''curl {base}/chat/completions \\
@@ -1011,6 +1012,8 @@ print(resp.choices[0].message.content)'''
         "curl": curl.strip(),
         "openclaw": openclaw.strip(),
         "python": python.strip(),
+        "keys": keys,
+        "active_key": key,
     }
 
 

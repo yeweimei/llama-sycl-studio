@@ -89,8 +89,9 @@
                 :class="{ active: s.id === currentSessionId }"
                 @click="switchSession(s.id)"
               >
-                <span class="session-title" @click.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
+                <span class="session-title" @dblclick.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
                 <span class="session-meta">{{ s.msg_count || 0 }} 条</span>
+                <el-button v-if="s.id !== 0" size="small" link class="session-rename" @click.stop="startRenameSession(s)"><el-icon><Edit /></el-icon></el-button>
                 <el-button v-if="s.id !== 0" size="small" link class="session-del" @click.stop="removeSession(s)"><el-icon><Delete /></el-icon></el-button>
               </div>
             </div>
@@ -176,6 +177,13 @@
         <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
           通过统一网关访问（WebUI 端口 /v1/*），OpenAI 兼容端点
         </el-alert>
+        <div v-if="clientCfg.keys?.length" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span style="font-size:13px;color:#606266">API Token</span>
+          <el-select v-model="activeKeyId" style="width:280px" size="small" @change="onKeyChange">
+            <el-option v-for="k in clientCfg.keys" :key="k.id" :value="k.id" :label="`${k.name || ('Key#' + k.id)}（${k.key.substring(0,8)}…）`" />
+          </el-select>
+          <el-tag v-if="clientCfg.keys.length > 1" size="small" type="info">共 {{ clientCfg.keys.length }} 个可用 Token</el-tag>
+        </div>
         <el-tabs v-model="configTab">
           <el-tab-pane label="curl" name="curl">
             <el-input v-model="clientCfg.curl" type="textarea" :rows="8" class="mono-area" readonly />
@@ -199,7 +207,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, Plus, Delete } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Delete, Edit } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
   chatProxy, clientConfig, listPresets,
@@ -750,13 +758,29 @@ async function loadHistory() {
 
 // ---------- 接入配置 ----------
 const configTab = ref('curl')
-const clientCfg = ref({ curl: '', openclaw: '', python: '' })
+const clientCfg = ref({ curl: '', openclaw: '', python: '', keys: [], active_key: '' })
+const activeKeyId = ref(null)
+
+function onKeyChange() {
+  const k = clientCfg.value.keys?.find(x => x.id === activeKeyId.value)
+  if (!k) return
+  // 本地替换配置片段中的 key
+  const old = clientCfg.value.active_key || ''
+  const replace = (s) => s ? s.split(old).join(k.key) : s
+  clientCfg.value.curl = replace(clientCfg.value.curl)
+  clientCfg.value.openclaw = replace(clientCfg.value.openclaw)
+  clientCfg.value.python = replace(clientCfg.value.python)
+  clientCfg.value.active_key = k.key
+}
 
 async function loadClientConfig() {
   try {
     clientCfg.value = await clientConfig(sid)
+    if (clientCfg.value.keys?.length) {
+      activeKeyId.value = clientCfg.value.keys[0].id
+    }
   } catch (e) {
-    clientCfg.value = { curl: '', openclaw: '', python: '' }
+    clientCfg.value = { curl: '', openclaw: '', python: '', keys: [] }
   }
 }
 
@@ -850,7 +874,9 @@ function onGlobalKey(e) {
 .session-item.active { background: #ecf5ff; color: #409eff; }
 .session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .session-meta { font-size: 11px; color: #c0c4cc; flex-shrink: 0; }
+.session-rename { opacity: 0; flex-shrink: 0; }
 .session-del { opacity: 0; flex-shrink: 0; }
+.session-item:hover .session-rename,
 .session-item:hover .session-del { opacity: 1; }
 .chat-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .chat-messages {
