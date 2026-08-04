@@ -70,8 +70,8 @@
               <el-tag size="small" type="warning" style="margin-left:6px">所有模型共用</el-tag>
             </el-descriptions-item>
           </el-descriptions>
-          <el-alert type="warning" :closable="false" show-icon title="上下文说明"
-            description="llama.cpp router 模式下，每个模型使用自身 GGUF 默认上下文（9B≈131K、小模型≈8K），模型预设里的'上下文长度'不生效。如需统一钳制所有模型，部署时设置 ROUTER_CTX（如 ROUTER_CTX=32768）并重启容器。"
+          <el-alert type="info" :closable="false" show-icon title="上下文说明"
+            description="当前策略：每个模型使用自身 GGUF 默认上下文（如 9B≈131K、小模型≈8K），互不影响。llama.cpp router 模式下模型预设里的'上下文长度'不参与实际加载；如需统一钳制所有模型，部署时设置 ROUTER_CTX（如 ROUTER_CTX=32768）并重启容器。"
             style="margin-top:8px" />
         </el-card>
 

@@ -4,7 +4,7 @@
       <el-col :span="12">
         <el-form-item label="上下文长度">
           <el-input-number v-model="model.ctx_size" :min="512" :max="262144" :step="1024" controls-position="right" style="width:100%" />
-          <div class="form-tip" style="width:100%">⚠️ router 模式下由全局 ROUTER_CTX 控制，此项不生效（见设置页）</div>
+          <div class="form-tip" style="width:100%">当前策略：模型使用自身 GGUF 默认上下文；此项为展示值（见设置页说明）</div>
         </el-form-item>
       </el-col>
       <el-col :span="12">

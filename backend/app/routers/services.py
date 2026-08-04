@@ -497,16 +497,47 @@ def update_service(sid: int, body: ServiceUpdate):
 
 @router.post("/{sid}/start")
 def start_service(sid: int):
-    """加载模型到 router（用 router ID 而非自定义 name，携带预设参数）"""
+    """加载模型到 router（用 router ID 而非自定义 name，携带预设参数）
+
+    注意：router 的 /models/load 是异步接口（spawn 后立即返回），
+    模型实际加载需数秒到数十秒。这里轮询等待真正 ready 再返回，
+    避免前端在模型未就绪时立即对话导致请求挂起。
+    """
     svc = _resolve_model_name(sid)
     name = svc["name"]
     router_id = _match_router_id(svc.get("model_path", "")) or name
     params = _preset_params(name)
     try:
         result = router_client.load_model_sync(router_id, params or None)
+        # 轮询等待模型完全就绪（子进程 listening，meta 有值）
+        import time as _t
+        ready = False
+        for _ in range(40):  # 最多等 120s（每 3s 一次）
+            _t.sleep(3)
+            try:
+                loaded_info = router_client.get_loaded_models_sync()
+                items = loaded_info
+                if isinstance(loaded_info, dict):
+                    items = loaded_info.get("data", [])
+                if isinstance(items, list):
+                    for m in items:
+                        if m.get("id") == router_id:
+                            st = m.get("status") if isinstance(m.get("status"), dict) else {}
+                            meta = m.get("meta") or {}
+                            if st.get("value") == "loaded" and meta.get("n_ctx"):
+                                ready = True
+                            break
+            except Exception:
+                pass
+            if ready:
+                break
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
-        return {"ok": True, "status": "loaded", "detail": result, "preset_params": params}
+        return {
+            "ok": True, "status": "loaded", "detail": result, "preset_params": params,
+            "ready": ready,
+            "ready_hint": "模型已就绪" if ready else "模型仍在加载中（加载完成前对话请求会排队等待）",
+        }
     except RuntimeError as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
@@ -695,7 +726,7 @@ def _match_router_id(model_path: str) -> str:
 
 @router.post("/{sid}/restart")
 def restart_service(sid: int):
-    """重启模型：先卸载再加载（用 router ID，携带预设参数）"""
+    """重启模型：先卸载再加载（用 router ID，携带预设参数，等待真正就绪）"""
     svc = _resolve_model_name(sid)
     name = svc["name"]
     router_id = _match_router_id(svc.get("model_path", "")) or name
@@ -710,9 +741,35 @@ def restart_service(sid: int):
     # 重新加载
     try:
         result = router_client.load_model_sync(router_id, params or None)
+        # 轮询等待真正就绪（同 start_service）
+        import time as _t
+        ready = False
+        for _ in range(40):
+            _t.sleep(3)
+            try:
+                loaded_info = router_client.get_loaded_models_sync()
+                items = loaded_info
+                if isinstance(loaded_info, dict):
+                    items = loaded_info.get("data", [])
+                if isinstance(items, list):
+                    for m in items:
+                        if m.get("id") == router_id:
+                            st = m.get("status") if isinstance(m.get("status"), dict) else {}
+                            meta = m.get("meta") or {}
+                            if st.get("value") == "loaded" and meta.get("n_ctx"):
+                                ready = True
+                            break
+            except Exception:
+                pass
+            if ready:
+                break
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
-        return {"ok": True, "status": "loaded", "detail": result, "preset_params": params}
+        return {
+            "ok": True, "status": "loaded", "detail": result, "preset_params": params,
+            "ready": ready,
+            "ready_hint": "模型已就绪" if ready else "模型仍在加载中（加载完成前对话请求会排队等待）",
+        }
     except RuntimeError as e:
         with get_conn() as conn:
             conn.execute("UPDATE services SET status='error', updated_at=? WHERE name=?", (now(), name))
