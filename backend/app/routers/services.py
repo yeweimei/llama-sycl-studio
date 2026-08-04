@@ -18,6 +18,7 @@ class ServiceCreate(BaseModel):
     model_path: str
     args: dict = {}
     gpu_id: Optional[str] = None
+    idle_unload_min: int = 0     # 空闲自动卸载分钟，0=一直保持
 
 
 class ServiceUpdate(BaseModel):
@@ -25,6 +26,7 @@ class ServiceUpdate(BaseModel):
     name: Optional[str] = None
     model_path: Optional[str] = None
     gpu_id: Optional[str] = None
+    idle_unload_min: Optional[int] = None
 
 
 def _model_path_from_loaded(loaded_info) -> dict:
@@ -240,6 +242,8 @@ def list_services():
             "model_path": db_info.get("model_path") or path_by_id.get(mid) or f"/models/{mid}.gguf",
             "args": db_info.get("args", {}),
             "gpu_id": db_info.get("gpu_id", ""),
+            "idle_unload_min": db_info.get("idle_unload_min", 0),
+            "last_used_at": db_info.get("last_used_at", 0),
             "status": state,
             "loaded": is_loaded,
             "loaded_info": loaded_detail,
@@ -280,6 +284,8 @@ def list_services():
                 "model_path": db_info["model_path"],
                 "args": db_info["args"],
                 "gpu_id": db_info.get("gpu_id", ""),
+                "idle_unload_min": db_info.get("idle_unload_min", 0),
+                "last_used_at": db_info.get("last_used_at", 0),
                 "status": "unavailable",
                 "loaded": False,
                 "loaded_info": {},
@@ -327,9 +333,10 @@ def create_service(body: ServiceCreate):
         if dup:
             raise HTTPException(400, f"模型 {name} 已注册")
         cur = conn.execute(
-            "INSERT INTO services (name, model_path, args, gpu_id, status, created_at, updated_at) "
-            "VALUES (?,?,?,?, 'unloaded', ?, ?)",
-            (name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
+            "INSERT INTO services (name, model_path, args, gpu_id, idle_unload_min, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?, 'unloaded', ?, ?)",
+            (name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "",
+             body.idle_unload_min or 0, now(), now()),
         )
         sid = cur.lastrowid
         # 主动重新注册：清除同名墓碑，避免 list_services 因墓碑跳过该模型
@@ -435,9 +442,10 @@ def update_service(sid: int, body: ServiceUpdate):
             # 空 name：自动推导为 router ID
             name = _match_router_id(model_path) or _derive_router_id(model_path)
         gpu_id = d.get("gpu_id", "") if body.gpu_id is None else (body.gpu_id or "")
+        idle_unload_min = d.get("idle_unload_min", 0) if body.idle_unload_min is None else (body.idle_unload_min or 0)
         conn.execute(
-            "UPDATE services SET name=?, model_path=?, args=?, gpu_id=?, updated_at=? WHERE id=?",
-            (name, model_path, json.dumps(args), gpu_id, now(), sid),
+            "UPDATE services SET name=?, model_path=?, args=?, gpu_id=?, idle_unload_min=?, updated_at=? WHERE id=?",
+            (name, model_path, json.dumps(args), gpu_id, idle_unload_min, now(), sid),
         )
     return {"ok": True}
 

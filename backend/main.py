@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db
 from app import auth as auth_mod
+from app import idle_unload
 from app.routers import services, models, downloads, gpu, settings as settings_router
 from app.routers import auth as auth_router
 from app.routers import presets, tags, stats, engine
@@ -39,6 +40,9 @@ app.add_middleware(
 
 # 初始化数据库
 init_db()
+
+# 启动空闲自动卸载后台任务
+idle_unload.start_idle_unload_loop()
 
 # ---------- 认证中间件 ----------
 # 不需要认证的路径
@@ -114,6 +118,17 @@ async def v1_proxy(path: str, request: Request):
 
     # 读取请求体
     body = await request.body()
+
+    # 记录模型调用时间（空闲自动卸载用）
+    if body:
+        try:
+            import json as _json
+            _payload = _json.loads(body)
+            _model = _payload.get("model") or _payload.get("model_id") or ""
+            if _model:
+                idle_unload.touch_model_usage(str(_model))
+        except Exception:
+            pass
 
     # 判断是否是流式请求
     is_stream = False

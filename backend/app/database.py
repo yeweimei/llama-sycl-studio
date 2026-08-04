@@ -152,6 +152,10 @@ def init_db():
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
         if "hidden" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN hidden INTEGER DEFAULT 0")
+        if "idle_unload_min" not in svc_cols:
+            conn.execute("ALTER TABLE services ADD COLUMN idle_unload_min INTEGER DEFAULT 0")
+        if "last_used_at" not in svc_cols:
+            conn.execute("ALTER TABLE services ADD COLUMN last_used_at INTEGER DEFAULT 0")
         # 迁移：旧软删除(hidden=1)记录 -> 墓碑表，然后物理删除（硬删除策略）
         try:
             hidden_rows = conn.execute(

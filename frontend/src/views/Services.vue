@@ -156,6 +156,12 @@
             <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="空闲卸载">
+          <el-select v-model="form.idle_unload_min" style="width:100%">
+            <el-option v-for="o in idleUnloadOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+          <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存</div>
+        </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
         <ParamForm v-model="form.preset" />
       </el-form>
@@ -197,6 +203,12 @@
             <el-option v-for="t in allTagOptions" :key="t" :label="t" :value="t" />
           </el-select>
           <div class="form-tip">自定义标签；自动标签（思考/多模态/Embedding 等）按模型名自动生成</div>
+        </el-form-item>
+        <el-form-item label="空闲卸载">
+          <el-select v-model="editForm.idle_unload_min" style="width:100%">
+            <el-option v-for="o in idleUnloadOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+          <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存；选"一直保持"则常驻</div>
         </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
         <ParamForm v-model="editForm.preset" />
@@ -252,13 +264,23 @@ const DEFAULT_PRESET = {
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
   flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true,
 }
-const form = ref({ name: '', model_path: '', gpu_id: '', preset: { ...DEFAULT_PRESET } })
+const form = ref({ name: '', model_path: '', gpu_id: '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } })
 const useManualPath = ref(false)
 const editUseManualPath = ref(false)
 const useManualName = ref(false)
 const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
+
+// 空闲自动卸载选项（分钟）
+const idleUnloadOptions = [
+  { value: 0, label: '一直保持（不自动卸载）' },
+  { value: 15, label: '15 分钟无调用自动卸载' },
+  { value: 30, label: '30 分钟无调用自动卸载' },
+  { value: 60, label: '1 小时无调用自动卸载' },
+  { value: 120, label: '2 小时无调用自动卸载' },
+  { value: 240, label: '4 小时无调用自动卸载' },
+]
 
 // 从模型路径自动推导 router ID（与后端 _match_router_id 规则一致）：
 // 子目录模型取目录名（llama.cpp router 的 ID），根目录文件取文件名去扩展名
@@ -296,7 +318,7 @@ function svcTags(name) {
 }
 const editVisible = ref(false)
 const saving = ref(false)
-const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET }, custom_tags: [] })
+const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET }, custom_tags: [], idle_unload_min: 0 })
 const editUseManualName = ref(false)
 const _allPresets = ref([])
 const _allTags = ref([])
@@ -501,7 +523,7 @@ async function doUnload(row) {
 // ---------- 新建/编辑 ----------
 
 function openCreate() {
-  form.value = { name: '', model_path: '', gpu_id: gpuList.value[0]?.id || '', preset: { ...DEFAULT_PRESET } }
+  form.value = { name: '', model_path: '', gpu_id: gpuList.value[0]?.id || '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } }
   useManualPath.value = false
   useManualName.value = false
   autoNameHint.value = ''
@@ -519,7 +541,7 @@ async function doCreate() {
   }
   creating.value = true
   try {
-    await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null })
+    await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null, idle_unload_min: form.value.idle_unload_min || 0 })
     // 保存推理参数为预设
     try {
       await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0' })
@@ -552,6 +574,7 @@ async function openEdit(row) {
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
     custom_tags: [],
+    idle_unload_min: row.idle_unload_min || 0,
   }
   editUseManualPath.value = !modelList.value.some(m => m.path === row.model_path)
   editUseManualName.value = false
@@ -582,6 +605,7 @@ async function doSaveEdit() {
       name: editForm.value.name || null,
       model_path: editForm.value.model_path,
       gpu_id: editForm.value.gpu_id || null,
+      idle_unload_min: editForm.value.idle_unload_min || 0,
     })
     // 2. 保存推理参数到 model_presets 表（upsert）
     const p = editForm.value.preset
