@@ -186,6 +186,120 @@ def _extract_proc_info(loaded_detail: dict) -> dict:
 
 
 @router.get("")
+def list_services():
+    """列出模型池：DB 注册模型 + 目录扫描自动注册 + 实例状态
+
+    架构（per-model 实例）：每个服务一个独立 llama-server 进程，
+    状态从 instance_mgr 读取；目录扫描自动注册新模型。
+    """
+    from app import instance_mgr
+    from app.routers.models import _scan_models
+
+    # 目录扫描发现的模型（自动注册新模型）
+    scanned = _scan_models()
+
+    db_models = {}
+    deleted_names = set()
+    with get_conn() as conn:
+        try:
+            del_rows = conn.execute("SELECT name FROM deleted_models").fetchall()
+            deleted_names = {r["name"] for r in del_rows}
+        except Exception:
+            pass
+        rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
+        for r in rows:
+            d = dict(r)
+            d["args"] = json.loads(d["args"] or "{}")
+            db_models[d["name"]] = d
+        # 自动注册目录扫描发现的模型（排除 mmproj / hf-dir / 已删除墓碑）
+        # name 用 _match_router_id 推导（子目录=目录名，根目录=文件名），
+        # 与 create_service 一致，避免重复注册相对路径垃圾
+        for sm in scanned:
+            if sm.get("kind") != "gguf":
+                continue
+            if sm["name"].startswith("mmproj"):
+                continue
+            mid = _match_router_id(sm["path"]) or sm["name"]
+            if mid.startswith("mmproj"):
+                continue
+            if mid in deleted_names:
+                continue
+            if mid not in db_models:
+                cur = conn.execute(
+                    "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
+                    "VALUES (?,?, '{}', 'unloaded', ?, ?)",
+                    (mid, sm["path"], now(), now()),
+                )
+                db_models[mid] = {
+                    "id": cur.lastrowid, "name": mid, "model_path": sm["path"],
+                    "args": {}, "status": "unloaded",
+                    "created_at": now(), "updated_at": now(),
+                }
+
+    # 实例状态映射
+    inst_map = instance_mgr.all_instances()
+
+    result = []
+    for mid, db_info in db_models.items():
+        if mid.startswith("mmproj"):
+            continue
+        if mid in deleted_names:
+            continue
+        sid = db_info.get("id", 0)
+        ist = inst_map.get(sid, {})
+        running = bool(ist)
+        port = ist.get("port")
+        loaded_detail = {}
+        if port:
+            try:
+                import httpx
+                with httpx.Client(timeout=2) as c:
+                    r = c.get(f"http://127.0.0.1:{port}/models")
+                if r.status_code == 200:
+                    data = r.json()
+                    arr = data.get("data", []) if isinstance(data, dict) else data
+                    if arr:
+                        loaded_detail = arr[0]
+            except Exception:
+                pass
+        has_mmproj = False
+        mmproj_path = ""
+        mp = db_info.get("model_path", "")
+        if mp:
+            from pathlib import Path as _P
+            try:
+                mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
+                found = sorted(mm_dir.glob("mmproj*.gguf"))
+                if found:
+                    has_mmproj = True
+                    mmproj_path = str(found[0])
+            except Exception:
+                pass
+        result.append({
+            "id": sid,
+            "name": mid,
+            "model_path": db_info.get("model_path") or "",
+            "args": db_info.get("args", {}),
+            "gpu_id": db_info.get("gpu_id", ""),
+            "idle_unload_min": db_info.get("idle_unload_min", 0),
+            "last_used_at": db_info.get("last_used_at", 0),
+            "status": "loaded" if running else "unloaded",
+            "loaded": running,
+            "loaded_info": loaded_detail,
+            "port": port,
+            "device": None,
+            "device_label": None,
+            "pid": ist.get("pid"),
+            "loaded_at": ist.get("started_at"),
+            "supports_chat": _supports_chat(mid, loaded_detail),
+            "has_mmproj": has_mmproj,
+            "mmproj_path": mmproj_path,
+            "created_at": db_info.get("created_at"),
+            "updated_at": db_info.get("updated_at"),
+        })
+
+    return result
+
 
 def _resolve_model_name(sid) -> dict:
     """将 DB id 解析为服务记录（name + model_path）"""
@@ -281,126 +395,6 @@ def _match_router_id(model_path: str) -> str:
     if parent and parent != "/" and parent != "models" and parent != derived:
         return parent
     return derived
-
-
-def list_services():
-    """列出模型池：DB 注册模型 + 目录扫描自动注册 + 实例状态
-
-    架构（per-model 实例）：每个服务一个独立 llama-server 进程，
-    状态从 instance_mgr 读取；目录扫描自动注册新模型。
-    """
-    from app import instance_mgr
-    from app.routers.models import _scan_models
-
-    # 目录扫描发现的模型（自动注册新模型）
-    scanned = _scan_models()
-
-    db_models = {}
-    deleted_names = set()
-    with get_conn() as conn:
-        try:
-            del_rows = conn.execute("SELECT name FROM deleted_models").fetchall()
-            deleted_names = {r["name"] for r in del_rows}
-        except Exception:
-            pass
-        rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
-        for r in rows:
-            d = dict(r)
-            d["args"] = json.loads(d["args"] or "{}")
-            db_models[d["name"]] = d
-        # 自动注册目录扫描发现的模型（排除 mmproj / hf-dir / 已删除墓碑）
-        # 注意：name 用 _match_router_id 推导（子目录模型=目录名，根目录=文件名），
-        # 与 create_service 的自动推导规则一致，避免重复注册相对路径垃圾
-        for sm in scanned:
-            if sm.get("kind") != "gguf":
-                continue  # hf-dir 等不能直接注册为服务
-            if sm["name"].startswith("mmproj"):
-                continue
-            mid = _match_router_id(sm["path"]) or sm["name"]
-            if mid.startswith("mmproj"):
-                continue
-            if mid in deleted_names:
-                continue
-            if mid not in db_models:
-                cur = conn.execute(
-                    "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
-                    "VALUES (?,?, '{}', 'unloaded', ?, ?)",
-                    (mid, sm["path"], now(), now()),
-                )
-                db_models[mid] = {
-                    "id": cur.lastrowid, "name": mid, "model_path": sm["path"],
-                    "args": {}, "status": "unloaded",
-                    "created_at": now(), "updated_at": now(),
-                }
-
-    # 实例状态映射
-    inst_map = instance_mgr.all_instances()
-
-    result = []
-    seen = set()
-    # 输出：先目录扫描到的（有实例状态），再 DB 有但文件不在的
-    for mid, db_info in db_models.items():
-        if mid.startswith("mmproj"):
-            continue
-        if mid in deleted_names:
-            continue
-        seen.add(mid)
-        sid = db_info.get("id", 0)
-        ist = inst_map.get(sid, {})
-        running = bool(ist)
-        loaded_detail = {}
-        # 尝试从实例 /models 拿 meta（端口探测）
-        port = ist.get("port")
-        if port:
-            try:
-                import httpx
-                with httpx.Client(timeout=2) as c:
-                    r = c.get(f"http://127.0.0.1:{port}/models")
-                if r.status_code == 200:
-                    data = r.json()
-                    arr = data.get("data", []) if isinstance(data, dict) else data
-                    if arr:
-                        loaded_detail = arr[0]
-            except Exception:
-                pass
-        # 检测 mmproj
-        has_mmproj = False
-        mmproj_path = ""
-        mp = db_info.get("model_path", "")
-        if mp:
-            from pathlib import Path as _P
-            try:
-                mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
-                found = sorted(mm_dir.glob("mmproj*.gguf"))
-                if found:
-                    has_mmproj = True
-                    mmproj_path = str(found[0])
-            except Exception:
-                pass
-        result.append({
-            "id": sid,
-            "name": mid,
-            "model_path": db_info.get("model_path") or "",
-            "args": db_info.get("args", {}),
-            "gpu_id": db_info.get("gpu_id", ""),
-            "idle_unload_min": db_info.get("idle_unload_min", 0),
-            "last_used_at": db_info.get("last_used_at", 0),
-            "status": "loaded" if running else "unloaded",
-            "loaded": running,
-            "loaded_info": loaded_detail,
-            "port": port,
-            "device": None,
-            "device_label": None,
-            "pid": ist.get("pid"),
-            "loaded_at": ist.get("started_at"),
-            "supports_chat": _supports_chat(mid, loaded_detail),
-            "has_mmproj": has_mmproj,
-            "mmproj_path": mmproj_path,
-            "created_at": db_info.get("created_at"),
-            "updated_at": db_info.get("updated_at"),
-        })
-
-    return result
 
 
 @router.get("/router/status")
