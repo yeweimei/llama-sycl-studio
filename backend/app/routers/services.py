@@ -644,10 +644,11 @@ def client_config(sid: int):
         ).fetchone()
     key = key_row["key"] if key_row else "<在系统设置生成 API 密钥>"
     auth = f'"Authorization: Bearer {key}"' if key_row else ""
+    auth_line = f'  -H {auth} \\' if auth else ""
 
     curl = f'''curl {base}/chat/completions \\
   -H "Content-Type: application/json" \\
-  {"  -H " + auth + " \\" if auth else ""}
+{auth_line}
   -d '{{"model": "{model_name}", "messages": [{{"role": "user", "content": "你好"}}], "max_tokens": 100}}'
 '''
 
