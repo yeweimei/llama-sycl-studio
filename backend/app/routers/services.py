@@ -51,6 +51,19 @@ def _model_path_from_loaded(loaded_info) -> dict:
     return result
 
 
+def _supports_chat(model_name: str, loaded_detail: dict) -> bool:
+    """判断模型是否支持对话（embedding/rerank 类模型不支持）
+
+    判定依据：模型名含 embedding/embed/rerank/bge 关键词
+    （不能用 --embeddings 参数判断：router 全局 --embeddings，
+    所有子进程都会继承该参数）
+    """
+    nl = (model_name or "").lower()
+    if any(k in nl for k in ("embedding", "embed-", "rerank", "bge-", "bge_")):
+        return False
+    return True
+
+
 def _extract_proc_info(loaded_detail: dict) -> dict:
     """从 router /models 返回的 loaded_detail 中解析进程级信息"""
     import subprocess
@@ -235,6 +248,7 @@ def list_services():
             "device_label": proc["device_label"],
             "pid": proc["pid"],
             "loaded_at": proc["loaded_at"],
+            "supports_chat": _supports_chat(mid, loaded_detail),
             "has_mmproj": has_mmproj,
             "mmproj_path": mmproj_path,
             "created_at": db_info.get("created_at"),
@@ -274,6 +288,7 @@ def list_services():
                 "device_label": None,
                 "pid": None,
                 "loaded_at": None,
+                "supports_chat": _supports_chat(name, {}),
                 "has_mmproj": hm,
                 "mmproj_path": hmp,
                 "created_at": db_info.get("created_at"),
@@ -384,6 +399,7 @@ def get_service(sid: int):
         d["loaded"] = False
         d["status"] = "unavailable"
         d["loaded_info"] = {}
+    d["supports_chat"] = _supports_chat(d.get("name", ""), d.get("loaded_info") or {})
 
     # 检测 mmproj：模型 gguf 同目录是否有 mmproj*.gguf
     # （路径统一用 Path().parent，兼容根目录/子目录模型）

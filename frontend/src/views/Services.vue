@@ -53,7 +53,7 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280">
+        <el-table-column label="操作" width="330">
           <template #default="{ row }">
             <el-button v-if="!row.loaded" type="success" size="small" :loading="loadingModel === row.name" @click="doLoad(row)">
               启动
@@ -61,14 +61,14 @@
             <el-button v-else type="warning" size="small" :loading="loadingModel === row.name" @click="doUnload(row)">
               停止
             </el-button>
+            <el-button size="small" :loading="restartingModel === row.name" @click="doRestart(row)" :disabled="!row.loaded">重启</el-button>
             <el-button size="small" @click="openEdit(row)" :disabled="!row.id">编辑</el-button>
             <el-button size="small" @click="$router.push('/services/' + row.id)" :disabled="!row.id">详情</el-button>
             <el-dropdown trigger="click" @command="(cmd) => onMore(cmd, row)">
               <el-button size="small">更多<el-icon><ArrowDown /></el-icon></el-button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item command="restart" :disabled="!row.loaded">重启</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided style="color:#f56c6c">删除</el-dropdown-item>
+                  <el-dropdown-item command="delete" style="color:#f56c6c">删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -191,6 +191,13 @@
             <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="标签">
+          <el-select v-model="editForm.custom_tags" multiple filterable allow-create default-first-option
+            placeholder="选择或输入标签（回车添加）" style="width:100%">
+            <el-option v-for="t in allTagOptions" :key="t" :label="t" :value="t" />
+          </el-select>
+          <div class="form-tip">自定义标签；自动标签（思考/多模态/Embedding 等）按模型名自动生成</div>
+        </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
         <ParamForm v-model="editForm.preset" />
         <div class="form-tip" style="margin-top:4px">推理参数通过模型预设(config.ini)生效，保存后需重启容器加载。</div>
@@ -204,7 +211,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import ParamForm from '../components/ParamForm.vue'
@@ -212,13 +219,14 @@ import {
   listServices, startService, stopService, deleteService, routerStatus,
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
-  listModels, getSelectableGpus, listModelTags,
+  listModels, getSelectableGpus, listModelTags, updateModelTags,
 } from '../api'
 
 const services = ref([])
 const loading = ref(false)
 const loadingModel = ref('')
 const unloadingModel = ref('')
+const restartingModel = ref('')
 const routerHealthy = ref(false)
 const routerInfo = ref(null)
 
@@ -288,9 +296,19 @@ function svcTags(name) {
 }
 const editVisible = ref(false)
 const saving = ref(false)
-const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET } })
+const editForm = ref({ id: null, name: '', model_path: '', presetId: null, preset: { ...DEFAULT_PRESET }, custom_tags: [] })
 const editUseManualName = ref(false)
 const _allPresets = ref([])
+const _allTags = ref([])
+
+// 所有可选标签（自动标签 + 所有模型的自定义标签去重）
+const allTagOptions = computed(() => {
+  const s = new Set()
+  for (const t of _allTags.value) {
+    for (const x of [...(t.tags || []), ...(t.custom_tags || [])]) s.add(x)
+  }
+  return [...s]
+})
 
 function onEditPathChange() {
   if (editUseManualName.value) return
@@ -533,10 +551,19 @@ async function openEdit(row) {
     gpu_id: row.gpu_id || found?.device || 'SYCL0',
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
+    custom_tags: [],
   }
   editUseManualPath.value = !modelList.value.some(m => m.path === row.model_path)
   editUseManualName.value = false
   editVisible.value = true
+  // 加载标签（自动标签展示用，自定义标签可编辑）
+  try {
+    _allTags.value = await listModelTags()
+    const t = _allTags.value.find(x => x.model_name === row.name)
+    editForm.value.custom_tags = t?.custom_tags ? [...t.custom_tags] : []
+  } catch (e) {
+    _allTags.value = []
+  }
 }
 
 async function doSaveEdit() {
@@ -570,6 +597,13 @@ async function doSaveEdit() {
     } else {
       await createPreset({ model_name: editForm.value.name, ...payload })
     }
+    // 3. 保存自定义标签（updateModelTags 同时更新自动标签）
+    try {
+      await updateModelTags(editForm.value.name, {
+        tags: [],
+        custom_tags: editForm.value.custom_tags || [],
+      })
+    } catch (e) { /* 标签保存失败不阻断主流程 */ }
     ElMessage.success('已保存（推理参数需重启容器后生效）')
     editVisible.value = false
     refresh()
@@ -593,6 +627,7 @@ async function doRestart(row) {
     return
   }
   loadingModel.value = row.name
+  restartingModel.value = row.name
   loadProgress.value = 10
   loadStatusText.value = '正在重启（卸载中）…'
   loadLogs.value = []
@@ -614,6 +649,7 @@ async function doRestart(row) {
         clearTimers()
         setTimeout(() => {
           loadingModel.value = ''
+          restartingModel.value = ''
           loadProgress.value = 0
           loadStatusText.value = ''
           loadLogs.value = []
@@ -627,6 +663,7 @@ async function doRestart(row) {
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '重启失败')
     loadingModel.value = ''
+    restartingModel.value = ''
     loadProgress.value = 0
     loadStatusText.value = ''
     loadLogs.value = []

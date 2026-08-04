@@ -21,6 +21,7 @@
                   <el-tag size="small" :type="service?.loaded ? 'success' : 'info'">
                     {{ service?.loaded ? '已加载' : (service?.status === 'unavailable' ? '不可用' : '未加载') }}
                   </el-tag>
+                  <el-tag v-if="service?.supports_chat === false" size="small" type="warning" style="margin-left:6px">Embedding 模型（不支持对话）</el-tag>
                 </el-descriptions-item>
                 <el-descriptions-item label="API 端点"><code class="mono">{{ apiEndpoint }}</code></el-descriptions-item>
               </el-descriptions>
@@ -72,7 +73,7 @@
       </el-tab-pane>
 
       <!-- ================= 聊天测试台 ================= -->
-      <el-tab-pane label="💬 聊天测试台" name="chat">
+      <el-tab-pane v-if="service?.supports_chat !== false" label="💬 聊天测试台" name="chat">
         <div class="chat-layout">
           <!-- 会话侧栏 -->
           <div class="session-sidebar">
