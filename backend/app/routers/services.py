@@ -66,6 +66,55 @@ def _supports_chat(model_name: str, loaded_detail: dict) -> bool:
     return True
 
 
+def _device_label_map() -> dict:
+    """解析 llama-server --list-devices，返回 {SYCLx: 设备标签} 映射（带 30s 缓存）
+    如 {'SYCL0': 'Arc A770M (独显)', 'SYCL1': 'Iris Xe (核显)'}
+    通用性：任意 Intel 设备按名称自动标注（Arc=独显 / Iris|Xe=核显），
+    不依赖固定的 SYCL 序号映射。
+    """
+    import subprocess
+    import re
+    import os
+    import time
+
+    _cache_key = "_dev_map_cache"
+    _ts_key = "_dev_map_ts"
+    now = time.time()
+    if getattr(_device_label_map, _cache_key, None) and now - getattr(_device_label_map, _ts_key, 0) < 30:
+        return getattr(_device_label_map, _cache_key)
+
+    result = {}
+    llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
+    try:
+        if os.path.isfile(llama_bin):
+            # 确保 oneAPI 库路径在 LD_LIBRARY_PATH 中（llama-server 依赖 libsvml 等）
+            env = os.environ.copy()
+            cur_ld = env.get("LD_LIBRARY_PATH", "")
+            if "oneapi" not in cur_ld:
+                import glob as _glob
+                oneapi_libs = ":".join(sorted(_glob.glob("/opt/intel/oneapi/*/lib")) +
+                                        _glob.glob("/opt/intel/oneapi/compiler/*/lib"))
+                env["LD_LIBRARY_PATH"] = f"{oneapi_libs}:{cur_ld}".strip(":")
+            r = subprocess.run([llama_bin, "--list-devices"], capture_output=True, text=True, timeout=15, env=env)
+            output = r.stdout + r.stderr
+            pattern = re.compile(r"SYCL(\d+):\s*(.+?)\s*\(\d+\s*MiB")
+            for m in pattern.finditer(output):
+                idx = m.group(1)
+                raw_name = m.group(2).strip()
+                if "Arc" in raw_name:
+                    label = f"{raw_name} (独显)"
+                elif "Iris" in raw_name or "Xe" in raw_name:
+                    label = f"{raw_name} (核显)"
+                else:
+                    label = raw_name
+                result[f"SYCL{idx}"] = label
+    except Exception:
+        pass
+    setattr(_device_label_map, _cache_key, result)
+    setattr(_device_label_map, _ts_key, now)
+    return result
+
+
 def _extract_proc_info(loaded_detail: dict) -> dict:
     """从 router /models 返回的 loaded_detail 中解析进程级信息"""
     import subprocess
@@ -104,13 +153,9 @@ def _extract_proc_info(loaded_detail: dict) -> dict:
     else:
         dev = "SYCL0"
     info["device"] = dev
-    # 设备标签映射
-    if "SYCL0" in dev:
-        info["device_label"] = "独显"
-    elif "SYCL1" in dev:
-        info["device_label"] = "核显"
-    else:
-        info["device_label"] = dev
+    # 设备标签：优先用 --list-devices 解析的设备名（通用），查不到用原始值
+    dev_label_map = _device_label_map()
+    info["device_label"] = dev_label_map.get(dev, dev)
 
     # 通过端口查 PID
     if info["port"]:

@@ -13,7 +13,9 @@ STUDIO_DIR="/app/studio"
 # SYCL 环境变量
 export ZES_ENABLE_SYSMAN="${ZES_ENABLE_SYSMAN:-1}"
 export GGML_SYCL_ENABLE_FLASH_ATTN="${GGML_SYCL_ENABLE_FLASH_ATTN:-1}"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/app}"
+# 动态收集 Intel oneAPI lib 路径（镜像版本升级后路径可能变化，运行时收集最可靠）
+ONEAPI_LIBS=$(find /opt/intel/oneapi -type d \( -name lib -o -name lib64 \) 2>/dev/null | paste -sd: || true)
+export LD_LIBRARY_PATH="${ONEAPI_LIBS:+${ONEAPI_LIBS}:}/app"
 
 # 代理（容器内 pip/下载用）
 if [ -n "$HTTP_PROXY" ] || [ -n "$http_proxy" ]; then
@@ -25,8 +27,13 @@ echo "⬢ llama-studio 单容器启动"
 echo "  Models:    ${MODELS_DIR}"
 echo "  Router:    0.0.0.0:${ROUTER_PORT}"
 echo "  WebUI:     0.0.0.0:${WEBUI_PORT}"
-echo "  GPU:       $(ls /dev/dri/ 2>/dev/null || echo 'none')"
+DRI_DEVICES=$(ls /dev/dri/ 2>/dev/null | grep -E '^(card|renderD)' | tr '\n' ' ' || true)
+echo "  GPU:       ${DRI_DEVICES:-none（CPU 模式）}"
 echo "  MODELS_MAX: ${MODELS_MAX}"
+
+# 检测可用 GPU 数量（/dev/dri/card*），无 GPU 时 router 以 CPU 模式运行
+GPU_COUNT=$(ls /dev/dri/card* 2>/dev/null | wc -l)
+export GPU_COUNT
 
 # ========== 启动前：从 DB 重建 config.ini（保证重启后预设生效）==========
 echo "⬢ 重建 config.ini（从 DB 预设）..."

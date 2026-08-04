@@ -7,8 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-venv curl ca-certificates xpu-smi \
     && rm -rf /var/lib/apt/lists/*
 
-# 保留原有 LD_LIBRARY_PATH（Intel oneAPI），追加分号 /app
-ENV LD_LIBRARY_PATH=/opt/intel/oneapi/tcm/1.4/lib:/opt/intel/oneapi/umf/1.0/lib:/opt/intel/oneapi/tbb/2022.3/env/../lib/intel64/gcc4.8:/opt/intel/oneapi/pti/0.16/lib:/opt/intel/oneapi/mpi/2021.17/opt/mpi/libfabric/lib:/opt/intel/oneapi/mpi/2021.17/lib:/opt/intel/oneapi/mkl/2025.3/lib:/opt/intel/oneapi/dnnl/2025.3/lib:/opt/intel/oneapi/debugger/2025.3/opt/debugger/lib:/opt/intel/oneapi/compiler/2025.3/opt/compiler/lib:/opt/intel/oneapi/compiler/2025.3/lib:/opt/intel/oneapi/ccl/2021.17/lib/:/app
+# 保留原有 LD_LIBRARY_PATH（Intel oneAPI），追加 /app
+# （具体 oneAPI 版本路径在 entrypoint.sh 运行时动态收集，避免镜像升级后路径失效）
+ENV LD_LIBRARY_PATH=/app
 
 # 创建工作目录
 WORKDIR /app/studio

@@ -33,7 +33,7 @@
         </el-table-column>
         <el-table-column label="设备" width="90">
           <template #default="{ row }">
-            <el-tag v-if="row.loaded && row.device_label" size="small" :type="row.device === 'SYCL0' ? '' : 'success'">{{ row.device_label }}</el-tag>
+            <el-tag v-if="row.loaded && row.device_label" size="small" :type="row.device_label.includes('核显') ? 'success' : ''">{{ row.device_label }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="量化" width="100">

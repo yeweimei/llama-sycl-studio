@@ -73,17 +73,23 @@ lspci | grep -i vga
 ls -l /dev/dri/
 ```
 
+> 💡 **自动检测**：`deploy.sh` 会自动扫描目标机 `/dev/dri/*` 并生成 `--device` 直通参数，
+> 无需手动确认设备号。以下手动步骤仅用于自定义部署场景。
+
 Intel Arc 独显通常对应 `card1/renderD129`，核显对应 `card0/renderD128`。
 **NUC12（A770M）** 用：`/dev/dri/card1` + `/dev/dri/renderD129`（pci-0000:03:00.0）。
 
 ### 4.2 启动
 
 ```bash
+# 自动检测 GPU 设备（推荐）：
+DEVICES=$(for d in /dev/dri/card* /dev/dri/renderD*; do echo -n "--device $d "; done)
+
 docker run -d --name llama-studio --restart unless-stopped \
   -p 9100:9100 \
   -v /path/to/your/models:/models \
   -v llama-studio-data:/root/.llama-studio \
-  --device /dev/dri/card1 --device /dev/dri/renderD129 \
+  $DEVICES \
   -e ZES_ENABLE_SYSMAN=1 \
   -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
   llama-studio:latest
@@ -94,9 +100,11 @@ docker run -d --name llama-studio --restart unless-stopped \
 | `-p 9100:9100` | 对外唯一端口（WebUI + OpenAI API 都从 9100 出） |
 | `-v <models>:/models` | 宿主模型目录，GGUF 文件放这里，router 自动发现 |
 | `-v llama-studio-data:/root/.llama-studio` | named volume，SQLite DB（密码/预设/任务）持久化 |
-| `--device ...` | Intel GPU 设备直通（按 4.1 确认） |
+| `--device ...` | Intel GPU 设备直通（可自动检测；**无 GPU 机器可不加，自动 CPU 模式**） |
 | `ZES_ENABLE_SYSMAN=1` | SYCL 设备枚举必需 |
 | `GGML_SYCL_ENABLE_FLASH_ATTN=1` | Flash Attention（推荐） |
+
+> 无 `/dev/dri` 的机器（纯 CPU）：不加 `--device` 即可，llama-server 自动降级 CPU 推理。
 
 ### 4.3 验证
 
@@ -116,15 +124,34 @@ curl http://127.0.0.1:9100/v1/models
 
 ---
 
-## 5. 一键部署脚本（可选）
+## 5. 一键部署脚本（通用任意 Intel 机器）
 
 ```bash
-# 本地（有 Node + rsync + ssh 免密）一键部署到远程 Intel GPU 机器
+# 本地（有 Node + rsync + ssh 免密）一键部署到任意 Intel GPU 机器
 bash scripts/deploy.sh [ssh-host] [--rebuild]
-# 默认目标 nuc12；--rebuild 强制重建镜像（否则镜像已存在时跳过）
+# 示例：部署到新机器
+bash scripts/deploy.sh 192.168.1.50 --rebuild
 ```
 
-脚本流程：构建前端 → rsync 代码 → 远程构建镜像 → 重启容器（保留数据卷）。
+**脚本自动适配目标机环境：**
+
+| 项 | 自动行为 |
+|---|---|
+| GPU 设备 | 自动扫描 `/dev/dri/*` 生成 `--device` 直通；无 GPU 则 CPU 模式 |
+| 模型目录 | 默认 `~/models`（目标机家目录，适配不同用户）；可用 `MODELS_HOST_DIR` 覆盖 |
+| 局域网 IP | 自动探测宿主机 IP 注入容器（接入配置展示用） |
+| 端口 | 默认 9100，可用 `WEBUI_PORT` 覆盖 |
+
+**可用环境变量：**
+
+```bash
+MODELS_HOST_DIR=/data/models \   # 宿主机模型目录（默认 ~/models）
+WEBUI_PORT=9100 \               # WebUI 端口
+MODELS_MAX=3 \                  # router 最大驻留模型数
+bash scripts/deploy.sh 192.168.1.50
+```
+
+脚本流程：构建前端 → rsync 代码 → 远程构建镜像 → 自动探测环境 → 启动容器（保留数据卷）。
 
 ---
 
