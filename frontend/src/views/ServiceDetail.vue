@@ -116,7 +116,8 @@
             >
               <el-button size="small">图片</el-button>
             </el-upload>
-            <el-button size="small" type="primary" style="margin-left:auto" :disabled="!canChat || chatLoading" @click="sendChat">发送</el-button>
+            <el-button v-if="!chatLoading" size="small" type="primary" style="margin-left:auto" :disabled="!canChat" @click="sendChat">发送</el-button>
+            <el-button v-else size="small" type="danger" style="margin-left:auto" @click="stopChat">⏹ 停止</el-button>
             <el-button size="small" @click="clearChat">清空</el-button>
           </div>
           <div v-if="pendingImage" style="margin-bottom:4px">
@@ -255,11 +256,23 @@ async function exportLogs() {
 const messages = ref([])
 const chatInput = ref('')
 const chatLoading = ref(false)
-const chatThinking = ref(false)
-const chatMaxTokens = ref(512)
+// 聊天设置持久化（按服务分开存）
+const CHAT_SET_KEY = `chat-settings-${sid}`
+const chatThinking = ref(localStorage.getItem(CHAT_SET_KEY) ? JSON.parse(localStorage.getItem(CHAT_SET_KEY)).thinking ?? false : false)
+const chatMaxTokens = ref(localStorage.getItem(CHAT_SET_KEY) ? JSON.parse(localStorage.getItem(CHAT_SET_KEY)).maxTokens ?? 512 : 512)
 const chatView = ref(null)
 const fileParsing = ref(false)
 const pendingImage = ref(null) // base64 data URL
+// 打断控制器
+let chatAbort = null
+
+watch([chatThinking, chatMaxTokens], () => {
+  localStorage.setItem(CHAT_SET_KEY, JSON.stringify({ thinking: chatThinking.value, maxTokens: chatMaxTokens.value }))
+})
+
+function stopChat() {
+  if (chatAbort) chatAbort.abort()
+}
 
 const canChat = computed(() => service.value?.loaded)
 const isVisionModel = computed(() => {
@@ -291,7 +304,7 @@ async function sendChat() {
     ]
   }
   messages.value.push({ role: 'user', content: text })
-  // 持久化用户消息
+  // 持久化用户消息（仅一次）
   try { await addChatHistory(sid, { role: 'user', content: text }) } catch (e) { /* ignore */ }
   chatInput.value = ''
   pendingImage.value = null
@@ -299,6 +312,8 @@ async function sendChat() {
   messages.value.push({ role: 'assistant', content: '', thinking: '' })
   const aiMsg = messages.value[messages.value.length - 1]
   scrollChat()
+  const controller = new AbortController()
+  chatAbort = controller
   try {
     const payload = {
       messages: messages.value
@@ -327,6 +342,7 @@ async function sendChat() {
         'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
       },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
@@ -371,7 +387,8 @@ async function sendChat() {
       }
     }
     if (!aiMsg.content && !aiMsg.thinking) {
-      aiMsg.content = '（无输出，可能思考中或已截断）'
+      aiMsg.content = '（模型未返回内容：可能是思考模式未产出正式回答，或 max_tokens 在思考阶段被截断。可尝试关闭思考模式或调大 max_tokens）'
+      aiMsg.isError = true
     } else if (!aiMsg.content && aiMsg.thinking) {
       aiMsg.content = '（模型仅返回了思考内容，未生成正式回答）'
     } else {
@@ -380,12 +397,19 @@ async function sendChat() {
       if (idx >= 0 && aiMsg.thinking) thinkingExpanded.value[idx] = false
     }
   } catch (e) {
-    aiMsg.content = `❌ 调用失败: ${e.message || e}`
+    if (e.name === 'AbortError') {
+      // 用户主动停止：保留已生成内容
+      if (!aiMsg.content && aiMsg.thinking) aiMsg.content = '（已停止：仅输出了思考内容）'
+    } else {
+      aiMsg.content = `❌ 调用失败: ${e.message || e}`
+    }
   } finally {
     chatLoading.value = false
+    chatAbort = null
     scrollChat()
-    // 持久化助手回复
-    if (aiMsg.content && !aiMsg.content.startsWith('❌')) {
+    // 持久化助手回复（跳过占位提示/错误/空回复）
+    const hasReal = aiMsg.content && !aiMsg.content.startsWith('（') && !aiMsg.content.startsWith('❌')
+    if (hasReal || (aiMsg.thinking && aiMsg.content)) {
       try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '' }) } catch (e) { /* ignore */ }
     }
   }
@@ -439,7 +463,19 @@ async function loadHistory() {
   try {
     const list = await getChatHistory(sid)
     if (list.length) {
-      messages.value = list.map(h => ({ role: h.role, content: h.content, thinking: h.thinking || '' }))
+      // 过滤占位提示/错误消息，并去重连续重复的 user 消息
+      const cleaned = []
+      let lastKey = null
+      for (const h of list) {
+        const content = (h.content || '').trim()
+        if (!content) continue
+        if (content.startsWith('（') || content.startsWith('❌')) continue
+        const key = `${h.role}:${content}`
+        if (h.role === 'user' && key === lastKey) continue // 去重
+        lastKey = key
+        cleaned.push({ role: h.role, content: h.content, thinking: h.thinking || '' })
+      }
+      messages.value = cleaned
     }
   } catch (e) { /* ignore */ }
 }
@@ -518,7 +554,7 @@ onUnmounted(() => {
 function onGlobalKey(e) {
   if (e.key === 'Enter' && !e.shiftKey && activeTab.value === 'chat' && document.activeElement?.tagName === 'TEXTAREA') {
     e.preventDefault()
-    sendChat()
+    if (!chatLoading.value) sendChat()
   }
 }
 </script>

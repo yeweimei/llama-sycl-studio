@@ -680,8 +680,14 @@ def get_history(sid: int):
 
 @router.post("/{sid}/history")
 def add_history(sid: int, body: HistoryItem):
-    """追加聊天历史"""
+    """追加聊天历史（连续重复的 user 消息自动去重，防双击/重复调用）"""
     with get_conn() as conn:
+        last = conn.execute(
+            "SELECT role, content FROM chat_history WHERE sid=? ORDER BY id DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+        if body.role == 'user' and last and last['role'] == 'user' and last['content'] == body.content:
+            return {"ok": True, "skipped": "duplicate"}
         conn.execute(
             "INSERT INTO chat_history (sid, role, content, thinking, created_at) VALUES (?,?,?,?,?)",
             (sid, body.role, body.content, body.thinking, now()),
