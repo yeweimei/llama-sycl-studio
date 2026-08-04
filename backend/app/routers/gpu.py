@@ -21,6 +21,45 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
         return ""
 
 
+def _parse_xpu_smi_table() -> dict[int, dict]:
+    """解析 xpu-smi table 输出，按设备块返回 {gpu_id: {pci_bdf, name, mem_used_mib, mem_total_mib, mem_util_pct}}
+    table 格式每设备两行：
+      |   N   ...   | 0000:xx:xx.x  Off | ... |
+      | N/A  N/A  26W / 117W | 28MiB / 16288MiB | ... |
+    """
+    dump = _run(["xpu-smi"], timeout=10)
+    devices: dict[int, dict] = {}
+    if not dump:
+        return devices
+    lines = dump.splitlines()
+    cur_id = None
+    for line in lines:
+        line_s = line.strip()
+        # 设备块首行：|   0   Off | 0000:00:02.0  Off | ...
+        m_id = re.match(r'\|\s*(\d+)\s+\S+\s+\|\s*(0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])', line_s, re.IGNORECASE)
+        if m_id:
+            cur_id = int(m_id.group(1))
+            devices.setdefault(cur_id, {"pci_bdf": m_id.group(2), "name": "Intel GPU", "mem_used_mib": None, "mem_total_mib": None, "mem_util_pct": None})
+            continue
+        if cur_id is None:
+            continue
+        # 设备块第二行：| N/A  26W / 117W | 28MiB / 16288MiB | ...
+        m_mem = re.search(r'(\d+)MiB\s*/\s*(\d+)MiB', line_s)
+        if m_mem and devices[cur_id]["mem_used_mib"] is None:
+            used_mib = int(m_mem.group(1))
+            total_mib = int(m_mem.group(2))
+            devices[cur_id]["mem_used_mib"] = used_mib
+            devices[cur_id]["mem_total_mib"] = total_mib
+            if total_mib > 0:
+                devices[cur_id]["mem_util_pct"] = round(used_mib / total_mib * 100)
+            # 设备名
+            if 'Arc' in line_s or 'Iris' in line_s or 'Graphics' in line_s:
+                m_name = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'-]*)', line_s)
+                if m_name:
+                    devices[cur_id]["name"] = m_name.group(1).strip()
+    return devices
+
+
 def _parse_xpu_smi_query() -> list[dict]:
     """解析 xpu-smi 输出，返回设备列表
     XE1 硬件不支持 memory.utilization / clocks.current.soc / temperature，
@@ -28,7 +67,8 @@ def _parse_xpu_smi_query() -> list[dict]:
     双 GPU（核显 id=0 + 独显 id=1）分别查询。
     """
     devices = []
-    # 遍历两个 GPU id（0=核显, 1=独显），每个独立查询，N/A 字段容错
+    table_devices = _parse_xpu_smi_table()
+    # 遍历 GPU id（0=核显, 1=独显），每个独立查询，N/A 字段容错
     for gpu_id in (0, 1):
         out = _run([
             "xpu-smi", "--query-gpu=memory.used,memory.total,power.draw,power.limit,energy.consumed",
@@ -54,27 +94,10 @@ def _parse_xpu_smi_query() -> list[dict]:
         if mem_used is None or mem_total is None:
             continue  # 该设备查不到内存，跳过
 
-        # 从 table 输出提取 PCI BDF、设备名、显存百分比
-        name = "Intel GPU"
-        pci_bdf = ""
-        mem_util_pct = None
-        dump = _run(["xpu-smi"], timeout=10)
-        if dump:
-            for line in dump.splitlines():
-                line_s = line.strip()
-                m_bdf = re.search(r'(0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])', line_s, re.IGNORECASE)
-                if m_bdf and not pci_bdf:
-                    pci_bdf = m_bdf.group(1)
-                if 'Arc' in line_s or 'Iris' in line_s or 'Graphics' in line_s:
-                    m_name = re.search(r'((?:Intel\(R\)|Intel)\s+[\w\(\)\s,\'-]+(?:Graphics|Arc|Iris)[\w\(\)\s,\'-]*)', line_s)
-                    if m_name:
-                        name = m_name.group(1).strip()
-                m_mem = re.search(r'(\d+)MiB\s*/\s*(\d+)MiB', line_s)
-                if m_mem:
-                    used_mib = int(m_mem.group(1))
-                    total_mib = int(m_mem.group(2))
-                    if total_mib > 0:
-                        mem_util_pct = round(used_mib / total_mib * 100)
+        t = table_devices.get(gpu_id, {})
+        name = t.get("name") or "Intel GPU"
+        pci_bdf = t.get("pci_bdf") or ""
+        mem_util_pct = t.get("mem_util_pct")
 
         mem_total_mib = int(round(mem_total))
         mem_used_mib = int(round(mem_used))
