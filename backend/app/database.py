@@ -143,6 +143,8 @@ def init_db():
         svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
         if "gpu_id" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")
+        if "hidden" not in svc_cols:
+            conn.execute("ALTER TABLE services ADD COLUMN hidden INTEGER DEFAULT 0")
         # 迁移: chat_history 加 session_id 列
         ch_cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
         if "session_id" not in ch_cols:

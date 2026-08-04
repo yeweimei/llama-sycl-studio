@@ -571,13 +571,13 @@ async function doRestart(row) {
 
 async function doDelete(row) {
   try {
-    await ElMessageBox.confirm(`确认删除模型注册「${row.name}」？（不会删除模型文件）`, '删除确认', {
-      confirmButtonText: '删除',
+    await ElMessageBox.confirm(`确认从列表移除模型注册「${row.name}」？（模型文件保留）`, '删除确认', {
+      confirmButtonText: '移除',
       cancelButtonText: '取消',
       type: 'warning',
     })
     await deleteService(row.id)
-    ElMessage.success('已删除')
+    ElMessage.success('已从列表移除（模型文件保留）')
     refresh()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error(e.response?.data?.detail || '删除失败')

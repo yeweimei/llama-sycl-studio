@@ -123,17 +123,23 @@ def list_services():
 
     # 从 DB 获取注册的模型元信息，并自动注册 router 发现的新模型（按 name upsert）
     db_models = {}
+    hidden_names = set()
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM services ORDER BY id").fetchall()
         for r in rows:
             d = dict(r)
             d["args"] = json.loads(d["args"] or "{}")
+            if d.get("hidden"):
+                hidden_names.add(d["name"])
+                continue  # 软删除的模型不参与合并/输出
             db_models[d["name"]] = d
-        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件）
+        # 自动注册 router 发现但 DB 没有的模型（排除 mmproj 投影文件 + 已软删除的）
         for rm in router_models:
             mid = rm["id"]
             if mid.startswith("mmproj"):
                 continue
+            if mid in hidden_names:
+                continue  # 已软删除，阻止自动复活
             if mid not in db_models:
                 cur = conn.execute(
                     "INSERT INTO services (name, model_path, args, status, created_at, updated_at) "
@@ -154,6 +160,8 @@ def list_services():
         mid = rm["id"]
         if mid.startswith("mmproj"):
             continue  # mmproj 投影文件不是可加载模型，输出层也排除
+        if mid in hidden_names:
+            continue  # 已软删除，输出层也排除
         seen.add(mid)
         db_info = db_models.get(mid, {})
         # 状态：优先 router /models 的 status.value，回退 /v1/models 的 status
@@ -417,13 +425,25 @@ def restart_service(sid: int):
 
 @router.delete("/{sid}")
 def delete_service(sid: int):
-    """删除模型注册记录（不删文件）"""
+    """软删除模型注册（不删文件）：卸载进程 + 标记 hidden=1，
+    阻止 list_services 自动注册复活"""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
         if not row:
             raise HTTPException(404, "模型不存在")
-        conn.execute("DELETE FROM services WHERE id=?", (sid,))
-    return {"ok": True}
+        d = dict(row)
+        model_name = d["name"]
+
+    # 若已加载，先卸载进程（参照 restart 逻辑，失败不阻断删除）
+    try:
+        router_client.unload_model_sync(model_name)
+    except RuntimeError:
+        pass  # 卸载失败不阻断删除流程
+
+    # 软删除：标记 hidden=1（不物理删除，避免自动注册 INSERT 新记录丢失标记）
+    with get_conn() as conn:
+        conn.execute("UPDATE services SET hidden=1, status='unloaded', updated_at=? WHERE id=?", (now(), sid))
+    return {"ok": True, "hidden": True}
 
 
 @router.get("/{sid}/logs")
