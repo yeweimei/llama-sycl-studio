@@ -31,6 +31,64 @@ def _atomic_replace(src: Path, dst: Path):
     os.replace(str(tmp), str(dst))
 
 
+def _is_valid_elf(path: Path) -> bool:
+    """校验文件是有效的 ELF 可执行文件（前 4 字节 \x7fELF + 可执行位）"""
+    try:
+        if not os.access(str(path), os.X_OK):
+            return False
+        with open(str(path), "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except Exception:
+        return False
+
+
+def _app_dir() -> Path:
+    return CURRENT_BIN.parent
+
+
+def _current_set_files() -> list[Path]:
+    """当前 /app 下的完整二进制集：llama-server + lib*.so"""
+    app = _app_dir()
+    files = []
+    if CURRENT_BIN.exists():
+        files.append(CURRENT_BIN)
+    for lib in sorted(app.glob("lib*.so")):
+        files.append(lib)
+    return files
+
+
+def _backup_current_set(version: str) -> Path:
+    """备份当前完整二进制集到 BIN_DIR/{version}/（幂等）"""
+    dest = BIN_DIR / version
+    dest.mkdir(parents=True, exist_ok=True)
+    # 已有备份则跳过（幂等），避免覆盖
+    if (dest / "llama-server").exists():
+        return dest
+    for f in _current_set_files():
+        shutil.copy2(str(f), str(dest / f.name))
+    return dest
+
+
+def _restore_set(version: str):
+    """从 BIN_DIR/{version}/ 恢复完整集；兼容旧格式单文件 BIN_DIR/llama-server-bXXX"""
+    dest = BIN_DIR / version
+    if dest.is_dir():
+        restored = False
+        for f in dest.iterdir():
+            if f.is_file():
+                _atomic_replace(f, _app_dir() / f.name)
+                restored = True
+        if not restored:
+            raise RuntimeError(f"备份目录 {dest} 为空")
+        return
+    # 旧格式: 单文件 BIN_DIR/llama-server-bXXX（只恢复 llama-server，找不到 .so 不报错）
+    legacy = BIN_DIR / f"llama-server-{version}"
+    if legacy.exists():
+        _atomic_replace(legacy, CURRENT_BIN)
+        return
+    raise HTTPException(404, f"未找到版本 {version} 的备份")
+
+
 def _upsert_setting(conn, key: str, value: str):
     """安全的 upsert：先 UPDATE，rowcount=0 再 INSERT（兼容所有表结构）"""
     cur = conn.execute("UPDATE app_settings SET value=? WHERE key=?", (value, key))
@@ -66,6 +124,11 @@ def _list_local_versions() -> list[dict]:
     current = _get_current_version()
     versions.append({"version": current, "active": True, "path": str(CURRENT_BIN)})
     if BIN_DIR.exists():
+        # 新格式: 备份目录 BIN_DIR/bXXXX
+        for d in sorted(BIN_DIR.iterdir()):
+            if d.is_dir() and d.name.startswith("b"):
+                versions.append({"version": d.name, "active": False, "path": str(d)})
+        # 旧格式: 单文件 BIN_DIR/llama-server-bXXXX
         for f in sorted(BIN_DIR.glob("llama-server-b*")):
             ver = f.name.replace("llama-server-", "")
             versions.append({"version": ver, "active": False, "path": str(f)})
@@ -170,12 +233,10 @@ def engine_upgrade(body: UpgradeRequest):
     if not target:
         raise HTTPException(404, f"未找到版本 {version}")
 
-    # 步骤 1: 备份当前二进制
+    # 步骤 1: 备份当前完整二进制集（llama-server + lib*.so）
     current_ver = _get_current_version()
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    backup_path = BIN_DIR / f"llama-server-{current_ver}"
-    if not backup_path.exists() and CURRENT_BIN.exists():
-        shutil.copy2(str(CURRENT_BIN), str(backup_path))
+    backup_dir = _backup_current_set(current_ver)
 
     # 步骤 2: 下载
     download_url = target["url"]
@@ -210,12 +271,21 @@ def engine_upgrade(body: UpgradeRequest):
         if not new_bin:
             raise RuntimeError("解压后未找到 llama-server 可执行文件")
 
-        # 步骤 4: 校验大小（>1MB 才合理）
-        if new_bin.stat().st_size < 1_000_000:
-            raise RuntimeError(f"二进制文件过小: {new_bin.stat().st_size} bytes")
+        # 步骤 4: ELF 校验（新版本 llama-server 是 launcher ~785KB，不能用大小阈值）
+        if not _is_valid_elf(new_bin):
+            raise RuntimeError(f"llama-server 不是有效的 ELF 可执行文件: {new_bin}")
 
-        # 步骤 5: 原子替换（避免 Text file busy）
-        _atomic_replace(new_bin, CURRENT_BIN)
+        # 步骤 5: 替换完整二进制集（llama-server + lib*.so 全部原子替换到 /app/）
+        new_bin_dir = new_bin.parent
+        replaced = False
+        for f in sorted(new_bin_dir.iterdir()):
+            if not f.is_file():
+                continue
+            if f.name == "llama-server" or (f.name.startswith("lib") and f.suffix == ".so"):
+                _atomic_replace(f, _app_dir() / f.name)
+                replaced = True
+        if not replaced:
+            raise RuntimeError("解压目录中未找到需要替换的 llama-server/lib*.so")
 
         # 记录到 DB
         with get_conn() as conn:
@@ -226,10 +296,9 @@ def engine_upgrade(body: UpgradeRequest):
                 "message": f"已升级到 {version}，需重启容器生效"}
 
     except Exception as e:
-        # 自动回滚
-        if backup_path.exists():
-            try: _atomic_replace(backup_path, CURRENT_BIN)
-            except Exception: pass
+        # 自动回滚（恢复完整集）
+        try: _restore_set(current_ver)
+        except Exception: pass
         raise HTTPException(500, f"升级失败已回滚: {e}")
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
@@ -237,27 +306,26 @@ def engine_upgrade(body: UpgradeRequest):
 
 @router.post("/rollback")
 def engine_rollback(body: RollbackRequest):
-    """回滚到已安装的旧版本"""
+    """回滚到已安装的旧版本（恢复完整二进制集）"""
     version = body.version
-    backup_path = BIN_DIR / f"llama-server-{version}"
-    if not backup_path.exists():
+    # 校验备份存在（新格式目录或旧格式单文件）
+    dest = BIN_DIR / version
+    legacy = BIN_DIR / f"llama-server-{version}"
+    if not dest.is_dir() and not legacy.exists():
         raise HTTPException(404, f"未找到版本 {version} 的备份")
 
     current_ver = _get_current_version()
-    # 备份当前版本（如果尚未备份）
-    current_backup = BIN_DIR / f"llama-server-{current_ver}"
-    if not current_backup.exists() and CURRENT_BIN.exists():
-        shutil.copy2(str(CURRENT_BIN), str(current_backup))
+    # 备份当前版本（如果尚未备份，幂等）
+    _backup_current_set(current_ver)
 
     try:
-        _atomic_replace(backup_path, CURRENT_BIN)
+        _restore_set(version)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
         return {"ok": True, "version": version, "previous": current_ver,
                 "message": f"已回滚到 {version}，需重启容器生效"}
     except Exception as e:
         # 恢复原版本
-        if current_backup.exists():
-            try: _atomic_replace(current_backup, CURRENT_BIN)
-            except Exception: pass
+        try: _restore_set(current_ver)
+        except Exception: pass
         raise HTTPException(500, f"回滚失败已恢复: {e}")
