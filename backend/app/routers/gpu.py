@@ -120,6 +120,44 @@ def _parse_xpu_smi_query() -> list[dict]:
     return devices
 
 
+def _model_memory_by_device() -> dict[int, int]:
+    """统计每个 GPU 设备上 llama-server 进程的真实内存占用（RSS MiB）
+
+    通过进程 args 中的 --device 参数匹配设备；无法识别设备的进程
+    归入 -1（用于汇总展示）。
+    """
+    result = {0: 0, 1: 0, -1: 0}
+    try:
+        ps_out = _run(["ps", "-eo", "pid,rss,args"], timeout=5)
+        for line in ps_out.strip().splitlines()[1:]:
+            if "llama-server" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                rss_kb = int(parts[1])
+            except ValueError:
+                continue
+            args = " ".join(parts[2:])
+            dev = -1
+            if "--device" in args:
+                try:
+                    # 按空白切分后定位 --device 的下一个参数（进程路径可能含空格，用 rsplit 找最后一段）
+                    arg_tokens = args.split()
+                    di = arg_tokens.index("--device")
+                    dev_str = arg_tokens[di + 1]
+                    m = re.search(r"(\d+)", dev_str)
+                    if m:
+                        dev = int(m.group(1))
+                except (ValueError, IndexError):
+                    dev = -1
+            result[dev] = result.get(dev, 0) + int(rss_kb // 1024)
+    except Exception:
+        pass
+    return result
+
+
 def _parse_xpu_smi_processes() -> list[dict]:
     """从 xpu-smi 输出解析 GPU 进程列表，fallback ps"""
     processes = []
@@ -316,12 +354,21 @@ def gpu_status():
 
         processes = _parse_xpu_smi_processes()
         inference = _query_inference_metrics()
+        mem_by_dev = _model_memory_by_device()
+
+        # 附加设备真实模型内存占用 + 集显标记
+        for dev in devices:
+            dev["model_memory_mib"] = mem_by_dev.get(dev["id"], 0)
+            # 核显（id=0 / PCI 00:02.0）共享系统内存，显存统计不可信
+            dev["is_integrated"] = dev["id"] == 0 or "00:02.0" in (dev.get("pci_bdf") or "")
+        total_model_mib = sum(v for k, v in mem_by_dev.items() if k >= 0)
 
         return {
             "source": "xpu-smi",
             "devices": devices,
             "processes": processes,
             "inference": inference,
+            "total_model_memory_mib": total_model_mib,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
     except Exception as e:

@@ -69,16 +69,27 @@
             </el-col>
           </el-row>
 
-          <!-- 显存进度条 -->
+          <!-- 内存进度条：核显用真实模型占用（RSS），独显用显存 -->
           <div style="margin-top:12px">
             <div class="gpu-mem-header">
-              <span class="gpu-stat-label">显存</span>
-              <span class="gpu-mem-text">{{ formatMiB(dev.memory_used_mib) }} / {{ formatMiB(dev.memory_total_mib) }}</span>
+              <span class="gpu-stat-label">{{ dev.is_integrated ? '模型内存(共享)' : '显存' }}</span>
+              <template v-if="dev.is_integrated">
+                <span class="gpu-mem-text">{{ formatMiB(dev.model_memory_mib || 0) }} 真实占用</span>
+                <el-tag size="small" type="warning" style="margin-left:6px">集显共享内存</el-tag>
+              </template>
+              <span v-else class="gpu-mem-text">{{ formatMiB(dev.memory_used_mib) }} / {{ formatMiB(dev.memory_total_mib) }}</span>
             </div>
             <el-progress
+              v-if="!dev.is_integrated"
               :percentage="dev.memory_total_mib ? Math.round(dev.memory_used_mib / dev.memory_total_mib * 100) : 0"
               :stroke-width="18"
               :color="memColor(dev.memory_total_mib ? dev.memory_used_mib / dev.memory_total_mib : 0)"
+            />
+            <el-progress
+              v-else
+              :percentage="modelMemPct(dev.model_memory_mib)"
+              :stroke-width="18"
+              :color="'#e6a23c'"
             />
           </div>
         </div>
@@ -115,7 +126,7 @@
         <el-table :data="gpu.processes" size="small" stripe>
           <el-table-column prop="pid" label="PID" width="100" />
           <el-table-column prop="name" label="进程名" min-width="160" />
-          <el-table-column label="显存" width="120">
+          <el-table-column label="内存(RSS)" width="120">
             <template #default="{ row }">
               {{ row.memory_mib ? row.memory_mib + ' MiB' : '-' }}
             </template>
@@ -158,6 +169,13 @@ function memColor(ratio) {
   if (ratio > 0.9) return '#f56c6c'
   if (ratio > 0.7) return '#e6a23c'
   return '#409eff'
+}
+
+// 核显模型内存：按系统总内存占比展示（共享内存无独立显存上限）
+function modelMemPct(mib) {
+  const total = sys.value?.memory_total_gb ? sys.value.memory_total_gb * 1024 : 0
+  if (!total) return 0
+  return Math.min(100, Math.round((mib || 0) / total * 100))
 }
 
 async function loadGpu() {
