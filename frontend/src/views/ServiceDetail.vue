@@ -407,9 +407,9 @@ async function sendChat() {
     chatLoading.value = false
     chatAbort = null
     scrollChat()
-    // 持久化助手回复（跳过占位提示/错误/空回复）
+    // 持久化助手回复（跳过占位提示/错误/空回复；仅思考无正式回答也不存）
     const hasReal = aiMsg.content && !aiMsg.content.startsWith('（') && !aiMsg.content.startsWith('❌')
-    if (hasReal || (aiMsg.thinking && aiMsg.content)) {
+    if (hasReal) {
       try { await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '' }) } catch (e) { /* ignore */ }
     }
   }
