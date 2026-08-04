@@ -308,9 +308,15 @@ def list_services():
             d = dict(r)
             d["args"] = json.loads(d["args"] or "{}")
             db_models[d["name"]] = d
-        # 自动注册目录扫描发现的模型（排除 mmproj + 已删除墓碑）
+        # 自动注册目录扫描发现的模型（排除 mmproj / hf-dir / 已删除墓碑）
+        # 注意：name 用 _match_router_id 推导（子目录模型=目录名，根目录=文件名），
+        # 与 create_service 的自动推导规则一致，避免重复注册相对路径垃圾
         for sm in scanned:
-            mid = sm["name"]
+            if sm.get("kind") != "gguf":
+                continue  # hf-dir 等不能直接注册为服务
+            if sm["name"].startswith("mmproj"):
+                continue
+            mid = _match_router_id(sm["path"]) or sm["name"]
             if mid.startswith("mmproj"):
                 continue
             if mid in deleted_names:
