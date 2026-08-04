@@ -755,7 +755,7 @@ def get_history(sid: int, session_id: int = 0):
     """获取聊天历史（按会话隔离）"""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT role, content, thinking, created_at FROM chat_history "
+            "SELECT id, role, content, thinking, created_at FROM chat_history "
             "WHERE sid=? AND (session_id=? OR (session_id IS NULL AND ?=0)) ORDER BY id",
             (sid, session_id, session_id),
         ).fetchall()
@@ -773,14 +773,15 @@ def add_history(sid: int, body: HistoryItem):
         ).fetchone()
         if body.role == 'user' and last and last['role'] == 'user' and last['content'] == body.content:
             return {"ok": True, "skipped": "duplicate"}
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO chat_history (sid, session_id, role, content, thinking, created_at) VALUES (?,?,?,?,?,?)",
             (sid, sess, body.role, body.content, body.thinking, now()),
         )
+        hid = cur.lastrowid
         # 更新会话 updated_at
         if sess > 0:
             conn.execute("UPDATE chat_sessions SET updated_at=? WHERE id=? AND sid=?", (now(), sess, sid))
-    return {"ok": True}
+    return {"ok": True, "id": hid}
 
 
 @router.delete("/{sid}/history")
@@ -791,6 +792,14 @@ def clear_history(sid: int, session_id: int = 0):
             "DELETE FROM chat_history WHERE sid=? AND (session_id=? OR (session_id IS NULL AND ?=0))",
             (sid, session_id, session_id),
         )
+    return {"ok": True}
+
+
+@router.delete("/{sid}/history/{history_id}")
+def delete_history_item(sid: int, history_id: int):
+    """删除单条聊天历史"""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM chat_history WHERE id=? AND sid=?", (history_id, sid))
     return {"ok": True}
 
 

@@ -111,6 +111,7 @@ export const getStats = () => api.get('/stats').then(r => r.data)
 export const getChatHistory = (sid, sessionId = 0) => api.get(`/services/${sid}/history`, { params: { session_id: sessionId } }).then(r => r.data)
 export const addChatHistory = (sid, data) => api.post(`/services/${sid}/history`, data).then(r => r.data)
 export const clearChatHistory = (sid, sessionId = 0) => api.delete(`/services/${sid}/history`, { params: { session_id: sessionId } }).then(r => r.data)
+export const deleteHistoryItem = (sid, historyId) => api.delete(`/services/${sid}/history/${historyId}`).then(r => r.data)
 
 // ---------- 聊天会话 ----------
 export const listSessions = (sid) => api.get(`/services/${sid}/sessions`).then(r => r.data)
