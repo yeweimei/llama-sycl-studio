@@ -131,7 +131,7 @@
           <div class="chat-controls">
             <el-checkbox v-model="chatThinking">思考模式</el-checkbox>
             <span style="margin-left:12px;font-size:13px;color:#909399">max_tokens</span>
-            <el-input-number v-model="chatMaxTokens" :min="32" :max="8192" :step="64" size="small" style="width:130px" />
+            <el-input-number v-model="chatMaxTokens" :min="32" :max="maxTokensLimit" :step="64" size="small" style="width:130px" />
             <el-upload
               :show-file-list="false"
               :before-upload="handleFileUpload"
@@ -202,7 +202,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowDown, Plus, Delete } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
-  chatProxy, clientConfig,
+  chatProxy, clientConfig, listPresets,
   getChatHistory, addChatHistory, clearChatHistory, parsePdf,
   listSessions, createSession, renameSession, deleteSession,
   deleteHistoryItem,
@@ -481,6 +481,15 @@ function stopChat() {
 }
 
 const canChat = computed(() => service.value?.loaded)
+// 当前模型可用上下文（预设 ctx_size 优先，loaded_info 兜底），默认 8192
+const presets = ref([])
+const maxTokensLimit = computed(() => {
+  const svc = service.value
+  if (!svc) return 8192
+  const preset = presets.value.find(p => p.model_name === svc.name)
+  const ctx = preset?.ctx_size || svc.loaded_info?.ctx_size || 8192
+  return Math.max(512, Math.min(8192, ctx))
+})
 // 图片上传能力：以后端实际检测为准（模型目录有 mmproj 才显示）
 const isVisionModel = computed(() => !!service.value?.has_mmproj)
 
@@ -766,6 +775,10 @@ async function doUnload() {
 
 const apiEndpoint = computed(() => service.value ? `http://${location.hostname}:${location.port}/v1` : '')
 
+async function loadPresets() {
+  try { presets.value = await listPresets() } catch (e) { presets.value = [] }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -783,6 +796,7 @@ async function load() {
 
 onMounted(() => {
   load()
+  loadPresets()
   loadSessions().then(() => loadHistory())
   window.addEventListener('keydown', onGlobalKey)
 })

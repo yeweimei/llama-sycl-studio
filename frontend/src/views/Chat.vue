@@ -89,7 +89,7 @@
           <div class="chat-controls">
             <el-checkbox v-model="chatThinking">思考模式</el-checkbox>
             <span style="margin-left:12px;font-size:13px;color:#909399">max_tokens</span>
-            <el-input-number v-model="chatMaxTokens" :min="32" :max="8192" :step="64" size="small" style="width:130px" />
+            <el-input-number v-model="chatMaxTokens" :min="32" :max="maxTokensLimit" :step="64" size="small" style="width:130px" />
             <el-upload
               :show-file-list="false"
               :before-upload="handleFileUpload"
@@ -138,7 +138,7 @@ import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete } from '@element-plus/icons-vue'
 import {
-  listServices, startService, stopService,
+  listServices, startService, stopService, listPresets,
   listSessions, createSession, renameSession, deleteSession,
   getChatHistory, addChatHistory, clearChatHistory, deleteHistoryItem,
   parsePdf,
@@ -151,6 +151,20 @@ import 'highlight.js/styles/github-dark.css'
 const services = ref([])
 const currentSid = ref(null)
 const loadingModel = ref(false)
+const presets = ref([])
+
+// 当前模型可用上下文（预设 ctx_size 优先，loaded_info 兜底），默认 8192
+const maxTokensLimit = computed(() => {
+  const svc = currentService.value
+  if (!svc) return 8192
+  const preset = presets.value.find(p => p.model_name === svc.name)
+  const ctx = preset?.ctx_size || svc.loaded_info?.ctx_size || 8192
+  return Math.max(512, Math.min(8192, ctx))
+})
+
+async function refreshPresets() {
+  try { presets.value = await listPresets() } catch (e) { presets.value = [] }
+}
 
 // 可对话模型（supports_chat !== false）
 const chatModels = computed(() => services.value.filter(s => s.supports_chat !== false))
@@ -175,6 +189,10 @@ function onModelChange() {
   thinkingExpanded.value = {}
   thinkingUserToggled.value = {}
   thinkingRefs.value = {}
+  // max_tokens 超过新模型上下文时自动收敛
+  if (chatMaxTokens.value > maxTokensLimit.value) {
+    chatMaxTokens.value = maxTokensLimit.value
+  }
   loadSessions().then(() => loadHistory())
 }
 
@@ -609,6 +627,7 @@ function fmtTime(ts) {
 
 // ---------- 生命周期 ----------
 onMounted(async () => {
+  await refreshPresets()
   await refreshServices()
   if (currentSid.value) {
     loadChatSettings()
