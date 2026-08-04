@@ -317,6 +317,16 @@ def create_service(body: ServiceCreate):
             (name, body.model_path, json.dumps(body.args or {}), body.gpu_id or "", now(), now()),
         )
         sid = cur.lastrowid
+        # 主动重新注册：清除同名墓碑，避免 list_services 因墓碑跳过该模型
+        # （墓碑本意是阻止“删除后文件仍在 /models 被自动注册”，
+        #   用户手动重新注册时应视为解除删除，恢复正常展示）
+        try:
+            conn.execute("DELETE FROM deleted_models WHERE name=?", (name,))
+            rid = _match_router_id(body.model_path)
+            if rid and rid != name:
+                conn.execute("DELETE FROM deleted_models WHERE name=?", (rid,))
+        except Exception:
+            pass
     # 校验：model_path 能否匹配到 router 模型 ID（避免注册后加载必 404）
     warning = None
     try:
