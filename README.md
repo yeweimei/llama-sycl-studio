@@ -1,5 +1,9 @@
 # llama-sycl-studio — LLM 推理服务管理台（单容器一体化）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/yeweimei/llama-sycl-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/yeweimei/llama-sycl-studio/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/yeweimei/llama-sycl-studio?style=social)](https://github.com/yeweimei/llama-sycl-studio)
+
 在 Intel GPU（SYCL）上跑 llama.cpp router mode + WebUI 控制台的一体化管理平台。
 **单容器**打包推理引擎与前端控制台，一条 `docker run` 可移植到任何有 Intel GPU 的机器。
 
@@ -32,6 +36,9 @@
 - **系统监控**：内存、磁盘、模型目录
 - **参数模板**：常用配置一键保存/套用
 - **移动端适配**：375px 无横向溢出，汉堡菜单 + 抽屉侧边栏，响应式布局
+- **API 调用统计**：按模型聚合调用次数 / token 消耗 / prefill / decode 均耗时，可视化看板
+- **模型标签**：预置标签（思考/多模态/MoE/Embedding…）自动打标 + 自定义，下载/服务页展示
+- **聊天测试台**：Markdown 渲染、思考过程展示、多会话管理（新建/切换/重命名/删除）、历史持久化、文件上传（txt/md/pdf）、多模态图片、流式打断
 
 ## 技术栈
 
