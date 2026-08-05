@@ -45,6 +45,9 @@ init_db()
 idle_unload.start_idle_unload_loop()
 # 启动自愈监控后台任务（M3：实例异常自动重启）
 self_heal.start_self_heal_loop()
+# 启动僵尸收割线程（防 llama-server 僵尸占端口导致脏实例复用）
+from app import instance_mgr as _im
+_im.start_zombie_harvester()
 
 # ---------- 认证中间件 ----------
 # 不需要认证的路径

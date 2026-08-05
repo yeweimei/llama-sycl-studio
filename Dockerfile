@@ -7,9 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip python3-venv curl ca-certificates xpu-smi \
     && rm -rf /var/lib/apt/lists/*
 
-# 注：Intel GPU 驱动保持镜像默认（26.18）——26.27 在 A770M 上引入
-# DEVICE_LOST 偶发崩溃（核显显存泄漏 46GB+），回退镜像自带版本
-# （ext_intel_free_memory 警告在 26.27 也未解决，回退无损失）
+# Intel GPU 驱动：镜像默认 26.18 → 升级 26.27 + IGC 2.38.2
+# 实测（2026-08-05）：26.27 + flash-attn ON + 实例管理修复后稳定
+# （9B 加载正常、推理 1.0s、无 DEVICE_LOST）；26.27 的 IGC 对 A770M
+# 无回归（此前 DEVICE_LOST 实为实例管理/僵尸问题，已修复）。
+# 注：不用 PPA（网络不稳定），用本地 deb 包离线安装
+COPY deps/intel-gpu/*.deb /tmp/deps/
+RUN dpkg -i /tmp/deps/intel-igc-core-2_2.38.2+22051_amd64.deb /tmp/deps/intel-igc-opencl-2_2.38.2+22051_amd64.deb \
+    /tmp/deps/intel-opencl-icd_26.27.deb /tmp/deps/libze-intel-gpu1_26.27.deb \
+    || apt-get install -f -y && rm -rf /tmp/deps
 
 WORKDIR /app/studio
 

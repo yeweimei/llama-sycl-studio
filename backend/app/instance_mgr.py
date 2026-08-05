@@ -247,10 +247,13 @@ def _force_release_port(port: int, wait_s: float = 5.0):
     while time.time() < deadline and _port_in_use(port):
         pid = _find_pid_on_port(port)
         if pid:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            if _is_zombie(pid):
+                _reap_zombie(pid)
+            else:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         time.sleep(0.5)
 
 
@@ -323,15 +326,21 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
             # 端口被占但不健康 → 清理残留
             pid = _find_pid_on_port(port)
             if pid:
-                logger.warning("清理残留实例 sid=%s port=%d pid=%s（不健康）", sid, port, pid)
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    time.sleep(2)
-                    if _port_in_use(port):
-                        os.kill(pid, signal.SIGKILL)
-                        time.sleep(1)
-                except ProcessLookupError:
-                    pass
+                if _is_zombie(pid):
+                    # 僵尸进程无法 kill，reap 后端口自动释放
+                    logger.warning("清理僵尸实例 sid=%s port=%d pid=%s（reap）", sid, port, pid)
+                    _reap_zombie(pid)
+                    time.sleep(1)
+                else:
+                    logger.warning("清理残留实例 sid=%s port=%d pid=%s（不健康）", sid, port, pid)
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        time.sleep(2)
+                        if _port_in_use(port):
+                            os.kill(pid, signal.SIGKILL)
+                            time.sleep(1)
+                    except ProcessLookupError:
+                        pass
 
         args = _build_args(sid, name, model_path)
         log_dir = Path(settings.data_dir) / "instances"
@@ -415,6 +424,70 @@ def _pid_alive(pid) -> bool:
         return False
 
 
+def _is_zombie(pid) -> bool:
+    """判断进程是否为僵尸（Z）：僵尸占端口且无法 kill，必须视为已死"""
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            # 格式: pid (comm) state ...；comm 可能含空格，从最后一个 ) 后取 state
+            line = f.read()
+        state = line[line.rfind(")") + 2:line.rfind(")") + 3]
+        return state == "Z"
+    except (FileNotFoundError, PermissionError, IndexError, ValueError):
+        return False
+
+
+def _reap_zombie(pid) -> bool:
+    """回收僵尸进程（reap），成功返回 True"""
+    if not pid:
+        return False
+    try:
+        waited, _ = os.waitpid(pid, os.WNOHANG)
+        return waited == pid
+    except (ChildProcessError, ProcessLookupError):
+        # 不是子进程或已回收
+        return False
+    except Exception:
+        return False
+
+
+def _zombie_harvest_once():
+    """收割一轮僵尸：遍历内存态实例，Popen 调 poll（reap），孤儿 pid 调 waitpid"""
+    for sid, inst in list(_instances.items()):
+        try:
+            proc = inst.get("proc")
+            pid = inst.get("pid")
+            if proc is not None:
+                # poll() 会 reap 已退出子进程（释放僵尸）
+                proc.poll()
+            elif pid and _is_zombie(pid):
+                _reap_zombie(pid)
+                # 僵尸已回收：移除记录，端口随之释放
+                _instances.pop(sid, None)
+                logger.info("回收僵尸实例 sid=%s pid=%s", sid, pid)
+        except Exception:
+            pass
+
+
+def start_zombie_harvester(interval: float = 15.0):
+    """后台僵尸收割线程（防端口泄漏/脏实例复用）"""
+    import threading
+
+    def _loop():
+        while True:
+            try:
+                _zombie_harvest_once()
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    t = threading.Thread(target=_loop, name="zombie-harvester", daemon=True)
+    t.start()
+    logger.info("僵尸收割线程已启动（周期 %ss）", interval)
+    return t
+
+
 def instance_status(sid: int) -> dict:
     """查询实例状态（三态：running/degraded/stopped + 健康数据）
 
@@ -443,8 +516,11 @@ def instance_status(sid: int) -> dict:
             return base
     proc = inst.get("proc")
     alive = _proc_alive(proc) if proc is not None else _pid_alive(inst.get("pid"))
-    if not alive:
+    if not alive or (inst.get("pid") and _is_zombie(inst.get("pid"))):
+        # 进程已退出或僵尸（僵尸占端口且无法 kill）→ 清理记录
         _instances.pop(sid, None)
+        if inst.get("pid") and _is_zombie(inst.get("pid")):
+            _reap_zombie(inst.get("pid"))
         return base
     port = inst["port"]
     h = _check_health(port, sid)
