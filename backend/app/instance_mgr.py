@@ -133,6 +133,68 @@ def _port_for(sid: int) -> int:
     return BASE_PORT + int(sid) - 1
 
 
+def _port_in_use(port: int) -> bool:
+    """检查端口是否已被监听（不依赖 ss/lsof，用 socket 探测）"""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _find_pid_on_port(port: int) -> int | None:
+    """通过 /proc/net/tcp inode 匹配找到监听端口的进程 pid"""
+    try:
+        import struct
+        hex_port = f":{port:04X}"
+        # 收集所有 socket inode -> pid（从 /proc/*/fd 解析）
+        inode_pid = {}
+        for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+            pid = int(fd_dir.parent.name)
+            try:
+                for fd in fd_dir.iterdir():
+                    try:
+                        tgt = os.readlink(fd)
+                    except OSError:
+                        continue
+                    if tgt.startswith("socket:["):
+                        ino = tgt[8:-1]
+                        if ino not in inode_pid:
+                            inode_pid[ino] = pid
+            except OSError:
+                continue
+        # 在 /proc/net/tcp 找监听端口对应的 inode
+        with open("/proc/net/tcp") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                local, state = parts[1], parts[3]
+                if state == "0A" and local.endswith(hex_port):
+                    ino = parts[9]
+                    return inode_pid.get(ino)
+    except Exception:
+        return None
+    return None
+
+
+def _health_ok(port: int) -> bool:
+    """探测实例健康（/health 返回 200）"""
+    try:
+        import httpx
+        with httpx.Client(timeout=3) as c:
+            r = c.get(f"http://127.0.0.1:{port}/health")
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _proc_alive(proc) -> bool:
+    """Popen 进程是否存活"""
+    return proc is not None and proc.poll() is None
+
+
 def _env() -> dict:
     """实例运行环境：完整 LD_LIBRARY_PATH（oneAPI）"""
     env = os.environ.copy()
@@ -148,13 +210,41 @@ def _env() -> dict:
 
 
 def start_instance(sid: int, name: str, model_path: str) -> dict:
-    """启动模型实例（已启动则返回现有）"""
+    """启动模型实例（已启动则返回现有）
+
+    防孤儿残留：内存态为空但端口被占时——
+    1) 端口健康 → 复用已有实例（重建内存态，避免重复拉起撞端口）
+    2) 端口不健康 → 清理残留进程再启动
+    """
     with _get_lock():
         inst = _instances.get(sid)
-        if inst and inst["proc"].poll() is None:
+        if inst and _proc_alive(inst["proc"]):
             return {"ok": True, "status": "running", "port": inst["port"], "pid": inst["proc"].pid}
 
         port = _port_for(sid)
+        # 端口已被占（孤儿实例/WebUI 重启后残留）
+        if _port_in_use(port):
+            if _health_ok(port):
+                # 已有健康实例在跑 → 复用，重建内存态
+                pid = _find_pid_on_port(port)
+                _instances[sid] = {"proc": None, "pid": pid, "port": port,
+                                  "started_at": int(time.time()), "log_path": str(Path(settings.data_dir) / "instances" / f"{name}.log")}
+                logger.info("实例复用 sid=%s name=%s port=%d pid=%s（检测到已运行）", sid, name, port, pid)
+                return {"ok": True, "status": "running", "port": port, "pid": pid,
+                        "reused": True, "detail": "检测到已有实例在运行，已复用"}
+            # 端口被占但不健康 → 清理残留
+            pid = _find_pid_on_port(port)
+            if pid:
+                logger.warning("清理残留实例 sid=%s port=%d pid=%s（不健康）", sid, port, pid)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(2)
+                    if _port_in_use(port):
+                        os.kill(pid, signal.SIGKILL)
+                        time.sleep(1)
+                except ProcessLookupError:
+                    pass
+
         args = _build_args(sid, name, model_path)
         log_dir = Path(settings.data_dir) / "instances"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -169,35 +259,68 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
 
 
 def stop_instance(sid: int) -> dict:
-    """停止模型实例（TERM，超时 KILL）"""
+    """停止模型实例（TERM，超时 KILL）——支持复用的孤儿实例（proc=None）"""
     with _get_lock():
         inst = _instances.pop(sid, None)
         if not inst:
             return {"ok": True, "status": "not_running"}
-        proc = inst["proc"]
-        try:
-            proc.terminate()
-            proc.wait(timeout=15)
-        except Exception:
+        proc = inst.get("proc")
+        if proc is not None:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=15)
             except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            logger.info("实例停止 sid=%s pid=%s", sid, proc.pid)
+            return {"ok": True, "status": "stopped", "pid": proc.pid}
+        # 孤儿实例（仅 pid）：按 pid 杀
+        pid = inst.get("pid")
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(15):
+                    time.sleep(1)
+                    if not _pid_alive(pid):
+                        break
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
                 pass
-        logger.info("实例停止 sid=%s", sid)
-        return {"ok": True, "status": "stopped", "pid": proc.pid}
+            logger.info("孤儿实例停止 sid=%s pid=%s", sid, pid)
+        return {"ok": True, "status": "stopped", "pid": pid}
+
+
+def _pid_alive(pid) -> bool:
+    """按 pid 判断进程存活"""
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
 
 def instance_status(sid: int) -> dict:
-    """查询实例状态（running/stopped + port/pid）"""
+    """查询实例状态（running/stopped + port/pid）——支持复用的孤儿实例"""
     inst = _instances.get(sid)
     if not inst:
         return {"running": False, "port": _port_for(sid), "pid": None}
-    proc = inst["proc"]
-    if proc.poll() is not None:
-        # 进程已退出，清理
+    proc = inst.get("proc")
+    if proc is not None:
+        if proc.poll() is not None:
+            # 进程已退出，清理
+            _instances.pop(sid, None)
+            return {"running": False, "port": _port_for(sid), "pid": None}
+        return {"running": True, "port": inst["port"], "pid": proc.pid, "started_at": inst["started_at"]}
+    # 孤儿实例（仅 pid）
+    if not _pid_alive(inst.get("pid")):
         _instances.pop(sid, None)
         return {"running": False, "port": _port_for(sid), "pid": None}
-    return {"running": True, "port": inst["port"], "pid": proc.pid, "started_at": inst["started_at"]}
+    return {"running": True, "port": inst["port"], "pid": inst.get("pid"), "started_at": inst["started_at"]}
 
 
 def all_instances() -> dict[int, dict]:
