@@ -145,6 +145,25 @@ async def v1_proxy(path: str, request: Request):
     import httpx
     import json as _json
 
+    # /v1/models：返回已注册服务列表（OpenAI 兼容格式），不再依赖 router
+    if path == "models":
+        try:
+            import time as _t
+            from app.routers.services import list_services
+            svcs = list_services()
+            created = int(_t.time())
+            data = []
+            for s in svcs:
+                data.append({
+                    "id": s.get("name"),
+                    "object": "model",
+                    "owned_by": "llama-studio",
+                    "created": created,
+                })
+            return {"object": "list", "data": data}
+        except Exception:
+            pass
+
     # 读取请求体（先解析 model 字段用于路由）
     body = await request.body()
     model_name = ""
