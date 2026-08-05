@@ -3,8 +3,7 @@
     <el-card shadow="never">
       <div class="card-title">
         <span>模型池管理</span>
-        <el-tag v-if="routerHealthy" size="small" type="success" style="margin-left:8px">Router 在线</el-tag>
-        <el-tag v-else size="small" type="danger" style="margin-left:8px">Router 离线</el-tag>
+        <el-tag size="small" type="success" style="margin-left:8px">实例模式</el-tag>
         <el-button type="primary" size="small" @click="openCreate" style="margin-left:auto">
           <el-icon><Plus /></el-icon>&nbsp;注册模型
         </el-button>
@@ -12,7 +11,7 @@
       </div>
 
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px">
-        单容器一体化架构：列表包含容器内所有由 llama-server router 发现的模型（含未在 WebUI 注册的），点击「启动」将模型载入 GPU 显存
+        实例模式：每个模型独立 llama-server 进程，上下文各自独立；点击「启动」将模型载入 GPU 显存
       </el-alert>
 
       <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys" @expand-change="onExpandChange">
@@ -122,25 +121,6 @@
       <el-empty v-if="!loading && services.length === 0" description="未发现模型，请将 GGUF 文件放入模型目录" />
     </el-card>
 
-    <!-- Router 详情面板 -->
-    <el-card shadow="never" style="margin-top:16px" v-if="routerInfo">
-      <div class="card-title"><span>Router 详情</span></div>
-      <el-descriptions :column="2" size="small" border>
-        <el-descriptions-item label="Router URL">{{ routerInfo.router_url }}</el-descriptions-item>
-        <el-descriptions-item label="健康状态">
-          <el-tag size="small" :type="routerInfo.healthy ? 'success' : 'danger'">{{ routerInfo.healthy ? '在线' : '离线' }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="模型目录">{{ routerInfo.model_dir }}</el-descriptions-item>
-        <el-descriptions-item label="最大驻留数">{{ routerInfo.models_max }}</el-descriptions-item>
-      </el-descriptions>
-      <div v-if="routerInfo.loaded_models?.length" style="margin-top:12px">
-        <div style="font-size:13px;color:#606266;margin-bottom:8px">当前驻留模型：</div>
-        <el-tag v-for="m in routerInfo.loaded_models" :key="m.model || m.id" size="small" type="success" style="margin:2px">
-          {{ m.model || m.id }} ({{ formatSize(m.mem_total) }})
-        </el-tag>
-      </div>
-    </el-card>
-
     <!-- 注册模型对话框 -->
     <el-dialog v-model="createVisible" title="注册模型" width="720px" top="8vh">
       <el-form :model="form" label-width="110px">
@@ -240,7 +220,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import ParamForm from '../components/ParamForm.vue'
 import {
-  listServices, startService, stopService, deleteService, routerStatus,
+  listServices, startService, stopService, deleteService,
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
   listModels, getSelectableGpus, listModelTags, updateModelTags,
@@ -251,8 +231,6 @@ const loading = ref(false)
 const loadingModel = ref('')
 const unloadingModel = ref('')
 const restartingModel = ref('')
-const routerHealthy = ref(false)
-const routerInfo = ref(null)
 
 // 加载进度相关
 const loadProgress = ref(0)
@@ -387,10 +365,7 @@ function formatSize(bytes) {
 async function refresh() {
   loading.value = true
   try {
-    const [svcList, status] = await Promise.all([listServices(), routerStatus()])
-    services.value = svcList
-    routerHealthy.value = status.healthy
-    routerInfo.value = status
+    services.value = await listServices()
   } catch (e) {
     ElMessage.error('加载失败: ' + (e.response?.data?.detail || e.message))
   } finally {
