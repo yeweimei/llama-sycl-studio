@@ -34,6 +34,7 @@
       <el-col :span="12">
         <el-form-item label="并行数">
           <el-input-number v-model="model.parallel" :min="1" :max="64" controls-position="right" style="width:100%" />
+          <div class="form-tip" style="width:100%">并发上限：同时最多处理 N 个请求，超出自动排队（llama.cpp 内部排队）</div>
         </el-form-item>
       </el-col>
     </el-row>
