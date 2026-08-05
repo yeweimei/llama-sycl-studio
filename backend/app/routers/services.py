@@ -696,8 +696,6 @@ def service_logs(sid: int, tail: int = 200, since: Optional[str] = None, until: 
 
     try:
         raw_lines = log_file.read_text(errors="replace").splitlines()
-        # 过滤噪音警告（Intel 驱动不支持 ext_intel_free_memory 的已知刷屏，硬件限制无害）
-        raw_lines = [ln for ln in raw_lines if "ext_intel_free_memory is not supported" not in ln]
     except Exception as e:
         return {"logs": f"读取日志失败: {e}", "total": 0, "file": str(log_file)}
 
