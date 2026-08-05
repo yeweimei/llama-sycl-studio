@@ -19,8 +19,11 @@ MAX_CONSECUTIVE_FAILURES = 3  # 连续重启失败次数上限
 DEAD_SECONDS = 5  # 进程死亡多久后开始自愈（避免正常停止的瞬间误判）
 HEALTH_FAIL_THRESHOLD = 2  # degraded 状态连续观察到 N 次才自愈（单次抖动不触发）
 
-# 内存态: {sid: {"consecutive_fails": int, "last_seen_degraded": int, "last_heal_at": int}}
+# 内存态: {sid: {"consecutive_fails": int, "last_seen_degraded": int, "last_heal_at": int, "_degraded_count": int}}
 _state: dict[int, dict] = {}
+
+# 退避策略：连续失败后拉长重启间隔（秒），避免 GPU 脏状态下的重启风暴
+_BACKOFF_STEPS = [0, 20, 60, 120]  # 第 1/2/3+ 次失败的等待间隔
 
 
 def _should_service_be_loaded(sid: int, name: str) -> bool:
@@ -98,12 +101,17 @@ def _heal_once():
                 _state.pop(sid, None)
                 continue
 
+            # 退避：连续失败后拉长间隔，避免重启风暴
+            backoff = _BACKOFF_STEPS[min(s["consecutive_fails"], len(_BACKOFF_STEPS) - 1)]
+            if backoff and t_now - s.get("last_heal_at", 0) < backoff:
+                continue
+
             # 执行自愈重启
             try:
                 result = instance_mgr.start_instance(sid, name, model_path)
                 s["last_heal_at"] = t_now
                 healed.append({"model": name, "state": st.get("state"), "result": result.get("status")})
-                logger.warning("自愈重启 %s（状态 %s）→ %s", name, st.get("state"), result.get("status"))
+                logger.warning("自愈重启 %s（状态 %s，第 %d 次）→ %s", name, st.get("state"), s["consecutive_fails"], result.get("status"))
             except Exception as e:
                 logger.warning("自愈重启 %s 失败: %s", name, e)
     except Exception as e:

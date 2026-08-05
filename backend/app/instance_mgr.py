@@ -403,12 +403,18 @@ def instance_status(sid: int) -> dict:
     port = inst["port"]
     h = _check_health(port, sid)
     pid = proc.pid if proc is not None else inst.get("pid")
+    # 进程刚启动（<15s）未就绪 → 显示 starting，不归为 degraded（避免加载中误报降级）
+    started_at = inst.get("started_at") or 0
+    if not h["ok"] and time.time() - started_at < 15:
+        state = "starting"
+    else:
+        state = "running" if h["ok"] else "degraded"
     return {
         "running": True,  # 进程存活（旧字段，兼容现有调用方）
-        "state": "running" if h["ok"] else "degraded",
+        "state": state,
         "port": port,
         "pid": pid,
-        "started_at": inst.get("started_at"),
+        "started_at": started_at,
         "health_latency_ms": h["latency_ms"],
         "last_health_at": h["ts"],
         "health_ok": h["ok"],
