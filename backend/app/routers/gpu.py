@@ -125,6 +125,7 @@ def _model_memory_by_device() -> dict[int, int]:
 
     通过进程 args 中的 --device 参数匹配设备；无法识别设备的进程
     归入 -1（用于汇总展示）。
+    注意：--device 用 SYCL 编号（SYCL0=独显），与 xpu-smi 设备号相反。
     """
     result = {0: 0, 1: 0, -1: 0}
     try:
@@ -158,8 +159,43 @@ def _model_memory_by_device() -> dict[int, int]:
     return result
 
 
+def _model_memory_by_device_sycl1() -> int:
+    """统计跑在核显（--device SYCL1+）上的 llama-server 进程 RSS 总和（MiB）
+
+    xpu-smi 进程表不显示核显上的进程，需从 ps 按启动参数匹配。
+    注意 SYCL 编号与 xpu-smi 设备号相反：SYCL0=独显，SYCL1+=核显。
+    """
+    total = 0
+    try:
+        ps_out = _run(["ps", "-eo", "pid,rss,args"], timeout=5)
+        for line in ps_out.strip().splitlines()[1:]:
+            if "llama-server" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                rss_kb = int(parts[1])
+            except ValueError:
+                continue
+            args = " ".join(parts[2:])
+            m = re.search(r"--device\s+(SYCL)?(\d+)", args)
+            if not m:
+                continue
+            sycl_n = int(m.group(2))
+            if sycl_n >= 1:  # SYCL1+ = 核显（SYCL0 = 独显）
+                total += int(rss_kb // 1024)
+    except Exception:
+        pass
+    return total
+
+
 def _parse_xpu_smi_processes() -> list[dict]:
-    """从 xpu-smi 输出解析 GPU 进程列表，fallback ps"""
+    """从 xpu-smi 输出解析 GPU 进程列表，fallback ps
+
+    实际格式：| GPU | PID | Type | Process Name | GPU Memory Usage |
+    → 保留 gpu_id，核显共享内存统计不可信，用进程真实占用替代
+    """
     processes = []
     dump = _run(["xpu-smi"], timeout=10)
     if dump:
@@ -169,23 +205,34 @@ def _parse_xpu_smi_processes() -> list[dict]:
                 in_proc = True
                 continue
             if in_proc and line.strip():
-                parts = [p.strip() for p in line.split("|")]
-                # 期望格式: | 0 | compute | 1213 | llama-server | 7486 MiB |
-                if len(parts) >= 6:
-                    try:
-                        pid = int(parts[3])
-                        name = parts[4]
-                        mem_str = parts[5]
-                        mem_mib = 0
-                        m = re.search(r'(\d+)', mem_str)
-                        if m:
-                            mem_mib = int(m.group(1))
-                        processes.append({"pid": pid, "name": name, "memory_mib": mem_mib})
-                    except (ValueError, IndexError):
-                        continue
+                # xpu-smi 表格是空格对齐（非竖线分隔），按列位置切片：
+                # |   GPU     PID    Type    Process Name       GPU Memory Usage |
+                # 列: GPU(1-6) PID(7-14) Type(15-21) Name(22-45) Mem(46+)
+                if "+" in line or "---" in line:
+                    continue
+                line_s = line.rstrip()
+                # 列边界（实测）：GPU pos6, PID pos13-15, Type pos20, Name pos27+
+                gpu_s = line_s[1:7].strip()
+                pid_s = line_s[7:17].strip()
+                type_s = line_s[17:23].strip()
+                name_s = line_s[23:48].strip()
+                mem_s = line_s[48:].strip()
+                if not pid_s.isdigit():
+                    continue
+                mem_mib = 0
+                m = re.search(r'(\d+)', mem_s)
+                if m:
+                    mem_mib = int(m.group(1))
+                processes.append({
+                    "gpu_id": int(gpu_s) if gpu_s.lstrip('-').isdigit() else -1,
+                    "pid": int(pid_s),
+                    "type": type_s,
+                    "name": name_s,
+                    "memory_mib": mem_mib,
+                })
 
     if not processes:
-        # fallback: ps 过滤 llama-server
+        # fallback: ps 过滤 llama-server（无法分 GPU，归 gpu_id=-1）
         ps_out = _run(["ps", "-eo", "pid,comm,rss"], timeout=5)
         for line in ps_out.strip().splitlines()[1:]:
             parts = line.split()
@@ -194,9 +241,11 @@ def _parse_xpu_smi_processes() -> list[dict]:
                 if "llama" in name_s.lower():
                     try:
                         processes.append({
+                            "gpu_id": -1,
                             "pid": int(pid_s),
                             "name": name_s,
                             "memory_mib": int(int(rss_s) // 1024),
+                            "type": "",
                         })
                     except (ValueError, IndexError):
                         continue
@@ -354,14 +403,38 @@ def gpu_status():
 
         processes = _parse_xpu_smi_processes()
         inference = _query_inference_metrics()
-        mem_by_dev = _model_memory_by_device()
+
+        # 按 GPU 汇总进程真实显存占用（核显共享内存统计不可信，用进程占用替代）
+        # 独显：xpu-smi 进程表准确；核显：xpu-smi 进程表不显示核显进程，
+        # 用 ps 按 --device SYCL 参数匹配 RSS（SYCL1+=核显）
+        mem_by_dev: dict[int, int] = {}
+        for p in processes:
+            gid = p.get("gpu_id", -1)
+            if gid < 0:
+                continue
+            mem_by_dev[gid] = mem_by_dev.get(gid, 0) + p.get("memory_mib", 0)
+        # 核显补充：ps 匹配 --device SYCL1+（xpu-smi 进程表不含核显进程）
+        i_gpu_id = None
+        for dev in devices:
+            if "00:02.0" in (dev.get("pci_bdf") or "") or any(k in (dev.get("name") or "") for k in ("Iris", "Xe", "UHD")):
+                i_gpu_id = dev["id"]
+                break
+        if i_gpu_id is not None:
+            igpu_mib = _model_memory_by_device_sycl1()
+            if igpu_mib:
+                mem_by_dev[i_gpu_id] = mem_by_dev.get(i_gpu_id, 0) + igpu_mib
 
         # 附加设备真实模型内存占用 + 集显标记
         for dev in devices:
+            # 核显（PCI 00:02.0 / 设备名含 Iris/Xe/UHD）共享系统内存，显存统计不可信
+            dev["is_integrated"] = "00:02.0" in (dev.get("pci_bdf") or "") or \
+                any(k in (dev.get("name") or "") for k in ("Iris", "Xe", "UHD", "HD Graphics"))
             dev["model_memory_mib"] = mem_by_dev.get(dev["id"], 0)
-            # 核显（id=0 / PCI 00:02.0）共享系统内存，显存统计不可信
-            dev["is_integrated"] = dev["id"] == 0 or "00:02.0" in (dev.get("pci_bdf") or "")
-        total_model_mib = sum(v for k, v in mem_by_dev.items() if k >= 0)
+            if dev["is_integrated"]:
+                # 核显：用进程真实占用覆盖 xpu-smi 假数字（含系统缓存）
+                dev["memory_used_mib"] = dev["model_memory_mib"]
+                dev["memory_util_pct"] = 0
+        total_model_mib = sum(mem_by_dev.values())
 
         return {
             "source": "xpu-smi",
