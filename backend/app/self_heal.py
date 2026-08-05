@@ -53,6 +53,33 @@ def _should_service_be_loaded(sid: int, name: str) -> bool:
         return False
 
 
+def _should_retry_error_by_db(sid: int, t_now: int) -> bool:
+    """DB 冷却重试判断：error 状态且 updated_at 超过 ERROR_RETRY_SECONDS"""
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT status, updated_at FROM services WHERE id=?", (sid,)
+            ).fetchone()
+            if not row or row["status"] != "error":
+                return False
+            return (t_now - int(row["updated_at"])) >= ERROR_RETRY_SECONDS
+    except Exception:
+        return False
+
+
+def _retry_error_service(sid: int, name: str):
+    """error 冷却期满：恢复 loaded 重新尝试"""
+    logger.warning("自愈重试 %s：error 冷却期满，恢复 loaded 重新尝试", name)
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE services SET status='loaded', updated_at=? WHERE id=?",
+                (now(), sid),
+            )
+    except Exception:
+        pass
+
+
 def _heal_once():
     """执行一次自愈检查"""
     from app import instance_mgr
@@ -73,18 +100,14 @@ def _heal_once():
                 # 服务不应加载（unloaded/error）
                 s = _state.get(sid)
                 if s and s.get("marked_error"):
-                    # error 冷却重试：状态保留，检查冷却期是否到
+                    # 内存态冷却重试（同进程内有效）
                     if t_now - s.get("error_at", 0) >= ERROR_RETRY_SECONDS:
-                        logger.warning("自愈重试 %s：error 冷却期满，恢复 loaded 重新尝试", name)
-                        try:
-                            with get_conn() as conn:
-                                conn.execute(
-                                    "UPDATE services SET status='loaded', updated_at=? WHERE id=?",
-                                    (now(), sid),
-                                )
-                        except Exception:
-                            pass
+                        _retry_error_service(sid, name)
                         _state.pop(sid, None)
+                elif _should_retry_error_by_db(sid, t_now):
+                    # DB 冷却重试（跨重启/内存态丢失场景）：error 状态且
+                    # updated_at 超过冷却期 → 自动恢复 loaded
+                    _retry_error_service(sid, name)
                 else:
                     _state.pop(sid, None)
                 continue
