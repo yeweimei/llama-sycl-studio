@@ -239,3 +239,125 @@ def delete_preset(pid: int):
 def generate_config_ini():
     """根据所有预设生成 config.ini 文件内容（供 llama-server --models-preset 使用）"""
     return _write_config_ini()
+
+
+# ---------- 显存估算（M9） ----------
+
+class EstimateRequest(BaseModel):
+    model_path: str
+    ctx_size: int = 8192
+    batch_size: int = 2048
+    ubatch_size: int = 512
+    parallel: int = 4
+    cache_type_k: str = "q8_0"
+    cache_type_v: str = "q8_0"
+    n_gpu_layers: int = 99
+    flash_attn: bool = True
+    mmproj: str = ""
+
+
+# KV cache 每元素字节（近似）：f16=2, q8_0≈1.0625, q5_0≈0.6875, q4_0≈0.5625, q4_1≈0.625
+_KV_BYTES = {
+    "f16": 2.0, "f32": 4.0, "q8_0": 1.0625, "q5_0": 0.6875, "q5_1": 0.75,
+    "q4_0": 0.5625, "q4_1": 0.625, "iq4_nl": 0.5625, "bf16": 2.0,
+}
+# 计算图 buffer 系数（经验值）：每层每 batch 每 embd 约 2 字节（f16 激活）
+_GRAPH_COEF = 2.0
+
+
+@router.post("/estimate-memory")
+def estimate_memory(body: EstimateRequest):
+    """估算模型加载显存占用（llama.cpp 口径）"""
+    from pathlib import Path
+    from app.routers.models import parse_gguf_meta, _scan_models
+
+    mp = body.model_path
+    if not mp.startswith("/"):
+        mp = f"/models/{mp.lstrip('/')}"
+    path = Path(mp)
+    if not path.exists():
+        raise HTTPException(404, f"模型文件不存在: {mp}")
+
+    meta = parse_gguf_meta(path)
+    if not meta or not meta.get("file_size_bytes"):
+        raise HTTPException(400, "无法解析 GGUF 元信息（文件可能损坏或非 GGUF）")
+
+    file_size = meta["file_size_bytes"]
+    n_layer = meta.get("n_layer") or 0
+    # 混合架构（Mamba+Attention 交替）用实际 attention 层数算 KV
+    attn_layers = meta.get("attn_layers") or n_layer
+    n_head_kv = meta.get("n_head_kv") or 0
+    head_dim = meta.get("head_dim") or 0
+    n_embd = meta.get("n_embd") or 0
+    arch = meta.get("architecture", "")
+
+    # 1) 模型权重：mmap 全量映射，GPU 占用按 GPU 层数占比
+    #    （n_gpu_layers>=层数 或 99 表示全量 GPU）
+    gpu_layers = body.n_gpu_layers
+    if gpu_layers >= n_layer or gpu_layers >= 99:
+        gpu_ratio = 1.0
+    elif n_layer > 0:
+        gpu_ratio = gpu_layers / n_layer
+    else:
+        gpu_ratio = 1.0
+    model_bytes = file_size * gpu_ratio
+
+    # 2) KV cache：n_ctx × attn_layers × n_head_kv × head_dim × 2(K+V) × bytes
+    kv_b_k = _KV_BYTES.get(body.cache_type_k, 1.0625)
+    kv_b_v = _KV_BYTES.get(body.cache_type_v, 1.0625)
+    if attn_layers and n_head_kv and head_dim:
+        kv_bytes = body.ctx_size * attn_layers * n_head_kv * head_dim * (kv_b_k + kv_b_v)
+    else:
+        kv_bytes = 0
+
+    # 3) compute buffer：激活/计算图（每层 batch 粒度）
+    if n_layer and n_embd and body.batch_size:
+        graph_bytes = (n_layer + 1) * body.batch_size * n_embd * _GRAPH_COEF
+    else:
+        graph_bytes = 0
+
+    # 4) mmproj（视觉模型）
+    mmproj_bytes = 0
+    if body.mmproj:
+        try:
+            mm_path = Path(body.mmproj)
+            if not mm_path.is_absolute():
+                mm_path = Path("/models") / body.mmproj.lstrip("/")
+            if mm_path.exists():
+                mmproj_bytes = mm_path.stat().st_size
+        except Exception:
+            pass
+
+    # 5) 系统余量（驱动/上下文开销）
+    overhead_bytes = 512 * 1024 * 1024
+
+    total_bytes = model_bytes + kv_bytes + graph_bytes + mmproj_bytes + overhead_bytes
+
+    def _gib(b):
+        return round(b / 1024 / 1024 / 1024, 2)
+
+    return {
+        "model": mp,
+        "architecture": arch,
+        "quantization": meta.get("quantization", ""),
+        "parts": {
+            "model_weights": _gib(model_bytes),
+            "kv_cache": _gib(kv_bytes),
+            "compute_graph": _gib(graph_bytes),
+            "mmproj": _gib(mmproj_bytes),
+            "overhead": _gib(overhead_bytes),
+        },
+        "total_gib": _gib(total_bytes),
+        "details": {
+            "file_size_gib": _gib(file_size),
+            "n_layer": n_layer,
+            "attn_layers": attn_layers,
+            "n_head_kv": n_head_kv,
+            "head_dim": head_dim,
+            "n_embd": n_embd,
+            "ctx_size": body.ctx_size,
+            "gpu_layers_ratio": round(gpu_ratio, 3),
+            "kv_bytes_per_token": round((kv_b_k + kv_b_v) * attn_layers * n_head_kv * head_dim / 1024 / 1024, 2) if (attn_layers and n_head_kv and head_dim) else 0,
+        },
+        "formula_note": "模型权重(按GPU层数占比) + KV Cache + 计算图 + mmproj + 512MB余量",
+    }

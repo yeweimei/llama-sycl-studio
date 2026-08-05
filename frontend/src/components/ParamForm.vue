@@ -174,14 +174,46 @@
         <el-button @click="helpVisible = false">知道了</el-button>
       </template>
     </el-dialog>
+
+    <!-- 显存估算（M9） -->
+    <el-divider style="margin:12px 0" />
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <el-button type="primary" size="small" plain :loading="estimating" @click="estimateMem">
+        📊 估算显存占用
+      </el-button>
+      <span v-if="estResult" class="form-tip">基于当前参数（ctx={{ model.ctx_size }} / batch={{ model.batch_size }} / {{ model.cache_type_k }}+{{ model.cache_type_v }} KV）</span>
+    </div>
+    <el-card v-if="estResult" shadow="never" style="margin-top:10px;background:#f5f7fa" size="small">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <span style="font-size:20px;font-weight:700;color:#409eff">{{ estResult.total_gib }} GiB</span>
+        <span style="font-size:13px;color:#606266">预估总占用</span>
+        <el-tag size="small" :type="estFit === 'ok' ? 'success' : (estFit === 'tight' ? 'warning' : 'danger')">
+          {{ estFit === 'ok' ? '✅ 可加载' : (estFit === 'tight' ? '⚠️ 显存紧张' : '❌ 超出显存') }}
+        </el-tag>
+      </div>
+      <el-descriptions :column="3" size="small" style="margin-top:8px">
+        <el-descriptions-item label="模型权重">{{ estResult.parts.model_weights }} GiB</el-descriptions-item>
+        <el-descriptions-item label="KV Cache">{{ estResult.parts.kv_cache }} GiB</el-descriptions-item>
+        <el-descriptions-item label="计算图">{{ estResult.parts.compute_graph }} GiB</el-descriptions-item>
+        <el-descriptions-item label="mmproj">{{ estResult.parts.mmproj }} GiB</el-descriptions-item>
+        <el-descriptions-item label="系统余量">{{ estResult.parts.overhead }} GiB</el-descriptions-item>
+        <el-descriptions-item label="设备显存">{{ gpuInfo }}</el-descriptions-item>
+      </el-descriptions>
+      <div class="form-tip" style="margin-top:6px">{{ estResult.formula_note }}</div>
+    </el-card>
   </el-form>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { estimateMemory } from '../api'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },
+  modelPath: { type: String, default: '' },
+  mmprojPath: { type: String, default: '' },
+  gpuTotalGiB: { type: Number, default: 0 },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -336,6 +368,51 @@ watch(
   },
   { deep: true }
 )
+
+// ---------- 显存估算（M9） ----------
+const estimating = ref(false)
+const estResult = ref(null)
+
+const estFit = computed(() => {
+  if (!estResult.value) return ''
+  const total = estResult.value.total_gib
+  const gpu = props.gpuTotalGiB
+  if (!gpu) return 'ok'
+  if (total <= gpu * 0.85) return 'ok'
+  if (total <= gpu * 0.95) return 'tight'
+  return 'over'
+})
+
+const gpuInfo = computed(() => {
+  return props.gpuTotalGiB ? `${props.gpuTotalGiB} GiB（目标设备）` : '未知（未选设备）'
+})
+
+async function estimateMem() {
+  if (!props.modelPath) {
+    ElMessage.warning('请先选择模型文件')
+    return
+  }
+  estimating.value = true
+  try {
+    const payload = {
+      model_path: props.modelPath,
+      ctx_size: model.value.ctx_size || 8192,
+      batch_size: model.value.batch_size || 2048,
+      ubatch_size: model.value.ubatch_size || 512,
+      parallel: model.value.parallel || 4,
+      cache_type_k: model.value.cache_type_k || 'q8_0',
+      cache_type_v: model.value.cache_type_v || 'q8_0',
+      n_gpu_layers: model.value.n_gpu_layers ?? 99,
+      flash_attn: !!model.value.flash_attn,
+      mmproj: props.mmprojPath || '',
+    }
+    estResult.value = await estimateMemory(payload)
+  } catch (e) {
+    ElMessage.error('估算失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    estimating.value = false
+  }
+}
 </script>
 
 <style scoped>

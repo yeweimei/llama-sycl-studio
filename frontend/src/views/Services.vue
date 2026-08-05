@@ -155,7 +155,7 @@
           <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存</div>
         </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
-        <ParamForm v-model="form.preset" />
+        <ParamForm v-model="form.preset" :model-path="form.model_path" :mmproj-path="form.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" />
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -203,7 +203,7 @@
           <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存；选"一直保持"则常驻</div>
         </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
-        <ParamForm v-model="editForm.preset" />
+        <ParamForm v-model="editForm.preset" :model-path="editForm.model_path" :mmproj-path="editForm.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" />
         <div class="form-tip" style="margin-top:4px">推理参数通过模型预设(config.ini)生效，保存后需重启容器加载。</div>
       </el-form>
       <template #footer>
@@ -224,6 +224,7 @@ import {
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
   listModels, getSelectableGpus, listModelTags, updateModelTags,
+  gpuStatus,
 } from '../api'
 
 const services = ref([])
@@ -282,6 +283,7 @@ const useManualName = ref(false)
 const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
+const gpuTotalGiB = ref(0)
 
 // 空闲自动卸载选项（分钟）
 const idleUnloadOptions = [
@@ -735,6 +737,12 @@ onMounted(async () => {
     const tm = {}
     for (const t of tags) tm[t.model_name] = t
     svcTagMap.value = tm
+    // 目标设备显存（估算对比用）：取非集显设备的显存总量
+    try {
+      const g = await gpuStatus()
+      const dgpu = (g.devices || []).find(d => !d.is_integrated && d.memory_total_mib)
+      gpuTotalGiB.value = dgpu ? Math.round(dgpu.memory_total_mib / 1024 * 10) / 10 : 0
+    } catch (e) { /* ignore */ }
   } catch (e) { /* ignore */ }
 })
 onUnmounted(clearTimers)

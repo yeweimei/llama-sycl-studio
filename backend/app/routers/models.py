@@ -27,16 +27,50 @@ def parse_gguf_meta(path: Path) -> dict:
             n_kv = struct.unpack("<Q", f.read(8))[0]
 
             kv = {}
-            for _ in range(min(n_kv, 16)):  # 架构/名称/类型在最前，16 个足够
+            for _ in range(min(n_kv, 64)):  # 架构/名称/结构参数（扩展到 64 个覆盖 llama.* 键）
                 try:
                     k = _read_string(f)
                     v_type = struct.unpack("<I", f.read(4))[0]
                     val = _read_value(f, v_type)
-                    if k in ("general.architecture", "general.name", "general.file_type",
-                             "general.quantization_version", "general.size_label"):
+                    # 保留：通用元信息 + 结构参数（KV cache 估算用）
+                    # 排除 tokenizer 大数组（tokens/scores 等超大数组）即可，其余全收
+                    if not k.startswith("tokenizer.") or k == "tokenizer.ggml.model":
                         kv[k] = val
                 except Exception:
                     break
+
+            # 结构参数归一化（键前缀 = 架构名，如 llama./qwen35./bert.；动态匹配）
+            arch = kv.get("general.architecture", "")
+            pfx = f"{arch}." if arch else "llama."
+
+            def _get(*names):
+                # 先按架构前缀，再试通用前缀
+                candidates = [n for n in names]
+                for n in names:
+                    if n.startswith(("llama.", "bert.", "qwen2")):
+                        candidates.append(f"{pfx}{n.split(".", 1)[1]}")
+                for n in candidates:
+                    if n in kv:
+                        return kv[n]
+                return None
+
+            block_count = _get("llama.block_count", "bert.block_count")
+            head_count = _get("llama.attention.head_count", "bert.attention.head_count")
+            head_count_kv = _get("llama.attention.head_count_kv") or head_count or 0
+            embed = _get("llama.embedding_length", "bert.embedding_length") or 0
+            # head_dim：有显式键用，否则按 n_embd/n_head 推导（GQA 模型用 head_count_kv）
+            head_dim = _get("llama.attention.key_length", "llama.attention.value_length")
+            if not head_dim and head_count_kv and embed:
+                head_dim = embed // head_count_kv
+            # 混合架构（如 qwen35 = Mamba + Attention 交替）：
+            # full_attention_interval 表示每 N 层有一个 attention 层
+            full_attn_interval = _get("llama.full_attention_interval") or 0
+            if full_attn_interval and block_count:
+                # 有 interval 时 attention 层数 = 总层 / interval（约）
+                attn_layers = max(1, (block_count + full_attn_interval - 1) // full_attn_interval)
+            else:
+                attn_layers = block_count or 0
+            file_size = path.stat().st_size if path.exists() else 0
 
             ftype = kv.get("general.file_type")
             quant = _file_type_name(ftype) if ftype is not None else ""
@@ -47,6 +81,14 @@ def parse_gguf_meta(path: Path) -> dict:
                 "quantization": quant or name_quant,
                 "size_label": kv.get("general.size_label", ""),
                 "file_type": ftype,
+                "n_layer": block_count,
+                "n_head": head_count,
+                "n_head_kv": head_count_kv,
+                "n_embd": embed,
+                "head_dim": head_dim,
+                "attn_layers": attn_layers,
+                "full_attention_interval": full_attn_interval,
+                "file_size_bytes": file_size,
             }
     except Exception:
         return {}
@@ -74,16 +116,46 @@ def _read_value(f, vtype: int):
         return _read_string(f)
     if vtype == 12:
         return struct.unpack("<d", f.read(8))[0]
-    if vtype == 9:  # array：只读元素数和类型，跳过内容（避免超大数组卡死）
+    if vtype == 9:  # array：读元素数，跳过内容（避免超大数组卡死）
         elem_type = struct.unpack("<I", f.read(4))[0]
         n = struct.unpack("<Q", f.read(8))[0]
-        if n > 1024:  # 大数组直接跳过
+        if n > 1024:  # 大数组：计算总字节数并 seek 跳过（必须跳过，否则后续 KV 错位）
+            _skip_array(f, elem_type, n)
             return None
         vals = []
         for _ in range(n):
             vals.append(_read_value(f, elem_type))
         return vals
     return None
+
+
+def _skip_array(f, elem_type: int, n: int):
+    """跳过 GGUF array 内容（不读取，避免超大数组卡死）"""
+    if elem_type == 8:  # 字符串数组：逐个跳过（长度前缀 + 内容）
+        for _ in range(n):
+            try:
+                ln = struct.unpack("<Q", f.read(8))[0]
+                if ln > 10_000_000:  # 防御：异常长度直接中断
+                    return
+                f.seek(ln, 1)
+            except Exception:
+                return
+    elif elem_type == 9:  # 嵌套数组（罕见）：跳过元素数组
+        for _ in range(n):
+            try:
+                sub_type = struct.unpack("<I", f.read(4))[0]
+                sub_n = struct.unpack("<Q", f.read(8))[0]
+                _skip_array(f, sub_type, sub_n)
+            except Exception:
+                return
+    else:
+        # 定长元素：总字节 = n × 元素大小
+        sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+        sz = sizes.get(elem_type, 1)
+        try:
+            f.seek(n * sz, 1)
+        except Exception:
+            pass
 
 
 _QUANT_MAP = {

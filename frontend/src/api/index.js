@@ -82,6 +82,7 @@ export const gatewayHealth = () => api.get('/services/gateway/health').then(r =>
 export const getAlertConfig = () => api.get('/settings/alert').then(r => r.data)
 export const saveAlertConfig = (cfg) => api.put('/settings/alert', cfg).then(r => r.data)
 export const testAlert = () => api.post('/settings/alert/test').then(r => r.data)
+export const estimateMemory = (payload) => api.post('/presets/estimate-memory', payload).then(r => r.data)
 
 // ---------- 设置 ----------
 export const listApiKeys = () => api.get('/settings/api-keys').then(r => r.data)
