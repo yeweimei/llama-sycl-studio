@@ -1242,10 +1242,18 @@ async def parse_pdf(sid: int, file: UploadFile):
 def gateway_health():
     """网关心跳聚合：所有服务实例状态 + 健康数据（M6）"""
     import time as _t
+    from app import instance_mgr
     try:
         svcs = list_services()
         instances = []
         for s in svcs:
+            # 对运行中实例补一次健康探测（TTL 缓存内复用，无额外开销）
+            health = {}
+            if s.get("loaded") and s.get("id"):
+                try:
+                    health = instance_mgr.instance_status(s["id"])
+                except Exception:
+                    pass
             instances.append({
                 "id": s.get("id"),
                 "name": s.get("name"),
@@ -1253,8 +1261,8 @@ def gateway_health():
                 "loaded": s.get("loaded", False),
                 "pid": s.get("pid"),
                 "port": s.get("port"),
-                "health_latency_ms": s.get("health_latency_ms"),
-                "last_health_at": s.get("last_health_at"),
+                "health_latency_ms": health.get("health_latency_ms") or s.get("health_latency_ms"),
+                "last_health_at": health.get("last_health_at") or s.get("last_health_at"),
                 "mem_mib": (s.get("loaded_info") or {}).get("mem_rss_mib"),
                 "quant": (s.get("loaded_info") or {}).get("quant"),
                 "ctx_size": (s.get("loaded_info") or {}).get("ctx_size"),
