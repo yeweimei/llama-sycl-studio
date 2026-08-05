@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db
 from app import auth as auth_mod
-from app import idle_unload
+from app import idle_unload, self_heal
 from app.routers import services, models, downloads, gpu, settings as settings_router
 from app.routers import auth as auth_router
 from app.routers import presets, tags, stats, engine
@@ -43,6 +43,8 @@ init_db()
 
 # 启动空闲自动卸载后台任务
 idle_unload.start_idle_unload_loop()
+# 启动自愈监控后台任务（M3：实例异常自动重启）
+self_heal.start_self_heal_loop()
 
 # ---------- 认证中间件 ----------
 # 不需要认证的路径

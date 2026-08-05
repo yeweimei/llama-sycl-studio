@@ -851,6 +851,13 @@ async def chat_proxy(sid: int, body: ChatRequest):
     ist = instance_mgr.instance_status(sid)
     if not ist.get("running"):
         raise HTTPException(400, f"模型 {model_name} 未启动，请先启动模型")
+    # M2 转发前探活：进程活着但 /health 不通（degraded）→ 明确 503 而非挂起
+    if ist.get("state") == "degraded":
+        lat = ist.get("health_latency_ms")
+        raise HTTPException(503, f"模型 {model_name} 实例无响应（健康检查失败{('，延迟 ' + str(lat) + 'ms') if lat is not None else ''}），请重启模型")
+    # M4 优雅停止：draining 期间拒绝新请求
+    if not instance_mgr.begin_request(sid):
+        raise HTTPException(503, f"模型 {model_name} 正在停止中（draining），请稍后重试")
     url = f"{instance_mgr.url_for(sid)}/v1/chat/completions"
     # 记录调用时间（空闲自动卸载）
     instance_mgr.touch_usage(sid)
@@ -876,22 +883,25 @@ async def chat_proxy(sid: int, body: ChatRequest):
     if not body.stream:
         import time as _time
         t0 = _time.time()
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            try:
-                r = await client.post(url, json=payload, headers=headers)
-            except httpx.HTTPError as e:
-                raise HTTPException(502, f"转发失败: {e}")
-            if r.status_code != 200:
-                raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
-            data = r.json()
-            # 埋点统计
-            elapsed_ms = int((_time.time() - t0) * 1000)
-            usage = data.get("usage", {})
-            _record_stats(model_name,
-                          prompt_tokens=usage.get("prompt_tokens", 0),
-                          completion_tokens=usage.get("completion_tokens", 0),
-                          prefill_ms=elapsed_ms)
-            return data
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                try:
+                    r = await client.post(url, json=payload, headers=headers)
+                except httpx.HTTPError as e:
+                    raise HTTPException(502, f"转发失败: {e}")
+                if r.status_code != 200:
+                    raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
+                data = r.json()
+                # 埋点统计
+                elapsed_ms = int((_time.time() - t0) * 1000)
+                usage = data.get("usage", {})
+                _record_stats(model_name,
+                              prompt_tokens=usage.get("prompt_tokens", 0),
+                              completion_tokens=usage.get("completion_tokens", 0),
+                              prefill_ms=elapsed_ms)
+                return data
+        finally:
+            instance_mgr.end_request(sid)
 
     async def gen():
         import time as _time
@@ -899,32 +909,35 @@ async def chat_proxy(sid: int, body: ChatRequest):
         first_token_time = None
         prompt_tokens = 0
         completion_tokens = 0
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            try:
-                async with client.stream("POST", url, json=payload, headers=headers) as r:
-                    async for line in r.aiter_lines():
-                        if line:
-                            # 捕获首 token 时间
-                            if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
-                                first_token_time = _time.time()
-                            # 解析 usage（流式最后 chunk 可能有；llama.cpp 用 timings 字段）
-                            if line.startswith("data:") and "[DONE]" not in line:
-                                try:
-                                    chunk = json.loads(line[5:].strip())
-                                    u = chunk.get("usage")
-                                    if u:
-                                        prompt_tokens = u.get("prompt_tokens", 0)
-                                        completion_tokens = u.get("completion_tokens", 0)
-                                    else:
-                                        t = chunk.get("timings")
-                                        if t:
-                                            prompt_tokens = t.get("prompt_n", 0)
-                                            completion_tokens = t.get("predicted_n", 0)
-                                except Exception:
-                                    pass
-                            yield line + "\n"
-            except httpx.HTTPError as e:
-                yield f"data: {{\"error\": \"{e}\"}}\n\n"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                try:
+                    async with client.stream("POST", url, json=payload, headers=headers) as r:
+                        async for line in r.aiter_lines():
+                            if line:
+                                # 捕获首 token 时间
+                                if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
+                                    first_token_time = _time.time()
+                                # 解析 usage（流式最后 chunk 可能有；llama.cpp 用 timings 字段）
+                                if line.startswith("data:") and "[DONE]" not in line:
+                                    try:
+                                        chunk = json.loads(line[5:].strip())
+                                        u = chunk.get("usage")
+                                        if u:
+                                            prompt_tokens = u.get("prompt_tokens", 0)
+                                            completion_tokens = u.get("completion_tokens", 0)
+                                        else:
+                                            t = chunk.get("timings")
+                                            if t:
+                                                prompt_tokens = t.get("prompt_n", 0)
+                                                completion_tokens = t.get("predicted_n", 0)
+                                    except Exception:
+                                        pass
+                                yield line + "\n"
+                except httpx.HTTPError as e:
+                    yield f"data: {{\"error\": \"{e}\"}}\n\n"
+        finally:
+            instance_mgr.end_request(sid)
         # 流式结束后埋点
         total_ms = int((_time.time() - t0) * 1000)
         prefill_ms = int((first_token_time - t0) * 1000) if first_token_time else total_ms

@@ -24,6 +24,10 @@ BASE_PORT = int(os.environ.get("LLAMA_INSTANCE_BASE_PORT", "8081"))
 
 # 内存态实例表: {sid: {"proc": Popen, "port": int, "started_at": int, "log_path": str}}
 _instances: dict[int, dict] = {}
+# 每实例活跃请求计数（M4 优雅停止用）
+_active_requests: dict[int, int] = {}
+# 每实例 draining 标志（置位后拒绝新请求）
+_draining: set[int] = set()
 _lock = None
 
 
@@ -131,6 +135,35 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
 def _port_for(sid: int) -> int:
     """实例端口：BASE_PORT + sid（持久化稳定）"""
     return BASE_PORT + int(sid) - 1
+
+
+def begin_request(sid: int) -> bool:
+    """标记请求开始（draining 时拒绝）。返回是否允许进入"""
+    if sid in _draining:
+        return False
+    _active_requests[sid] = _active_requests.get(sid, 0) + 1
+    return True
+
+
+def end_request(sid: int):
+    """标记请求结束"""
+    _active_requests[sid] = max(0, _active_requests.get(sid, 0) - 1)
+
+
+def active_requests(sid: int) -> int:
+    return _active_requests.get(sid, 0)
+
+
+def is_draining(sid: int) -> bool:
+    return sid in _draining
+
+
+def mark_draining(sid: int):
+    _draining.add(sid)
+
+
+def clear_draining(sid: int):
+    _draining.discard(sid)
 
 
 def _port_in_use(port: int) -> bool:
@@ -285,9 +318,25 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
         return {"ok": True, "status": "starting", "port": port, "pid": proc.pid, "log": str(log_path)}
 
 
-def stop_instance(sid: int) -> dict:
-    """停止模型实例（TERM，超时 KILL）——支持复用的孤儿实例（proc=None）"""
+def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) -> dict:
+    """停止模型实例（TERM，超时 KILL）——支持复用的孤儿实例（proc=None）
+
+    graceful=True 时：先置 draining（新请求被拒），等待在途请求排空（最多 drain_timeout 秒），
+    再 TERM/KILL；排空超时则直接终止（在途流会断，属可接受的强制场景）。
+    """
     with _get_lock():
+        if graceful:
+            mark_draining(sid)
+            # 等待在途请求结束
+            waited = 0.0
+            while _active_requests.get(sid, 0) > 0 and waited < drain_timeout:
+                time.sleep(0.5)
+                waited += 0.5
+            if _active_requests.get(sid, 0) > 0:
+                logger.warning("优雅停止超时 sid=%s 仍有 %d 个在途请求，强制终止", sid, _active_requests.get(sid, 0))
+        clear_draining(sid)
+        _active_requests.pop(sid, None)
+
         inst = _instances.pop(sid, None)
         if not inst:
             return {"ok": True, "status": "not_running"}
