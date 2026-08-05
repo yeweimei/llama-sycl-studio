@@ -129,7 +129,7 @@ class PresetCreate(BaseModel):
     parallel: int = 4
     cache_type_k: str = "q8_0"
     cache_type_v: str = "q8_0"
-    flash_attn: bool = True
+    flash_attn: bool = False
     jinja: bool = True
     n_gpu_layers: int = 99
     mmap: bool = True

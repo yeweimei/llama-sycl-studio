@@ -389,12 +389,24 @@ def instance_status(sid: int) -> dict:
 
     - running:  进程存活 且 /health 通（HTTP 级探活，TTL 缓存）
     - degraded: 进程存活 但 /health 不通（进程卡死/未就绪）
+    - starting: 进程刚启动（<15s）未就绪
     - stopped:  进程已退出/无实例
+
+    兼容孤儿实例：内存态无记录时探测端口（WebUI 重启/外部启动场景）
     """
     base = {"running": False, "state": "stopped", "port": _port_for(sid), "pid": None}
     inst = _instances.get(sid)
     if not inst:
-        return base
+        # 孤儿实例探测：端口被健康实例占用则视为运行中
+        port = _port_for(sid)
+        if _port_in_use(port) and _health_ok(port):
+            pid = _find_pid_on_port(port)
+            inst = {"proc": None, "pid": pid, "port": port,
+                    "started_at": int(time.time()),
+                    "log_path": str(Path(settings.data_dir) / "instances" / f"sid{sid}.log")}
+            _instances[sid] = inst
+        else:
+            return base
     proc = inst.get("proc")
     alive = _proc_alive(proc) if proc is not None else _pid_alive(inst.get("pid"))
     if not alive:
