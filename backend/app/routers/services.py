@@ -249,8 +249,8 @@ def list_services():
             continue
         sid = db_info.get("id", 0)
         ist = inst_map.get(sid, {})
-        # 内存态无记录但端口被健康实例占用 → 孤儿实例（WebUI 重启/外部启动），探测并视为运行中
-        if not ist:
+        # 内存态无记录/已死但端口被健康实例占用 → 孤儿实例（WebUI 重启/外部启动），探测并视为运行中
+        if not ist or not ist.get("running"):
             p = instance_mgr._port_for(sid)
             if instance_mgr._port_in_use(p) and instance_mgr._health_ok(p):
                 pid = instance_mgr._find_pid_on_port(p)
