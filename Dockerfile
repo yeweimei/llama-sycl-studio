@@ -3,8 +3,10 @@
 FROM ghcr.io/ggml-org/llama.cpp:server-intel
 
 # 系统依赖 + 设置 LD_LIBRARY_PATH
+# tini：PID 1 init，reap 所有孤儿进程（WebUI 崩溃后 llama-server
+# 变僵尸无法被 WebUI reap 时，由 tini 兜底回收）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip python3-venv curl ca-certificates xpu-smi \
+    python3-pip python3-venv curl ca-certificates xpu-smi tini \
     && rm -rf /var/lib/apt/lists/*
 
 # 注：Intel GPU 驱动保持镜像默认（26.18）。
@@ -46,5 +48,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -s http://127.0.0.1:9100/api/health || exit 1
 
 # 入口（清除原镜像 ENTRYPOINT）
+# tini 作为 PID 1：reap 所有孤儿进程（WebUI 崩溃后 llama-server
+# 孤儿变僵尸时由 tini 回收，杜绝端口残留）
 ENTRYPOINT []
-CMD ["bash", "/app/studio/entrypoint.sh"]
+CMD ["tini", "-s", "--", "bash", "/app/studio/entrypoint.sh"]

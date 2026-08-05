@@ -392,6 +392,12 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
                     proc.kill()
                 except Exception:
                     pass
+            # kill 后进程可能残留为僵尸（父进程未 reap），立即回收
+            try:
+                if _is_zombie(proc.pid):
+                    _reap_zombie(proc.pid)
+            except Exception:
+                pass
         # 孤儿实例（仅 pid）：按 pid 杀
         pid = inst.get("pid")
         if pid and proc is None:
@@ -453,7 +459,12 @@ def _reap_zombie(pid) -> bool:
 
 
 def _zombie_harvest_once():
-    """收割一轮僵尸：遍历内存态实例，Popen 调 poll（reap），孤儿 pid 调 waitpid"""
+    """收割一轮僵尸：遍历内存态实例 + 全量扫描 PPID=self 的僵尸
+
+    - 内存态实例：Popen 调 poll（reap），孤儿 pid 调 waitpid
+    - 全量扫描：覆盖内存态丢失但僵尸仍在的场景（WebUI 重启后
+      旧 llama-server 变僵尸且不在 _instances 中）
+    """
     for sid, inst in list(_instances.items()):
         try:
             proc = inst.get("proc")
@@ -468,6 +479,31 @@ def _zombie_harvest_once():
                 logger.info("回收僵尸实例 sid=%s pid=%s", sid, pid)
         except Exception:
             pass
+    # 全量扫描：/proc 中所有 PPID==self 的僵尸（不限于内存态记录）
+    self_pid = os.getpid()
+    try:
+        for proc_dir in Path("/proc").glob("[0-9]*"):
+            try:
+                stat_path = proc_dir / "stat"
+                if not stat_path.exists():
+                    continue
+                stat = stat_path.read_text(errors="ignore")
+                # 格式: pid (comm) state ppid ...；comm 可能含空格括号
+                rp = stat.rfind(")")
+                if rp < 0:
+                    continue
+                fields = stat[rp + 2:].split()
+                if len(fields) < 2:
+                    continue
+                state, ppid = fields[0], fields[1]
+                if state == "Z" and ppid.isdigit() and int(ppid) == self_pid:
+                    pid = int(proc_dir.name)
+                    if _reap_zombie(pid):
+                        logger.info("全量收割僵尸 pid=%s（PPID=self）", pid)
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def start_zombie_harvester(interval: float = 15.0):
