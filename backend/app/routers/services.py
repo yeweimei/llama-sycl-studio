@@ -1,5 +1,7 @@
 """服务管理 API - router 模型池管理（替代旧容器管理）"""
 import json
+import time
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile
@@ -247,6 +249,16 @@ def list_services():
             continue
         sid = db_info.get("id", 0)
         ist = inst_map.get(sid, {})
+        # 内存态无记录但端口被健康实例占用 → 孤儿实例（WebUI 重启/外部启动），探测并视为运行中
+        if not ist:
+            p = instance_mgr._port_for(sid)
+            if instance_mgr._port_in_use(p) and instance_mgr._health_ok(p):
+                pid = instance_mgr._find_pid_on_port(p)
+                ist = {"running": True, "state": "running", "port": p, "pid": pid,
+                       "health_latency_ms": None, "last_health_at": None, "started_at": None}
+                instance_mgr._instances[sid] = {"proc": None, "pid": pid, "port": p,
+                                                "started_at": int(time.time()),
+                                                "log_path": str(Path(settings.data_dir) / "instances" / f"{mid}.log")}
         running = bool(ist)
         port = ist.get("port")
         loaded_detail = {}
@@ -589,7 +601,9 @@ def start_service(sid: int):
                 "ok": True, "status": "loaded", "detail": result, "port": result.get("port"),
                 "ready": True, "ready_hint": "模型已就绪（复用已有实例）",
             }
-        # 新启动：立即返回，前端轮询状态/日志
+        # 新启动：立即返回，前端轮询状态/日志；DB 标记 loaded（自愈据此接管异常恢复）
+        with get_conn() as conn:
+            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
         return {
             "ok": True, "status": "starting", "detail": result, "port": result.get("port"),
             "ready": False,
