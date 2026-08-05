@@ -921,8 +921,14 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 try:
                     r = await client.post(url, json=payload, headers=headers)
                 except httpx.HTTPError as e:
+                    # 记录失败明细
+                    _record_stats(model_name, stream=False, ok=False, status_code=502,
+                                  total_ms=int((_time.time() - t0) * 1000), error=str(e))
                     raise HTTPException(502, f"转发失败: {e}")
                 if r.status_code != 200:
+                    _record_stats(model_name, stream=False, ok=False, status_code=r.status_code,
+                                  total_ms=int((_time.time() - t0) * 1000),
+                                  error=r.text[:300])
                     raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
                 data = r.json()
                 # 埋点统计
@@ -931,7 +937,8 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 _record_stats(model_name,
                               prompt_tokens=usage.get("prompt_tokens", 0),
                               completion_tokens=usage.get("completion_tokens", 0),
-                              prefill_ms=elapsed_ms)
+                              prefill_ms=elapsed_ms, stream=False, ok=True,
+                              status_code=200, total_ms=elapsed_ms)
                 return data
         finally:
             instance_mgr.end_request(sid)
@@ -968,6 +975,10 @@ async def chat_proxy(sid: int, body: ChatRequest):
                                         pass
                                 yield line + "\n"
                 except httpx.HTTPError as e:
+                    # 流式转发失败：记录失败明细（流式无法返回 HTTP 错误码，置 502）
+                    total_ms = int((_time.time() - t0) * 1000)
+                    _record_stats(model_name, stream=True, ok=False, status_code=502,
+                                  total_ms=total_ms, error=str(e))
                     yield f"data: {{\"error\": \"{e}\"}}\n\n"
         finally:
             instance_mgr.end_request(sid)
@@ -977,7 +988,8 @@ async def chat_proxy(sid: int, body: ChatRequest):
         decode_ms = max(0, total_ms - prefill_ms)
         _record_stats(model_name, prompt_tokens=prompt_tokens,
                       completion_tokens=completion_tokens,
-                      prefill_ms=prefill_ms, decode_ms=decode_ms)
+                      prefill_ms=prefill_ms, decode_ms=decode_ms,
+                      stream=True, ok=True, status_code=200, total_ms=total_ms)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

@@ -107,6 +107,8 @@ export const autoModelTags = (name) => api.post(`/model-tags/${encodeURIComponen
 
 // ---------- API 统计 ----------
 export const getStats = () => api.get('/stats').then(r => r.data)
+export const getStatsTrends = (hours = 24, bucketMinutes = 60) => api.get('/stats/trends', { params: { hours, bucket_minutes: bucketMinutes } }).then(r => r.data)
+export const getRecentRequests = (limit = 50) => api.get('/stats/requests', { params: { limit } }).then(r => r.data)
 
 // ---------- 聊天历史 ----------
 export const getChatHistory = (sid, sessionId = 0) => api.get(`/services/${sid}/history`, { params: { session_id: sessionId } }).then(r => r.data)
