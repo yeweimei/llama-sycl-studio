@@ -62,6 +62,9 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         "--port", str(_port_for(sid)),
         "--alias", name,
     ]
+    # embedding 模型自动加 --embeddings（否则 /v1/embeddings 返回 501）
+    if "embedding" in name.lower() or "embed" in name.lower():
+        args += ["--embeddings"]
     # ctx-size：预设值（核心：per-model 上下文）
     ctx = preset.get("ctx_size") or 8192
     args += ["--ctx-size", str(ctx)]
