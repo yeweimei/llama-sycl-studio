@@ -228,6 +228,19 @@ def _proc_alive(proc) -> bool:
     return proc is not None and proc.poll() is None
 
 
+def _force_release_port(port: int, wait_s: float = 5.0):
+    """确保端口释放：反复按端口找 pid 并强杀（最多 wait_s 秒）"""
+    deadline = time.time() + wait_s
+    while time.time() < deadline and _port_in_use(port):
+        pid = _find_pid_on_port(port)
+        if pid:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.5)
+
+
 # ========== HTTP 级探活（带 TTL 缓存） ==========
 HEALTH_TTL = 3.0  # 秒：同一实例探活结果缓存时长，避免列表轮询频繁发请求
 _health_cache: dict[int, dict] = {}  # sid -> {"ts": float, "ok": bool, "latency_ms": int}
@@ -345,6 +358,7 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
 
         inst = _instances.pop(sid, None)
         proc = inst.get("proc")
+        port = inst.get("port") or _port_for(sid)
         if proc is not None:
             try:
                 proc.terminate()
@@ -354,11 +368,9 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
                     proc.kill()
                 except Exception:
                     pass
-            logger.info("实例停止 sid=%s pid=%s", sid, proc.pid)
-            return {"ok": True, "status": "stopped", "pid": proc.pid}
         # 孤儿实例（仅 pid）：按 pid 杀
         pid = inst.get("pid")
-        if pid:
+        if pid and proc is None:
             try:
                 os.kill(pid, signal.SIGTERM)
                 for _ in range(15):
@@ -369,7 +381,11 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
                     os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            logger.info("孤儿实例停止 sid=%s pid=%s", sid, pid)
+        # 兜底：确保端口真正释放（防止残留进程占端口导致下次复用脏实例）
+        if _port_in_use(port):
+            logger.warning("实例停止后端口 %d 仍被占用，按端口清理残留", port)
+            _force_release_port(port)
+        logger.info("实例停止 sid=%s pid=%s port=%d", sid, pid, port)
         return {"ok": True, "status": "stopped", "pid": pid}
 
 
