@@ -260,8 +260,22 @@ def list_services():
                     arr = data.get("data", []) if isinstance(data, dict) else data
                     if arr:
                         loaded_detail = arr[0]
+                        # 字段归一化：per-model 实例 /models 返回 meta 嵌套结构 → 顶层字段
+                        # （前端读 quant / mem_total / ctx_size）
+                        meta = loaded_detail.get("meta") or {}
+                        if isinstance(meta, dict):
+                            if not loaded_detail.get("quant"):
+                                loaded_detail["quant"] = meta.get("ftype")
+                            if not loaded_detail.get("ctx_size"):
+                                loaded_detail["ctx_size"] = meta.get("n_ctx")
+                            if not loaded_detail.get("n_params") and meta.get("n_params"):
+                                loaded_detail["n_params"] = meta.get("n_params")
             except Exception:
                 pass
+        # 显存占用：按实例 pid 查真实 RSS（MiB），比模型文件 size 更接近实际占用
+        if running and ist.get("pid"):
+            loaded_detail["mem_rss_mib"] = _proc_rss_mib(ist["pid"])
+            loaded_detail["mem_total"] = (loaded_detail.get("mem_rss_mib") or 0) * 1024 * 1024
         has_mmproj = False
         mmproj_path = ""
         mp = db_info.get("model_path", "")
@@ -313,6 +327,19 @@ def _resolve_model_name(sid) -> dict:
     d = dict(row)
     d["router_id"] = _derive_router_id(d.get("model_path", ""))
     return d
+
+
+def _proc_rss_mib(pid) -> int | None:
+    """按 pid 查进程 RSS（MiB），失败返回 None"""
+    if not pid:
+        return None
+    try:
+        import subprocess as _sp
+        out = _sp.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        rss_kb = int(out.stdout.strip())
+        return rss_kb // 1024
+    except Exception:
+        return None
 
 
 def _preset_params(model_name: str) -> dict:
@@ -545,8 +572,8 @@ def update_service(sid: int, body: ServiceUpdate):
 def start_service(sid: int):
     """启动模型独立实例（per-model ctx，用预设的 ctx_size）
 
-    每个服务一个独立 llama-server 进程，上下文由该模型预设控制。
-    轮询等待健康检查通过再返回（避免前端在未就绪时对话）。
+    异步语义：拉起进程后立即返回（不再同步等待健康），前端轮询
+    instance_status / 日志实时推进进度。
     """
     from app import instance_mgr
     svc = _resolve_model_name(sid)
@@ -554,27 +581,19 @@ def start_service(sid: int):
     model_path = svc.get("model_path", "")
     try:
         result = instance_mgr.start_instance(sid, name, model_path)
-        # 轮询等待实例健康（最多 150s）
-        import time as _t
-        import httpx
-        ready = False
-        base = instance_mgr.url_for(sid)
-        for _ in range(50):
-            _t.sleep(3)
-            try:
-                with httpx.Client(timeout=3) as c:
-                    r = c.get(f"{base}/health")
-                if r.status_code == 200:
-                    ready = True
-                    break
-            except Exception:
-                pass
-        with get_conn() as conn:
-            conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
+        # 复用已有实例：直接标记 loaded
+        if result.get("status") == "running":
+            with get_conn() as conn:
+                conn.execute("UPDATE services SET status='loaded', updated_at=? WHERE name=?", (now(), name))
+            return {
+                "ok": True, "status": "loaded", "detail": result, "port": result.get("port"),
+                "ready": True, "ready_hint": "模型已就绪（复用已有实例）",
+            }
+        # 新启动：立即返回，前端轮询状态/日志
         return {
-            "ok": True, "status": "loaded", "detail": result, "port": result.get("port"),
-            "ready": ready,
-            "ready_hint": "模型已就绪" if ready else "模型仍在加载中（加载完成前对话请求会排队等待）",
+            "ok": True, "status": "starting", "detail": result, "port": result.get("port"),
+            "ready": False,
+            "ready_hint": "模型启动中（异步），前端将轮询加载进度与日志",
         }
     except Exception as e:
         with get_conn() as conn:

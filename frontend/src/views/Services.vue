@@ -102,6 +102,15 @@
                 <el-descriptions-item label="PID">{{ row.pid || '-' }}</el-descriptions-item>
                 <el-descriptions-item label="显存">{{ row.loaded_info?.mem_total ? formatSize(row.loaded_info.mem_total) : '-' }}</el-descriptions-item>
               </el-descriptions>
+              <!-- 运行日志（加载后仍可查看） -->
+              <el-collapse style="margin-top:8px">
+                <el-collapse-item :title="`运行日志（最新 ${runLogs[row.name]?.length || 0} 行）`">
+                  <div ref="runLogContainer" class="load-log-view" style="height:240px">
+                    <div v-if="!(runLogs[row.name] || []).length" style="color:#909399;font-size:13px">暂无日志，点击展开后自动拉取</div>
+                    <div v-for="(line, i) in (runLogs[row.name] || [])" :key="i" class="log-line">{{ line }}</div>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
             </div>
             <div v-else class="proc-panel">
               <span style="color:#909399;font-size:13px">未加载</span>
@@ -249,12 +258,33 @@ const routerInfo = ref(null)
 const loadProgress = ref(0)
 const loadStatusText = ref('')
 const loadLogs = ref([])
+// 运行日志缓存: {modelName: [lines]}（加载完成后展开行查看）
+const runLogs = ref({})
+const runLogContainer = ref(null)
 const logContainer = ref(null)
 const expandedRowKeys = ref([])
 
 function onExpandChange(row, expandedRows) {
   // 手动展开/收起时同步受控展开状态（加载/卸载/重启的自动展开仍走 expandedRowKeys 赋值）
   expandedRowKeys.value = expandedRows.map(r => r.name)
+  // 展开已加载模型时自动拉取运行日志
+  const expanded = expandedRows.find(r => r.name === row.name)
+  if (expanded && row.loaded && !runLogs.value[row.name]) {
+    fetchRunLogs(row)
+  }
+}
+
+async function fetchRunLogs(row, tail = 100) {
+  try {
+    if (!row?.id) return
+    const data = await getServiceLogs(row.id, { tail })
+    const lines = (data.logs || data || '').split('\n').filter(l => l.trim())
+    runLogs.value = { ...runLogs.value, [row.name]: lines.slice(-tail) }
+    await nextTick()
+    if (runLogContainer.value) {
+      runLogContainer.value.scrollTop = runLogContainer.value.scrollHeight
+    }
+  } catch (e) { /* ignore */ }
 }
 let pollTimer = null
 let logTimer = null
@@ -405,10 +435,19 @@ async function pollServiceStatus(modelName, isLoad) {
         ElMessage.error(`${modelName} 加载失败`)
         return true
       }
-      // 递进进度
-      if (loadProgress.value < 30) loadProgress.value = 30
-      else if (loadProgress.value < 60) loadProgress.value = 60
-      else if (loadProgress.value < 80) loadProgress.value = 80
+      // 基于日志内容智能推进进度
+      const joined = (loadLogs.value || []).join('\n')
+      if (/model loaded|listening on/i.test(joined)) {
+        loadProgress.value = 95
+      } else if (/llama_model_load|load_model|init|allocating|mmap/i.test(joined)) {
+        loadProgress.value = Math.max(loadProgress.value, 50)
+      } else if (loadLogs.value.length > 0) {
+        // 有日志产生说明进程已起来，缓慢推进（避免卡 0）
+        loadProgress.value = Math.max(loadProgress.value, 25, Math.min(45, 25 + loadLogs.value.length * 2))
+      } else {
+        // 无日志：时间兜底推进
+        loadProgress.value = Math.max(loadProgress.value, 10)
+      }
       loadStatusText.value = '模型加载中，冷启动约需 1-2 分钟…'
     } else {
       const status = (row.status || '').toLowerCase()
@@ -448,13 +487,13 @@ async function doLoad(row) {
 
   try {
     await startService(row.id)
-    loadProgress.value = 30
-    loadStatusText.value = '模型加载中，冷启动约需 1-2 分钟…'
+    loadProgress.value = 10
+    loadStatusText.value = '已拉起进程，等待模型加载…'
 
-    // 立即拉一次日志
+    // 立即拉一次日志（后端异步返回，日志已开始产生）
     await pollLogs(row.name)
 
-    // 轮询状态 + 日志
+    // 轮询状态 + 日志（每 2s）
     pollTimer = setInterval(async () => {
       const done = await pollServiceStatus(row.name, true)
       if (done) {
