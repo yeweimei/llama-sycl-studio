@@ -325,6 +325,12 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
     再 TERM/KILL；排空超时则直接终止（在途流会断，属可接受的强制场景）。
     """
     with _get_lock():
+        inst = _instances.get(sid)
+        if not inst:
+            # 实例不在内存态（已停止/孤儿但已清理），无需等待
+            _draining.discard(sid)
+            _active_requests.pop(sid, None)
+            return {"ok": True, "status": "not_running"}
         if graceful:
             mark_draining(sid)
             # 等待在途请求结束
@@ -338,8 +344,6 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
         _active_requests.pop(sid, None)
 
         inst = _instances.pop(sid, None)
-        if not inst:
-            return {"ok": True, "status": "not_running"}
         proc = inst.get("proc")
         if proc is not None:
             try:
