@@ -23,6 +23,9 @@ HEALTH_FAIL_THRESHOLD = 2  # degraded 状态连续观察到 N 次才自愈（单
 # 加载本身冷启动也需数十秒；窗口过短会把正常加载中的实例误杀重启（重启风暴放大器）。
 # 窗口内只观察，窗口外才判定真故障。
 STARTUP_GRACE_SECONDS = 240
+# error 状态冷却期（秒）：自愈放弃并标记 error 后，冷却期满自动恢复
+# loaded 重试一次（避免永久 error 需手动干预，又不至于疯狂重启）
+ERROR_RETRY_SECONDS = 600
 
 # 内存态: {sid: {"consecutive_fails": int, "last_seen_degraded": int, "last_heal_at": int, "_degraded_count": int}}
 _state: dict[int, dict] = {}
@@ -67,8 +70,23 @@ def _heal_once():
             d = dict(r)
             sid, name, model_path = d["id"], d["name"], d["model_path"]
             if not _should_service_be_loaded(sid, name):
-                # 服务不应加载（unloaded/error），重置状态
-                _state.pop(sid, None)
+                # 服务不应加载（unloaded/error）
+                s = _state.get(sid)
+                if s and s.get("marked_error"):
+                    # error 冷却重试：状态保留，检查冷却期是否到
+                    if t_now - s.get("error_at", 0) >= ERROR_RETRY_SECONDS:
+                        logger.warning("自愈重试 %s：error 冷却期满，恢复 loaded 重新尝试", name)
+                        try:
+                            with get_conn() as conn:
+                                conn.execute(
+                                    "UPDATE services SET status='loaded', updated_at=? WHERE id=?",
+                                    (now(), sid),
+                                )
+                        except Exception:
+                            pass
+                        _state.pop(sid, None)
+                else:
+                    _state.pop(sid, None)
                 continue
 
             st = instance_mgr.instance_status(sid)
@@ -97,18 +115,32 @@ def _heal_once():
             else:
                 continue
 
-            # 连续失败超限 → 标记 error，暂停自愈
+            # 连续失败超限 → 标记 error，暂停自愈（冷却期后自动重试一次）
             if s["consecutive_fails"] > MAX_CONSECUTIVE_FAILURES:
-                logger.error("自愈放弃 %s：连续 %d 次重启失败，标记 error", name, s["consecutive_fails"])
-                try:
-                    with get_conn() as conn:
-                        conn.execute(
-                            "UPDATE services SET status='error', updated_at=? WHERE id=?",
-                            (now(), sid),
-                        )
-                except Exception:
-                    pass
-                _state.pop(sid, None)
+                if not s.get("marked_error"):
+                    logger.error("自愈放弃 %s：连续 %d 次重启失败，标记 error（%ds 后自动重试）", name, s["consecutive_fails"], ERROR_RETRY_SECONDS)
+                    try:
+                        with get_conn() as conn:
+                            conn.execute(
+                                "UPDATE services SET status='error', updated_at=? WHERE id=?",
+                                (now(), sid),
+                            )
+                    except Exception:
+                        pass
+                    s["marked_error"] = True
+                    s["error_at"] = t_now
+                # 冷却期后自动恢复 loaded 重试（避免永久 error 需手动干预）
+                if t_now - s.get("error_at", 0) >= ERROR_RETRY_SECONDS:
+                    logger.warning("自愈重试 %s：error 冷却期满，恢复 loaded 重新尝试", name)
+                    try:
+                        with get_conn() as conn:
+                            conn.execute(
+                                "UPDATE services SET status='loaded', updated_at=? WHERE id=?",
+                                (now(), sid),
+                            )
+                    except Exception:
+                        pass
+                    _state.pop(sid, None)  # 重置计数，重新观察
                 continue
 
             # 退避：连续失败后拉长间隔，避免重启风暴
