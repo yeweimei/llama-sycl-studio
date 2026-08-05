@@ -18,6 +18,11 @@ CHECK_INTERVAL = 20  # 秒
 MAX_CONSECUTIVE_FAILURES = 3  # 连续重启失败次数上限
 DEAD_SECONDS = 5  # 进程死亡多久后开始自愈（避免正常停止的瞬间误判）
 HEALTH_FAIL_THRESHOLD = 2  # degraded 状态连续观察到 N 次才自愈（单次抖动不触发）
+# 加载/预热保护窗口（秒）：实例启动后此窗口内不因 degraded 触发自愈。
+# 实测：容器重建后首次推理预热需 ~90-100s（flash-attn 内核首次执行/图编译），
+# 加载本身冷启动也需数十秒；窗口过短会把正常加载中的实例误杀重启（重启风暴放大器）。
+# 窗口内只观察，窗口外才判定真故障。
+STARTUP_GRACE_SECONDS = 240
 
 # 内存态: {sid: {"consecutive_fails": int, "last_seen_degraded": int, "last_heal_at": int, "_degraded_count": int}}
 _state: dict[int, dict] = {}
@@ -78,7 +83,12 @@ def _heal_once():
                     s["consecutive_fails"] += 1
                 s["last_seen_bad"] = t_now
             elif st.get("state") == "degraded":
-                # 进程活但 /health 不通：连续观察 HEALTH_FAIL_THRESHOLD 次才自愈
+                # 加载/预热保护：启动后窗口内 degraded 属正常（加载中/首推预热），不触发自愈
+                started_at = st.get("started_at") or 0
+                if started_at and (t_now - started_at) < STARTUP_GRACE_SECONDS:
+                    s["_degraded_count"] = 0  # 窗口内计数清零，窗口外重新计
+                    continue
+                # 窗口外进程活但 /health 不通：连续观察 HEALTH_FAIL_THRESHOLD 次才自愈
                 s["last_seen_bad"] = t_now
                 if s.get("_degraded_count", 0) < HEALTH_FAIL_THRESHOLD:
                     s["_degraded_count"] = s.get("_degraded_count", 0) + 1

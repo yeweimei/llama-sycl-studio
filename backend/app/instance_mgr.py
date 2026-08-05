@@ -228,6 +228,19 @@ def _proc_alive(proc) -> bool:
     return proc is not None and proc.poll() is None
 
 
+def _proc_started_at(pid) -> int | None:
+    """按 pid 解析进程启动时间戳（ps etime → epoch），失败返回 None"""
+    if not pid:
+        return None
+    try:
+        import subprocess as _sp
+        out = _sp.run(["ps", "-o", "etimes=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        etime_s = int(out.stdout.strip())
+        return int(time.time()) - etime_s
+    except Exception:
+        return None
+
+
 def _force_release_port(port: int, wait_s: float = 5.0):
     """确保端口释放：反复按端口找 pid 并强杀（最多 wait_s 秒）"""
     deadline = time.time() + wait_s
@@ -298,10 +311,12 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
         # 端口已被占（孤儿实例/WebUI 重启后残留）
         if _port_in_use(port):
             if _health_ok(port):
-                # 已有健康实例在跑 → 复用，重建内存态
+                # 已有健康实例在跑 → 复用，重建内存态（started_at 用真实启动时间，
+                # 避免孤儿实例永远处于自愈保护窗口）
                 pid = _find_pid_on_port(port)
                 _instances[sid] = {"proc": None, "pid": pid, "port": port,
-                                  "started_at": int(time.time()), "log_path": str(Path(settings.data_dir) / "instances" / f"{name}.log")}
+                                  "started_at": _proc_started_at(pid) or int(time.time()),
+                                  "log_path": str(Path(settings.data_dir) / "instances" / f"{name}.log")}
                 logger.info("实例复用 sid=%s name=%s port=%d pid=%s（检测到已运行）", sid, name, port, pid)
                 return {"ok": True, "status": "running", "port": port, "pid": pid,
                         "reused": True, "detail": "检测到已有实例在运行，已复用"}
@@ -417,8 +432,11 @@ def instance_status(sid: int) -> dict:
         port = _port_for(sid)
         if _port_in_use(port) and _health_ok(port):
             pid = _find_pid_on_port(port)
+            # 真实启动时间：从 ps etime 解析（孤儿实例不能简单用当前时间，
+            # 否则永远处于自愈保护窗口内）
+            started_at = _proc_started_at(pid) or int(time.time())
             inst = {"proc": None, "pid": pid, "port": port,
-                    "started_at": int(time.time()),
+                    "started_at": started_at,
                     "log_path": str(Path(settings.data_dir) / "instances" / f"sid{sid}.log")}
             _instances[sid] = inst
         else:

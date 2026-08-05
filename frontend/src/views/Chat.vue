@@ -362,6 +362,14 @@ async function sendChat() {
   const text = chatInput.value.trim()
   if (!text || chatLoading.value) return
   if (!currentSid.value) { ElMessage.warning('请先选择模型'); return }
+  // 首次推理预热提示：模型刚启动（加载完成 <5min）且本会话未发过请求 → 提示
+  // 实测：容器重建后首次推理需预热 ~90-100s（flash-attn 内核首次执行/图编译），
+  // 之后恢复 1s 级响应，属正常现象非故障。
+  const svc = services.value.find(s => s.id === currentSid.value)
+  if (svc && !svc._warned && svc.loaded_at && (Date.now() / 1000 - svc.loaded_at) < 300) {
+    svc._warned = true
+    ElMessage.info('模型刚启动，首次推理需预热约 1-2 分钟，请耐心等待（仅首次）')
+  }
   chatLoading.value = true
   let userContent = text
   if (pendingImage.value) {
