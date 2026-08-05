@@ -82,6 +82,7 @@ fi
 echo "  启动容器 ${CONTAINER_NAME} ..."
 ssh "$TARGET" "docker rm -f ${CONTAINER_NAME} 2>/dev/null || true; \
   docker volume create ${DATA_VOLUME} >/dev/null 2>&1 || true; \
+  docker volume create llama-studio-cache >/dev/null 2>&1 || true; \
   docker run -d --name ${CONTAINER_NAME} --restart unless-stopped \
     -p ${WEBUI_PORT}:9100 \
     -e HOST_LAN_IP=${HOST_LAN_IP} \
@@ -89,6 +90,9 @@ ssh "$TARGET" "docker rm -f ${CONTAINER_NAME} 2>/dev/null || true; \
     -e ROUTER_CTX=${ROUTER_CTX} \
     -v '${MODELS_HOST_DIR}':/models \
     -v ${DATA_VOLUME}:/root/.llama-studio \
+    -v llama-studio-cache:/root/.cache \
+    -e NEO_CACHE_DIR=/root/.cache/neo_compiler_cache \
+    -e NEO_CACHE_PERSISTENT=1 \
     ${DEVICE_ARGS} \
     -e ZES_ENABLE_SYSMAN=1 -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
     llama-studio:latest && \
