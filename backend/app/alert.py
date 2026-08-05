@@ -31,15 +31,15 @@ def get_alert_config() -> dict:
 
 def save_alert_config(webhook: str, enabled: bool):
     """保存告警配置"""
-    from app.database import get_conn, now
+    from app.database import get_conn
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?,?,?)",
-            (_WEBHOOK_KEY, webhook.strip(), now()),
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?,?)",
+            (_WEBHOOK_KEY, webhook.strip()),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?,?,?)",
-            (_ENABLED_KEY, "1" if enabled else "0", now()),
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?,?)",
+            (_ENABLED_KEY, "1" if enabled else "0"),
         )
 
 
