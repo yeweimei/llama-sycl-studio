@@ -30,7 +30,7 @@
 
 | # | 能力 | 说明 | 状态 |
 |---|---|---|---|
-| M5 | 请求级 metrics | 延迟 / token 吞吐 / QPS，**修复流式 token 未计入 bug** | ⬜ |
+| M5 | 请求级 metrics | 延迟 / token 吞吐 / QPS，**修复流式 token 未计入 bug** | ✅ |
 | M6 | 心跳聚合 API | /api/gateway/health 聚合所有实例状态，Monitor 页显示心跳 + 最后探测时间 | ⬜ |
 | M7 | 告警推送 | 实例异常 → 飞书消息通知（复用 lark 通道） | ⬜ |
 
