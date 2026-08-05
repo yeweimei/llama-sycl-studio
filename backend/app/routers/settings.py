@@ -143,3 +143,36 @@ def container_info():
         "webui_port": settings.webui_port,
         "models_max": settings.models_max,
     }
+
+
+# ---------- 告警配置（M7 飞书通知） ----------
+
+class AlertConfig(BaseModel):
+    webhook: str = ""
+    enabled: bool = True
+
+
+@router.get("/alert")
+def get_alert_config():
+    """读取告警配置"""
+    from app import alert
+    return alert.get_alert_config()
+
+
+@router.put("/alert")
+def save_alert_config(body: AlertConfig):
+    """保存告警配置"""
+    from app import alert
+    alert.save_alert_config(body.webhook, body.enabled)
+    return {"ok": True}
+
+
+@router.post("/alert/test")
+def test_alert():
+    """发送测试告警"""
+    from app import alert
+    ok = alert.send_alert("告警测试", "这是一条测试告警，收到说明配置正确", force=True)
+    if not ok:
+        from fastapi import HTTPException
+        raise HTTPException(400, "发送失败：请检查 webhook 配置")
+    return {"ok": True}

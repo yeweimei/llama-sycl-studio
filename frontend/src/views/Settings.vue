@@ -75,6 +75,26 @@
             style="margin-top:8px" />
         </el-card>
 
+        <!-- 告警配置（M7 飞书通知） -->
+        <el-card shadow="never" style="margin-top:16px">
+          <div class="card-title"><span>🔔 告警通知（飞书）</span></div>
+          <el-alert type="info" :closable="false" show-icon style="margin-bottom:8px;font-size:12px"
+            title="模型异常自动重启/自愈失败时推送飞书"
+            description="在飞书群添加「自定义机器人」，复制 Webhook 地址填入下方。留空则关闭告警。" />
+          <el-form label-width="90px" style="max-width:520px">
+            <el-form-item label="Webhook">
+              <el-input v-model="alertCfg.webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." clearable />
+            </el-form-item>
+            <el-form-item label="启用">
+              <el-switch v-model="alertCfg.enabled" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" size="small" :loading="savingAlert" @click="saveAlert">保存</el-button>
+              <el-button size="small" :loading="testingAlert" @click="testAlert">发送测试</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
         <!-- 模型预设 -->
         <el-card shadow="never" style="margin-top:16px">
           <div class="card-title">
@@ -297,6 +317,7 @@ import {
   getProxySettings, saveProxySettings, authChangePassword,
   listPresets, createPreset, updatePreset, deletePreset, generateConfigIni,
   getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine,
+  getAlertConfig, saveAlertConfig, testAlert as sendTestAlert,
 } from '../api'
 import { Refresh } from '@element-plus/icons-vue'
 
@@ -304,6 +325,9 @@ const keys = ref([])
 const templates = ref([])
 const presets = ref([])
 const containerInfoData = ref({})
+const alertCfg = ref({ webhook: '', enabled: true })
+const savingAlert = ref(false)
+const testingAlert = ref(false)
 const routerCtx = ref(null)
 const createKeyDialog = ref(false)
 const showKeyDialog = ref(false)
@@ -407,6 +431,31 @@ async function loadContainerInfo() {
 }
 async function loadPresets() { presets.value = await listPresets() }
 async function loadProxy() { proxyForm.value = await getProxySettings() }
+async function loadAlert() {
+  try { alertCfg.value = await getAlertConfig() } catch (e) { /* ignore */ }
+}
+async function saveAlert() {
+  savingAlert.value = true
+  try {
+    await saveAlertConfig(alertCfg.value)
+    ElMessage.success('告警配置已保存')
+  } catch (e) {
+    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    savingAlert.value = false
+  }
+}
+async function testAlert() {
+  testingAlert.value = true
+  try {
+    await sendTestAlert()
+    ElMessage.success('测试告警已发送，请查看飞书')
+  } catch (e) {
+    ElMessage.error('发送失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    testingAlert.value = false
+  }
+}
 
 async function saveProxy() {
   savingProxy.value = true
@@ -501,7 +550,7 @@ async function generateConfig() {
 }
 
 onMounted(() => {
-  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets(); loadEngineInfo()
+  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets(); loadEngineInfo(); loadAlert()
 })
 </script>
 

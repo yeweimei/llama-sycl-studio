@@ -80,6 +80,26 @@ def _retry_error_service(sid: int, name: str):
         pass
 
 
+# 告警节流：{key: last_ts}，同 key 5 分钟内不重复发送
+_alert_throttle: dict[str, float] = {}
+_ALERT_THROTTLE_SECONDS = 300
+
+
+def _send_alert(title: str, message: str):
+    """发送告警（带节流：同标题 5 分钟最多 1 条）"""
+    import time as _t
+    key = title
+    now_ts = _t.time()
+    if now_ts - _alert_throttle.get(key, 0) < _ALERT_THROTTLE_SECONDS:
+        return
+    _alert_throttle[key] = now_ts
+    try:
+        from app import alert
+        alert.send_alert(title, message)
+    except Exception:
+        pass
+
+
 def _heal_once():
     """执行一次自愈检查"""
     from app import instance_mgr
@@ -142,6 +162,7 @@ def _heal_once():
             if s["consecutive_fails"] > MAX_CONSECUTIVE_FAILURES:
                 if not s.get("marked_error"):
                     logger.error("自愈放弃 %s：连续 %d 次重启失败，标记 error（%ds 后自动重试）", name, s["consecutive_fails"], ERROR_RETRY_SECONDS)
+                    _send_alert(f"模型 {name} 自愈失败", f"连续 {s['consecutive_fails']} 次重启失败，已标记 error，{ERROR_RETRY_SECONDS}s 后自动重试")
                     try:
                         with get_conn() as conn:
                             conn.execute(
@@ -177,6 +198,7 @@ def _heal_once():
                 s["last_heal_at"] = t_now
                 healed.append({"model": name, "state": st.get("state"), "result": result.get("status")})
                 logger.warning("自愈重启 %s（状态 %s，第 %d 次）→ %s", name, st.get("state"), s["consecutive_fails"], result.get("status"))
+                _send_alert(f"模型 {name} 已自愈重启", f"状态 {st.get('state')} → {result.get('status')}（第 {s['consecutive_fails']} 次）")
             except Exception as e:
                 logger.warning("自愈重启 %s 失败: %s", name, e)
     except Exception as e:
