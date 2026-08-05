@@ -138,16 +138,53 @@
         更新于 {{ gpu.generated_at }}
       </div>
     </el-card>
+
+    <!-- 实例心跳（M6） -->
+    <el-card shadow="never" style="margin-top:16px">
+      <div class="card-title">
+        <span>模型实例心跳</span>
+        <el-tag v-if="gw.total" size="small" :type="gw.degraded ? 'warning' : 'success'" style="margin-left:8px">
+          {{ gw.running }} 运行 / {{ gw.degraded }} 降级 / {{ gw.starting }} 启动中 / {{ gw.total - gw.running - gw.degraded - gw.starting }} 停止
+        </el-tag>
+      </div>
+      <el-table :data="gw.instances" stripe size="small" class="mobile-table">
+        <el-table-column prop="name" label="模型" min-width="180" />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <span class="status-dot" :class="'status-' + (row.state || 'stopped')"></span>
+            {{ row.state === 'running' ? '运行' : (row.state === 'degraded' ? '降级' : (row.state === 'starting' ? '启动中' : '停止')) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="PID" width="80" align="right">
+          <template #default="{ row }">{{ row.pid || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="端口" width="80" align="right">
+          <template #default="{ row }">{{ row.port || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="显存" width="90" align="right">
+          <template #default="{ row }">{{ row.mem_mib ? formatMiB(row.mem_mib) : '-' }}</template>
+        </el-table-column>
+        <el-table-column label="健康延迟" width="100" align="right">
+          <template #default="{ row }">{{ row.health_latency_ms != null ? row.health_latency_ms + 'ms' : '-' }}</template>
+        </el-table-column>
+        <el-table-column label="最后心跳" width="140">
+          <template #default="{ row }">{{ row.last_health_at ? fmtTime(row.last_health_at) : '-' }}</template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!gw.total" description="暂无模型实例" :image-size="60" />
+    </el-card>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { systemStatus, gpuStatus } from '../api'
+import { systemStatus, gpuStatus, gatewayHealth } from '../api'
 
 const sys = ref({})
 const gpu = ref({})
+const gw = ref({ total: 0, running: 0, degraded: 0, starting: 0, instances: [] })
 let gpuTimer = null
+let gwTimer = null
 
 const memPercent = computed(() => {
   if (!sys.value.memory_total_gb) return 0
@@ -190,14 +227,28 @@ async function loadSys() {
     sys.value = await systemStatus()
   } catch (e) { /* ignore */ }
 }
+async function loadGateway() {
+  try {
+    const d = await gatewayHealth()
+    gw.value = { total: d.total || 0, running: d.running || 0, degraded: d.degraded || 0, starting: d.starting || 0, instances: d.instances || [] }
+  } catch (e) { /* ignore */ }
+}
+function fmtTime(ts) {
+  if (!ts) return '-'
+  const d = new Date(ts * 1000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+}
 
 onMounted(() => {
   loadSys()
   loadGpu()
+  loadGateway()
   gpuTimer = setInterval(loadGpu, 5000)
+  gwTimer = setInterval(loadGateway, 5000)
 })
 onUnmounted(() => {
   if (gpuTimer) clearInterval(gpuTimer)
+  if (gwTimer) clearInterval(gwTimer)
 })
 </script>
 

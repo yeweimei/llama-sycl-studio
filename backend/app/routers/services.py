@@ -1236,3 +1236,40 @@ async def parse_pdf(sid: int, file: UploadFile):
         text = "（PDF 未提取到文本，可能是扫描件）"
 
     return {"text": text[:8000]}  # 截断防止超长
+
+
+@router.get("/gateway/health")
+def gateway_health():
+    """网关心跳聚合：所有服务实例状态 + 健康数据（M6）"""
+    import time as _t
+    try:
+        svcs = list_services()
+        instances = []
+        for s in svcs:
+            instances.append({
+                "id": s.get("id"),
+                "name": s.get("name"),
+                "state": s.get("state", "stopped"),
+                "loaded": s.get("loaded", False),
+                "pid": s.get("pid"),
+                "port": s.get("port"),
+                "health_latency_ms": s.get("health_latency_ms"),
+                "last_health_at": s.get("last_health_at"),
+                "mem_mib": (s.get("loaded_info") or {}).get("mem_rss_mib"),
+                "quant": (s.get("loaded_info") or {}).get("quant"),
+                "ctx_size": (s.get("loaded_info") or {}).get("ctx_size"),
+            })
+        running = sum(1 for i in instances if i["state"] == "running")
+        degraded = sum(1 for i in instances if i["state"] == "degraded")
+        starting = sum(1 for i in instances if i["state"] == "starting")
+        return {
+            "ok": True,
+            "generated_at": int(_t.time()),
+            "total": len(instances),
+            "running": running,
+            "degraded": degraded,
+            "starting": starting,
+            "instances": instances,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "instances": []}
