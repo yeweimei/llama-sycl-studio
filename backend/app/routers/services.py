@@ -285,6 +285,9 @@ def list_services():
             "last_used_at": db_info.get("last_used_at", 0),
             "status": "loaded" if running else "unloaded",
             "loaded": running,
+            "state": ist.get("state", "running" if running else "stopped"),
+            "health_latency_ms": ist.get("health_latency_ms"),
+            "last_health_at": ist.get("last_health_at"),
             "loaded_info": loaded_detail,
             "port": port,
             "device": None,
@@ -474,6 +477,9 @@ def get_service(sid: int):
     running = ist.get("running", False)
     d["loaded"] = running
     d["status"] = "loaded" if running else "unloaded"
+    d["state"] = ist.get("state", "running" if running else "stopped")
+    d["health_latency_ms"] = ist.get("health_latency_ms")
+    d["last_health_at"] = ist.get("last_health_at")
     d["port"] = ist.get("port")
     d["pid"] = ist.get("pid")
     d["loaded_at"] = ist.get("started_at")

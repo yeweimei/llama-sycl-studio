@@ -18,8 +18,8 @@
                 <el-descriptions-item label="模型名">{{ service?.name }}</el-descriptions-item>
                 <el-descriptions-item label="模型路径">{{ service?.model_path }}</el-descriptions-item>
                 <el-descriptions-item label="状态">
-                  <el-tag size="small" :type="service?.loaded ? 'success' : 'info'">
-                    {{ service?.loaded ? '已加载' : (service?.status === 'unavailable' ? '不可用' : '未加载') }}
+                  <el-tag size="small" :type="service?.state === 'degraded' ? 'warning' : (service?.loaded ? 'success' : 'info')">
+                    {{ service?.state === 'degraded' ? '降级（健康检查失败）' : (service?.loaded ? '已加载' : (service?.status === 'unavailable' ? '不可用' : '未加载')) }}
                   </el-tag>
                   <el-tag v-if="service?.supports_chat === false" size="small" type="warning" style="margin-left:6px">Embedding 模型（不支持对话）</el-tag>
                 </el-descriptions-item>

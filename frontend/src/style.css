@@ -47,6 +47,7 @@ body {
 .status-running { background: #67c23a; }
 .status-stopped { background: #909399; }
 .status-error   { background: #f56c6c; }
+.status-degraded { background: #e6a23c; }
 
 /* ====== 移动端响应式（<768px）====== */
 @media (max-width: 767px) {

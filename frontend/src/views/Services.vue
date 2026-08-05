@@ -18,8 +18,11 @@
       <el-table :data="services" v-loading="loading" stripe class="mobile-table" :row-key="row => row.name" :expand-row-keys="expandedRowKeys" @expand-change="onExpandChange">
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <span class="status-dot" :class="'status-' + (row.loaded ? 'running' : 'stopped')"></span>
-            {{ row.loaded ? '已加载' : '未加载' }}
+            <span class="status-dot" :class="'status-' + (row.state || (row.loaded ? 'running' : 'stopped'))"></span>
+            {{ row.state === 'degraded' ? '降级' : (row.loaded ? '已加载' : '未加载') }}
+            <el-tooltip v-if="row.state === 'degraded'" content="进程存活但健康检查失败（可能卡死），转发会失败" placement="top">
+              <span style="cursor:help; color:#e6a23c">⚠️</span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column prop="name" label="模型名" min-width="200">

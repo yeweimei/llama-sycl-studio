@@ -195,6 +195,33 @@ def _proc_alive(proc) -> bool:
     return proc is not None and proc.poll() is None
 
 
+# ========== HTTP 级探活（带 TTL 缓存） ==========
+HEALTH_TTL = 3.0  # 秒：同一实例探活结果缓存时长，避免列表轮询频繁发请求
+_health_cache: dict[int, dict] = {}  # sid -> {"ts": float, "ok": bool, "latency_ms": int}
+
+
+def _check_health(port: int, sid: int | None = None) -> dict:
+    """探测实例 /health，带 TTL 缓存（sid=None 时强制探测不缓存）"""
+    if sid is not None:
+        cached = _health_cache.get(sid)
+        if cached and time.time() - cached["ts"] < HEALTH_TTL:
+            return cached
+    ok, latency_ms = False, 0
+    try:
+        import httpx
+        t0 = time.time()
+        with httpx.Client(timeout=2) as c:
+            r = c.get(f"http://127.0.0.1:{port}/health")
+        ok = r.status_code == 200
+        latency_ms = int((time.time() - t0) * 1000)
+    except Exception:
+        ok = False
+    res = {"ts": time.time(), "ok": ok, "latency_ms": latency_ms}
+    if sid is not None:
+        _health_cache[sid] = res
+    return res
+
+
 def _env() -> dict:
     """实例运行环境：完整 LD_LIBRARY_PATH（oneAPI）"""
     env = os.environ.copy()
@@ -305,22 +332,39 @@ def _pid_alive(pid) -> bool:
 
 
 def instance_status(sid: int) -> dict:
-    """查询实例状态（running/stopped + port/pid）——支持复用的孤儿实例"""
+    """查询实例状态（三态：running/degraded/stopped + 健康数据）
+
+    - running:  进程存活 且 /health 通（HTTP 级探活，TTL 缓存）
+    - degraded: 进程存活 但 /health 不通（进程卡死/未就绪）
+    - stopped:  进程已退出/无实例
+    """
+    base = {"running": False, "state": "stopped", "port": _port_for(sid), "pid": None}
     inst = _instances.get(sid)
     if not inst:
-        return {"running": False, "port": _port_for(sid), "pid": None}
+        return base
     proc = inst.get("proc")
-    if proc is not None:
-        if proc.poll() is not None:
-            # 进程已退出，清理
-            _instances.pop(sid, None)
-            return {"running": False, "port": _port_for(sid), "pid": None}
-        return {"running": True, "port": inst["port"], "pid": proc.pid, "started_at": inst["started_at"]}
-    # 孤儿实例（仅 pid）
-    if not _pid_alive(inst.get("pid")):
+    alive = _proc_alive(proc) if proc is not None else _pid_alive(inst.get("pid"))
+    if not alive:
         _instances.pop(sid, None)
-        return {"running": False, "port": _port_for(sid), "pid": None}
-    return {"running": True, "port": inst["port"], "pid": inst.get("pid"), "started_at": inst["started_at"]}
+        return base
+    port = inst["port"]
+    h = _check_health(port, sid)
+    pid = proc.pid if proc is not None else inst.get("pid")
+    return {
+        "running": True,  # 进程存活（旧字段，兼容现有调用方）
+        "state": "running" if h["ok"] else "degraded",
+        "port": port,
+        "pid": pid,
+        "started_at": inst.get("started_at"),
+        "health_latency_ms": h["latency_ms"],
+        "last_health_at": h["ts"],
+        "health_ok": h["ok"],
+    }
+
+
+def instance_state(sid: int) -> str:
+    """快速取状态字符串（不解析全量）"""
+    return instance_status(sid)["state"]
 
 
 def all_instances() -> dict[int, dict]:
