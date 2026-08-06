@@ -109,6 +109,44 @@ def health():
 _V1_PROXY_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
 
 
+def _sanitize_tool_patterns_schema(node) -> None:
+    """递归清洗 JSON schema：剔除未锚定（非 ^...$）的 pattern 字段。
+
+    llama.cpp json-schema-to-grammar 要求 pattern 必须以 ^ 开头、$ 结尾，
+    否则返回 400 "Pattern must start with '^' and end with '$'"。
+    仅存在于 tool 调用的 parameters schema 中，剔除不改变结构语义。
+    """
+    if isinstance(node, dict):
+        if "pattern" in node:
+            p = node["pattern"]
+            if not (isinstance(p, str) and p.startswith("^") and p.endswith("$")):
+                del node["pattern"]
+        for v in node.values():
+            _sanitize_tool_patterns_schema(v)
+    elif isinstance(node, list):
+        for it in node:
+            _sanitize_tool_patterns_schema(it)
+
+
+def _sanitize_tools(payload: dict) -> bool:
+    """就地清洗 payload 中的 tools schema（若存在）。返回是否发生了修改。"""
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return False
+    changed = False
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if isinstance(t.get("function"), dict) else None
+        params = (fn or {}).get("parameters") if fn else None
+        if isinstance(params, dict):
+            before = json.dumps(params)
+            _sanitize_tool_patterns_schema(params)
+            if json.dumps(params) != before:
+                changed = True
+    return changed
+
+
 def _resolve_instance_base(model_name: str) -> str | None:
     """按模型名解析实例 base url（per-model 架构）"""
     try:
@@ -214,13 +252,16 @@ async def v1_proxy(path: str, request: Request):
         except Exception:
             pass
 
-    # 判断是否是流式请求
+    # 判断是否是流式请求 + 清洗工具 schema（llama.cpp 要求 pattern 锚定）
     is_stream = False
     if request.method == "POST" and body:
         try:
             import json
             payload = json.loads(body)
             is_stream = payload.get("stream", False)
+            if path in ("chat/completions", "chat", "completions"):
+                if _sanitize_tools(payload):
+                    body = json.dumps(payload).encode("utf-8")
         except Exception:
             pass
 
