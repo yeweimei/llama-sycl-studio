@@ -133,6 +133,7 @@ class PresetCreate(BaseModel):
     jinja: bool = True
     n_gpu_layers: int = 99
     mmap: bool = True
+    cpu_moe: bool = False
     device: str = "SYCL0"
     extra_args: dict = {}
 
@@ -150,6 +151,7 @@ class PresetUpdate(BaseModel):
     jinja: bool | None = None
     n_gpu_layers: int | None = None
     mmap: bool | None = None
+    cpu_moe: bool | None = None
     device: str | None = None
     extra_args: dict | None = None
 
@@ -165,6 +167,7 @@ def list_presets():
         d["flash_attn"] = bool(d["flash_attn"])
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
+        d["cpu_moe"] = bool(d.get("cpu_moe", 0))
         d["device"] = _normalize_device(d.get("device"))
         d["extra_args"] = json.loads(d["extra_args"] or "{}")
         out.append(d)
@@ -180,12 +183,12 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, device, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, device, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
-             1 if body.mmap else 0, _normalize_device(body.device), json.dumps(body.extra_args), now(), now()),
+             1 if body.mmap else 0, 1 if body.cpu_moe else 0, _normalize_device(body.device), json.dumps(body.extra_args), now(), now()),
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
@@ -212,6 +215,8 @@ def update_preset(pid: int, body: PresetUpdate):
             updates["jinja"] = 1 if body.jinja else 0
         if body.mmap is not None:
             updates["mmap"] = 1 if body.mmap else 0
+        if body.cpu_moe is not None:
+            updates["cpu_moe"] = 1 if body.cpu_moe else 0
         if body.extra_args is not None:
             updates["extra_args"] = json.dumps(body.extra_args)
 

@@ -12,6 +12,12 @@
           <el-input-number v-model="model.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
         </el-form-item>
       </el-col>
+      <el-col :span="12">
+        <el-form-item label="MoE 专家 CPU">
+          <el-switch v-model="model.cpu_moe" />
+          <div class="form-tip" style="width:100%">专家权重放 CPU、attention 全 GPU（MoE 模型提速，实测 +24%）</div>
+        </el-form-item>
+      </el-col>
     </el-row>
     <el-row :gutter="16">
       <el-col :span="12">
@@ -312,6 +318,7 @@ const DEFAULT_ARGS = {
   jinja: true,
   n_gpu_layers: 99,
   mmap: true,
+  cpu_moe: false,
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）

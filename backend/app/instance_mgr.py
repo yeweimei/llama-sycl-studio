@@ -85,6 +85,10 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         args += ["--cache-type-v", str(preset["cache_type_v"])]
     if preset.get("flash_attn"):
         args += ["--flash-attn", "on"]
+    # MoE 专家 offload 到 CPU（--cpu-moe：attention 全 GPU，专家跑 CPU）
+    # 实测（Qwen3.6-35B-A3B）：相比按层 offload，速度 +24%（19.5 t/s）且显存省 2.5GB
+    if preset.get("cpu_moe"):
+        args += ["--cpu-moe"]
     if preset.get("jinja"):
         args += ["--jinja"]
     if preset.get("n_gpu_layers") is not None:
