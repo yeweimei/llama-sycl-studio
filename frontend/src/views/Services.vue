@@ -274,7 +274,7 @@ const creating = ref(false)
 const DEFAULT_PRESET = {
   ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, mtp: false, mtp_model: '',
+  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 const form = ref({ name: '', model_path: '', gpu_id: '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } })
 const useManualPath = ref(false)

@@ -32,6 +32,14 @@
         </el-form-item>
       </el-col>
     </el-row>
+    <el-row :gutter="16" v-if="model.mtp">
+      <el-col :span="12">
+        <el-form-item label="预测长度">
+          <el-input-number v-model="model.mtp_n_max" :min="1" :max="16" controls-position="right" style="width:100%" />
+          <div class="form-tip" style="width:100%">每次投机预测的 token 数（默认 3，越大加速越多但接受率下降）</div>
+        </el-form-item>
+      </el-col>
+    </el-row>
     <el-row :gutter="16">
       <el-col :span="12">
         <el-form-item label="线程数">
@@ -334,6 +342,7 @@ const DEFAULT_ARGS = {
   cpu_moe: false,
   mtp: false,
   mtp_model: '',
+  mtp_n_max: 3,
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）

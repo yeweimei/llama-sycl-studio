@@ -90,7 +90,7 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     if preset.get("cpu_moe"):
         args += ["--cpu-moe"]
     # MTP 多 token 预测（投机解码加速）：需用户自备 MTP 模型文件
-    # --spec-type draft-mtp + --spec-draft-model <path>
+    # --spec-type draft-mtp + --spec-draft-model <path> + --spec-draft-n-max N
     if preset.get("mtp"):
         args += ["--spec-type", "draft-mtp"]
         mtp_model = preset.get("mtp_model") or ""
@@ -99,6 +99,10 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
             if not mtp_model.startswith("/"):
                 mtp_model = f"/models/{mtp_model.lstrip('/')}"
             args += ["--spec-draft-model", mtp_model]
+        # MTP 预测 token 数（llama.cpp 默认 3；越大加速越多但接受率下降）
+        mtp_n_max = preset.get("mtp_n_max")
+        if mtp_n_max:
+            args += ["--spec-draft-n-max", str(mtp_n_max)]
     if preset.get("jinja"):
         args += ["--jinja"]
     if preset.get("n_gpu_layers") is not None:
