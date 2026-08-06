@@ -1,136 +1,173 @@
-# llama-sycl-studio — LLM 推理服务管理台（单容器一体化）
+<div align="center">
+
+# 🚀 llama-sycl-studio
+
+**Intel GPU 上的本地 LLM 推理服务管理平台 · 单容器一体化**
+
+在 Intel Arc 显卡上跑 llama.cpp（SYCL 后端），提供**模型池管理 + OpenAI 兼容 API + 可观测性 + 自愈**的一站式 Web 控制台。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/yeweimei/llama-sycl-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/yeweimei/llama-sycl-studio/actions/workflows/ci.yml)
 [![GitHub stars](https://img.shields.io/github/stars/yeweimei/llama-sycl-studio?style=social)](https://github.com/yeweimei/llama-sycl-studio)
 
-在 Intel GPU（SYCL）上跑 llama.cpp router mode + WebUI 控制台的一体化管理平台。
-**单容器**打包推理引擎与前端控制台，一条 `docker run` 可移植到任何有 Intel GPU 的机器。
+**一条 `docker run` 即可拥有完整的本地 LLM 服务** —— 无需 docker.sock、无需多容器编排、无需 N 个端口。
 
-## 架构
+</div>
+
+---
+
+## ✨ 为什么选 llama-sycl-studio？
+
+| 💎 能力 | 说明 |
+|---|---|
+| **⚡ Intel GPU 原生加速** | llama.cpp SYCL 后端，A770M / Arc 全系 / 核显均支持，Flash Attention + XMX 引擎 |
+| **🚀 MTP 投机解码** | 面板一键开启多 token 预测，实测推理 **+35% 吞吐**（34 t/s），支持预测长度调优 |
+| **🧠 MoE 专家 offload** | 专家权重放 CPU、attention 全 GPU，MoE 大模型（如 Qwen3.6-35B-A3B）显存省 2.5GB + 提速 24% |
+| **📦 单容器一体化** | 推理引擎 + WebUI + 管理 API 一个容器，一条命令部署，可移植到任何 Intel GPU 机器 |
+| **🛡️ 自愈体系** | 孤儿实例检测、僵尸进程收割、失败退避重试、启动保护窗口——模型实例**挂了自动拉起** |
+| **🔄 引擎热升级** | 面板内一键升级/回滚 llama.cpp 二进制（自动备份、原子替换、失败回滚）|
+| **🔧 模型生命周期管理** | 注册/启停/重启/删除，启动进度条 + 实时日志滚动，按需加载 + LRU 卸载 |
+| **📊 可观测性** | GPU 显存/功耗/进程级监控、推理吞吐（tok/s）、API 调用统计、趋势看板 |
+| **🖥️ 多模态 + 工具调用** | OpenAI 兼容 `/v1/chat/completions`，支持多模态识图、Function Call、SSE 流式 |
+| **📱 移动端适配** | 375px 无横向溢出，随时手机管理模型 |
+
+---
+
+## 🏗️ 架构
 
 ```
-┌── 单容器 llama-studio ──────────────────────────┐
-│  http://<host>:9100   （唯一入口）               │
-│    ├── /        WebUI 管理台（登录保护）          │
-│    ├── /v1/*    OpenAI 兼容 API（按模型名路由）   │
-│    └── 内部 llama-server router (127.0.0.1:8070) │
-│         ├── 多模型按需加载 + LRU 卸载             │
-│         ├── 模型目录 /models（宿主挂载）          │
-│         └── 预设 config.ini（DB 自动生成）       │
-└──────────────────────────────────────────────────┘
+┌── 单容器 llama-studio ──────────────────────────────┐
+│  http://<host>:9100   （唯一入口）                    │
+│    ├── /        WebUI 管理台（登录保护）              │
+│    ├── /v1/*    OpenAI 兼容 API（按模型名路由）       │
+│    └── 内部 llama-server (per-model 实例)            │
+│         ├── 每模型独立实例 + 独立参数预设             │
+│         ├── 自愈监控（孤儿/僵尸/失败重试）            │
+│         ├── 模型目录 /models（宿主挂载）              │
+│         └── SQLite DB（预设/密钥/统计，named volume） │
+└──────────────────────────────────────────────────────┘
 ```
 
-- **router mode**：llama.cpp 官方路由模式，单端口多模型、按 `model` 字段路由、自动发现 GGUF、按需加载 + LRU 卸载、进程隔离
-- **认证**：WebUI 全站登录保护；`/v1/chat/completions`、`/v1/embeddings` 等 API 也需 token（`/v1/models` 公开）
-- **持久化**：SQLite DB（密码/预设/任务）在 named volume `llama-studio-data:/root/.llama-studio`，`docker rm` 不丢
+- **per-model 实例模式**：每个模型独立 llama-server 进程，ctx/参数各自独立，互不干扰
+- **OpenAI 兼容**：`/v1/chat/completions`、`/v1/embeddings`、`/v1/completions`，OpenClaw / LangChain / 任意 OpenAI SDK 直连
+- **持久化**：`llama-studio-data:/root/.llama-studio`，`docker rm` 不丢
 
-## 功能
+---
 
-- **模型池管理**：加载/卸载模型、实时状态（unloaded/loading/loaded）、按需加载
-- **服务管理**：模型注册/编辑/启停/重启/删除全生命周期管理，启动时行内展开实时进度条 + 日志滚动
-- **统一 API**：`/v1/chat/completions`、`/v1/embeddings`、`/v1/completions`（OpenAI 兼容，SSE 流式）
-- **模型预设**：每模型独立参数（ctx/temp/threads/cache-type/flash-attn/jinja 等），CRUD 自动同步 config.ini
-- **模型下载**：对接 HuggingFace / ModelScope，断点续传、暂停/继续/重试/删除、实时进度
-- **GPU 监控**：xpu-smi 结构化采集（显存/功耗/进程级占用），推理活跃度（吞吐 tok/s）
-- **系统监控**：内存、磁盘、模型目录
+## 🚀 快速部署启动
+
+### 方式一：一键部署脚本（推荐）
+
+```bash
+git clone https://github.com/yeweimei/llama-sycl-studio.git
+cd llama-sycl-studio
+bash scripts/deploy.sh [ssh-host]   # 默认 nuc12，自动构建 + 部署
+```
+
+### 方式二：手动 docker run（通用）
+
+```bash
+docker build -t llama-studio:latest .
+
+# 以 Intel Arc A770M 为例（其他卡用 lspci | grep -i vga 确认设备号）
+docker run -d --name llama-studio --restart unless-stopped \
+  -p 9100:9100 \
+  -v /path/to/models:/models \
+  -v llama-studio-data:/root/.llama-studio \
+  --device /dev/dri/card1 --device /dev/dri/renderD129 \
+  -e ZES_ENABLE_SYSMAN=1 \
+  -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
+  llama-studio:latest
+```
+
+### 启动后三步
+
+```bash
+# 1. 访问 WebUI（首次设置管理员密码）
+open http://<host>:9100
+
+# 2. 把 GGUF 模型放进挂载目录，WebUI 自动发现 → 注册服务
+cp my-model.gguf /path/to/models/
+
+# 3. 调用 OpenAI 兼容 API
+curl http://<host>:9100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-token>" \
+  -d '{"model": "my-model", "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+> 🔑 API Key = WebUI 登录 token；`/v1/models` 公开（同 OpenAI 行为）。
+
+---
+
+## 🔌 集成生态
+
+- **OpenClaw / 各类 Agent**：配 `baseUrl=http://<host>:9100/v1` + token 即用，工具调用（Function Call）原生支持
+- **TDAI / 记忆系统**：本地 LLM 提取完全可用（已验证 L1/L2/L3 全链路）
+- **多模态**：mmproj 自动关联，图片输入即用
+- **Embedding**：一键注册 embedding 模型（自动加 `--embeddings`）
+
+---
+
+## 🛠️ 功能清单
+
+- **模型池**：加载/卸载、实时状态（unloaded/loading/loaded）、按需加载 + LRU 卸载
+- **服务管理**：模型全生命周期（注册/编辑/启停/重启/删除），启动进度条 + 日志滚动
+- **模型预设**：每模型独立参数（ctx/temp/threads/cache-type/flash-attn/jinja/**MTP 投机解码**/**MoE 专家 offload** 等）
+- **显存估算**：参数设置后一键预测 GPU 占用（llama.cpp 口径，误差 <10%）
+- **模型下载**：HuggingFace / ModelScope，断点续传、暂停/继续/重试、实时进度
+- **GPU 监控**：xpu-smi 采集（显存/功耗/进程占用），推理吞吐 tok/s
+- **引擎管理**：llama.cpp 版本列表/升级/回滚（自动备份 + 失败自动恢复）
+- **API 统计**：按模型聚合调用次数/token/耗时可视化
+- **聊天测试台**：Markdown、思考过程展示、多会话、多模态图片、流式打断
 - **参数模板**：常用配置一键保存/套用
-- **移动端适配**：375px 无横向溢出，汉堡菜单 + 抽屉侧边栏，响应式布局
-- **API 调用统计**：按模型聚合调用次数 / token 消耗 / prefill / decode 均耗时，可视化看板
-- **模型标签**：预置标签（思考/多模态/MoE/Embedding…）自动打标 + 自定义，下载/服务页展示
-- **聊天测试台**：Markdown 渲染、思考过程展示、多会话管理（新建/切换/重命名/删除）、历史持久化、文件上传（txt/md/pdf）、多模态图片、流式打断
+- **模型标签**：自动打标（思考/多模态/MoE/Embedding）+ 自定义
+- **移动端适配**：375px 响应式，汉堡菜单 + 抽屉
 
-## 技术栈
+---
 
-- 推理：llama.cpp `server-intel` 镜像（SYCL，Intel GPU）
-- 后端：Python FastAPI + SQLite（HTTP 控制 router，无需 docker.sock）
-- 前端：Vue 3 + Vite + Element Plus（打包进镜像）
-- 监控：Intel xpu-smi（容器内，类 nvidia-smi）
+## 📦 技术栈
 
-## 目录结构
+| 层 | 技术 |
+|---|---|
+| 推理引擎 | llama.cpp `server-intel` 镜像（SYCL，Intel GPU）|
+| 后端 | Python FastAPI + SQLite |
+| 前端 | Vue 3 + Vite + Element Plus |
+| 监控 | Intel xpu-smi（容器内，类 nvidia-smi）|
+
+## 📁 目录结构
 
 ```
 llama-sycl-studio/
 ├── Dockerfile            # 单容器镜像（server-intel 基础 + Python + 前端 dist）
-├── entrypoint.sh         # 启动 router (:8070) + WebUI (:9100)
+├── entrypoint.sh         # 启动 WebUI (:9100) + 实例管理
 ├── backend/
-│   ├── main.py           # FastAPI 入口（含 /v1/* 反代）
-│   ├── run.py            # 启动脚本
+│   ├── main.py           # FastAPI 入口（含 /v1/* 反代 + 鉴权）
 │   └── app/
-│       ├── config.py     # 配置（模型目录/端口/router URL）
-│       ├── database.py   # SQLite
-│       ├── router_client.py  # HTTP 控制 llama-server router
-│       ├── proxy.py      # 下载代理
-│       └── routers/      # API 路由（services/presets/downloads/auth/...）
-├── frontend/             # Vue3 源码（构建后打进镜像）
-├── docs/BUILD.md         # 📦 完整构建说明（从零到部署）
+│       ├── instance_mgr.py   # 实例管理核心（自愈/参数构建）
+│       ├── self_heal.py      # 自愈体系
+│       ├── alert.py          # 飞书告警
+│       └── routers/          # services/presets/engine/stats/gpu/...
+├── frontend/             # Vue3 源码
+├── docs/
+│   ├── BUILD.md          # 📦 完整构建说明（从零到部署）
+│   └── ROADMAP.md        # 路线图（v0.8 健康内核 → v0.9 可观测性 → v1.0 显存估算）
 └── scripts/deploy.sh     # 一键构建 + 部署
 ```
 
-## 快速开始
+## 📖 文档
 
-📦 **从源码构建镜像 & 部署**：详见 [docs/BUILD.md](docs/BUILD.md)（前置条件 / 构建 / 运行 / 排障）
+- [📦 BUILD.md](docs/BUILD.md) — 从零构建与部署（前置条件/构建/运行/排障）
+- [🗺️ ROADMAP.md](docs/ROADMAP.md) — 版本路线图
+- [🛡️ PROJECT-STATE.md](docs/PROJECT-STATE.md) — 项目状态档案
 
-## 一键部署
+## ⚠️ 注意事项
 
-```bash
-# 在目标机器（需 Docker + Intel GPU 驱动）
-bash scripts/deploy.sh [ssh-host]     # 默认 nuc12
-```
-
-部署脚本会：构建前端 → rsync 代码 → 构建镜像 → 重启容器。
-
-## 手动部署（单容器）
-
-```bash
-# 1. 构建镜像（Intel GPU/SYCL 版）
-docker build -t llama-studio:latest .
-
-# 2. 运行（以 NUC12 为例，A770M = card1/renderD129）
-docker run -d --name llama-studio --restart unless-stopped \
-  -p 9100:9100 \
-  -v /home/zhangjiyu/models:/models \
-  -v llama-studio-data:/root/.llama-studio \
-  --device /dev/dri/card1 --device /dev/dri/renderD129 \
-  -e ZES_ENABLE_SYSMAN=1 -e GGML_SYCL_ENABLE_FLASH_ATTN=1 \
-  llama-studio:latest
-
-# 3. 访问
-#    WebUI:      http://<host>:9100
-#    OpenAI API: http://<host>:9100/v1   （API Key = WebUI 登录 token）
-```
-
-### 挂载与设备说明
-
-| 项 | 值 | 说明 |
-|---|---|---|
-| `-p 9100:9100` | 对外唯一端口 | WebUI + /v1/* 都从 9100 出 |
-| `-v <models>:/models` | 宿主模型目录 | GGUF 文件放这里，router 自动发现 |
-| `-v llama-studio-data:/root/.llama-studio` | named volume | SQLite DB（密码/预设/任务）持久化 |
-| `--device /dev/dri/card1 /dev/dri/renderD129` | A770M | Intel Arc 独显（NUC12） |
-| `ZES_ENABLE_SYSMAN=1` | 必需 | SYCL 设备枚举 |
-| `GGML_SYCL_ENABLE_FLASH_ATTN=1` | 推荐 | Flash Attention |
-
-> ⚠️ NUC12 显卡：A770M = `card1/renderD129`（pci-0000:03:00.0），Iris Xe = `card0/renderD128`。**只映射 A770M**。
-> 其他 Intel GPU 机器用 `lspci | grep -i vga` 确认设备号后替换。
-
-## 环境变量（backend/app/config.py）
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `LLAMA_MODEL_DIR` | `/models` | 容器内模型目录 |
-| `LLAMA_ROUTER_URL` | `http://127.0.0.1:8070` | 内部 router 地址 |
-| `LLAMA_STUDIO_DATA` | `/root/.llama-studio` | 容器内 DB 位置 |
-| `WEBUI_PORT` | `9100` | WebUI 端口 |
-| `ROUTER_PORT` | `8070` | 内部 router 端口 |
-
-## 安全说明
-
-- WebUI 全站登录保护（token 存 localStorage，401 自动跳登录页）
-- `/v1/chat/completions`、`/v1/embeddings`、`/v1/completions` 需带 `Authorization: Bearer <token>`（登录后拿）
-- `/v1/models` 公开（同 OpenAI 行为）
-- 首次访问需设置管理员密码；建议通过 Tailscale 访问或加反代鉴权
+- **显卡设备号**：不同 Intel GPU 设备号不同，`lspci | grep -i vga` 确认后替换 `--device`
+- **驱动版本**：A770M 建议驱动 26.18（26.27 会触发 IGC 编译 flash-attn 内核崩溃）
+- **内核编译缓存**：建议挂 `llama-studio-cache:/root/.cache` 持久化编译缓存（重建后首推 1.3s vs 90s）
+- 生产建议通过 Tailscale / 反代访问并加鉴权
 
 ## License
 
-MIT
+MIT © [yeweimei](LICENSE)
