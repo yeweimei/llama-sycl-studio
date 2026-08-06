@@ -89,6 +89,16 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     # 实测（Qwen3.6-35B-A3B）：相比按层 offload，速度 +24%（19.5 t/s）且显存省 2.5GB
     if preset.get("cpu_moe"):
         args += ["--cpu-moe"]
+    # MTP 多 token 预测（投机解码加速）：需用户自备 MTP 模型文件
+    # --spec-type draft-mtp + --spec-draft-model <path>
+    if preset.get("mtp"):
+        args += ["--spec-type", "draft-mtp"]
+        mtp_model = preset.get("mtp_model") or ""
+        if mtp_model:
+            # 支持相对 /models 路径
+            if not mtp_model.startswith("/"):
+                mtp_model = f"/models/{mtp_model.lstrip('/')}"
+            args += ["--spec-draft-model", mtp_model]
     if preset.get("jinja"):
         args += ["--jinja"]
     if preset.get("n_gpu_layers") is not None:

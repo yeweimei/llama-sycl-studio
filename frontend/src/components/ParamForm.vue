@@ -21,6 +21,19 @@
     </el-row>
     <el-row :gutter="16">
       <el-col :span="12">
+        <el-form-item label="MTP 投机解码">
+          <el-switch v-model="model.mtp" />
+          <div class="form-tip" style="width:100%">多 token 预测加速（需 MTP 模型文件）</div>
+        </el-form-item>
+      </el-col>
+      <el-col :span="12" v-if="model.mtp">
+        <el-form-item label="MTP 模型">
+          <el-input v-model="model.mtp_model" placeholder="如 Qwen3.6-35B-A3B-MTP.gguf（放 /models 下）" clearable />
+        </el-form-item>
+      </el-col>
+    </el-row>
+    <el-row :gutter="16">
+      <el-col :span="12">
         <el-form-item label="线程数">
           <el-input-number v-model="model.threads" :min="1" :max="64" controls-position="right" style="width:100%" />
         </el-form-item>
@@ -319,6 +332,8 @@ const DEFAULT_ARGS = {
   n_gpu_layers: 99,
   mmap: true,
   cpu_moe: false,
+  mtp: false,
+  mtp_model: '',
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）
