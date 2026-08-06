@@ -16,6 +16,18 @@
 
 ---
 
+## 🖼️ 界面预览
+
+| 服务管理 | 系统监控 |
+|---|---|
+| ![服务管理](docs/screenshots/services.jpg) | ![系统监控](docs/screenshots/monitor.jpg) |
+
+| API 统计 | 聊天测试台 |
+|---|---|
+| ![API统计](docs/screenshots/stats.jpg) | ![聊天测试台](docs/screenshots/chat.jpg) |
+
+---
+
 ## ✨ 为什么选 llama-sycl-studio？
 
 | 💎 能力 | 说明 |
