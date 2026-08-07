@@ -634,6 +634,7 @@ async function doSaveEdit() {
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
       flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
       mmap: p.mmap, device: editForm.value.gpu_id || 'SYCL0',
+      cpu_moe: p.cpu_moe, mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
       extra_args: p.extra_args || {},
     }
     if (editForm.value.presetId) {
