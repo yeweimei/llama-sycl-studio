@@ -349,17 +349,28 @@ async def v1_proxy(path: str, request: Request):
     if chat_log_id and path in ("chat/completions", "chat", "completions") and request.method == "POST":
         try:
             import time as _t
-            _resp_json = r.json()
-            choice = (_resp_json.get("choices") or [{}])[0]
-            msg = choice.get("message", {})
-            resp_text = msg.get("content", "") or ""
-            think_text = msg.get("reasoning_content", "") or ""
-            usage = _resp_json.get("usage", {})
-            services._chat_log_append(chat_log_id, resp_text[:20000], think_text[:20000])
-            services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code,
-                                      prompt_tokens=usage.get("prompt_tokens", 0),
-                                      completion_tokens=usage.get("completion_tokens", 0),
-                                      total_ms=0)
+            # 上游非 200：记录失败
+            if r.status_code != 200:
+                err_text = ""
+                try:
+                    _err_json = r.json()
+                    err_text = str(_err_json.get("error", _err_json))[:500]
+                except Exception:
+                    err_text = (r.text or "")[:500]
+                services._chat_log_finish(chat_log_id, ok=False, status_code=r.status_code,
+                                          error=err_text, total_ms=0)
+            else:
+                _resp_json = r.json()
+                choice = (_resp_json.get("choices") or [{}])[0]
+                msg = choice.get("message", {})
+                resp_text = msg.get("content", "") or ""
+                think_text = msg.get("reasoning_content", "") or ""
+                usage = _resp_json.get("usage", {})
+                services._chat_log_append(chat_log_id, resp_text[:20000], think_text[:20000])
+                services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code,
+                                          prompt_tokens=usage.get("prompt_tokens", 0),
+                                          completion_tokens=usage.get("completion_tokens", 0),
+                                          total_ms=0)
         except Exception:
             services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code)
 
