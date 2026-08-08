@@ -72,6 +72,57 @@
         <pre class="log-view" v-loading="logsLoading">{{ logs || '（无日志，加载模型后显示）' }}</pre>
       </el-tab-pane>
 
+      <!-- ================= 对话日志（虚拟滚动）================= -->
+      <el-tab-pane label="💬 对话日志" name="chatlogs">
+        <div class="chatlog-toolbar">
+          <span class="chatlog-count">共 {{ chatLogs.length }} 条</span>
+          <el-switch v-model="chatLogAutoRefresh" size="small" active-text="自动刷新" style="margin-left:8px" />
+          <el-button size="small" @click="refreshChatLogs" :loading="chatLogsLoading" style="margin-left:8px">刷新</el-button>
+          <el-button size="small" type="danger" plain @click="doClearChatLogs" style="margin-left:8px">清空</el-button>
+        </div>
+        <!-- 虚拟滚动容器 -->
+        <div class="chatlog-vlist" ref="chatLogViewport" @scroll.passive="onChatLogScroll">
+          <div :style="{ height: chatLogTotalHeight + 'px', position: 'relative' }">
+            <div
+              v-for="log in visibleChatLogs"
+              :key="log.id"
+              class="chatlog-item"
+              :class="{ 'is-running': log.status === 'running', 'is-error': log.status === 'error' }"
+              :style="{ transform: `translateY(${log._offset}px)` }"
+              @click="toggleChatLog(log)"
+            >
+              <div class="chatlog-head">
+                <el-tag size="small" :type="chatLogStatusType(log.status)" effect="dark" class="chatlog-status">{{ chatLogStatusLabel(log.status) }}</el-tag>
+                <span class="chatlog-model">{{ log.model_name }}</span>
+                <span class="chatlog-time">{{ fmtChatLogTime(log.created_at) }}</span>
+                <span v-if="log.completion_tokens" class="chatlog-tok">{{ log.completion_tokens }} tok</span>
+                <span v-if="log.status === 'running'" class="chatlog-running">生成中...</span>
+                <el-icon class="chatlog-arrow"><ArrowDown v-if="!chatLogExpanded.has(log.id)" /><ArrowUp v-else /></el-icon>
+              </div>
+              <div v-if="chatLogExpanded.has(log.id)" class="chatlog-body" @click.stop>
+                <div v-if="log.error" class="chatlog-error">{{ log.error }}</div>
+                <div class="chatlog-block">
+                  <div class="chatlog-label">用户输入</div>
+                  <pre class="chatlog-pre user">{{ log.user_message || '(空)' }}</pre>
+                </div>
+                <div v-if="log.thinking" class="chatlog-block">
+                  <div class="chatlog-label thinking" @click.stop="toggleChatLogThinking(log)">
+                    <el-icon><CaretRight v-if="!chatLogThinking.has(log.id)" /><CaretBottom v-else /></el-icon>
+                    思考过程 ({{ log.thinking.length }} 字符)
+                  </div>
+                  <pre v-if="chatLogThinking.has(log.id)" class="chatlog-pre thinking">{{ log.thinking }}</pre>
+                </div>
+                <div class="chatlog-block">
+                  <div class="chatlog-label">模型输出</div>
+                  <pre class="chatlog-pre response">{{ log.response || (log.status === 'running' ? '(等待输出...)' : '(空)') }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="!chatLogsLoading && chatLogs.length === 0" class="chatlog-empty">暂无对话日志</div>
+        </div>
+      </el-tab-pane>
+
       <!-- ================= 聊天测试台 ================= -->
       <el-tab-pane v-if="service?.supports_chat !== false" label="💬 聊天测试台" name="chat">
         <div class="chat-layout">
@@ -206,14 +257,15 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { ArrowDown, Plus, Delete, Edit } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown, Plus, Delete, Edit, ArrowUp, CaretRight, CaretBottom } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
   chatProxy, clientConfig, listPresets,
   getChatHistory, addChatHistory, clearChatHistory, parsePdf,
   listSessions, createSession, renameSession, deleteSession,
   deleteHistoryItem,
+  getChatLogs, clearChatLogs,
 } from '../api'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/common'
@@ -410,6 +462,107 @@ async function exportLogs() {
     ElMessage.error('导出失败: ' + (e.response?.data?.detail || e.message))
   }
 }
+
+// ---------- 对话日志（虚拟滚动）----------
+const CHATLOG_ROW_H = 52           // 每行固定高度（折叠态）
+const CHATLOG_OVERSCAN = 6         // 可视区外预渲染行数
+const chatLogs = ref([])
+const chatLogsLoading = ref(false)
+const chatLogAutoRefresh = ref(true)
+const chatLogExpanded = ref(new Set())
+const chatLogThinking = ref(new Set())
+const chatLogViewport = ref(null)
+const chatLogScrollTop = ref(0)
+const chatLogViewportH = ref(480)
+let chatLogTimer = null
+
+const chatLogTotalHeight = computed(() => chatLogs.value.length * CHATLOG_ROW_H)
+
+const visibleChatLogs = computed(() => {
+  const start = Math.max(0, Math.floor(chatLogScrollTop.value / CHATLOG_ROW_H) - CHATLOG_OVERSCAN)
+  const count = Math.ceil(chatLogViewportH.value / CHATLOG_ROW_H) + CHATLOG_OVERSCAN * 2
+  return chatLogs.value.slice(start, start + count).map((log, i) => ({
+    ...log,
+    _offset: (start + i) * CHATLOG_ROW_H,
+  }))
+})
+
+function onChatLogScroll() {
+  if (chatLogViewport.value) chatLogScrollTop.value = chatLogViewport.value.scrollTop
+}
+
+function chatLogStatusType(s) {
+  if (s === 'running') return 'primary'
+  if (s === 'error') return 'danger'
+  return 'success'
+}
+function chatLogStatusLabel(s) {
+  if (s === 'running') return '生成中'
+  if (s === 'error') return '失败'
+  return '完成'
+}
+function fmtChatLogTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const p = n => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+function toggleChatLog(log) {
+  const s = new Set(chatLogExpanded.value)
+  if (s.has(log.id)) s.delete(log.id)
+  else s.add(log.id)
+  chatLogExpanded.value = s
+}
+function toggleChatLogThinking(log) {
+  const s = new Set(chatLogThinking.value)
+  if (s.has(log.id)) s.delete(log.id)
+  else s.add(log.id)
+  chatLogThinking.value = s
+}
+
+async function refreshChatLogs() {
+  chatLogsLoading.value = true
+  try {
+    const modelName = service.value?.name || ''
+    const d = await getChatLogs(modelName, 300)
+    const items = (d && (d.items || d.data?.items)) || []
+    // 新 running 自动展开
+    const s = new Set(chatLogExpanded.value)
+    for (const it of items) if (it.status === 'running') s.add(it.id)
+    chatLogExpanded.value = s
+    chatLogs.value = items
+  } catch (e) {
+    // 静默
+  } finally {
+    chatLogsLoading.value = false
+  }
+}
+
+async function doClearChatLogs() {
+  try {
+    const modelName = service.value?.name || ''
+    await ElMessageBox.confirm('确定清空该模型的全部对话日志？', '清空确认', { type: 'warning' })
+    await clearChatLogs(modelName)
+    ElMessage.success('已清空')
+    refreshChatLogs()
+  } catch (e) {
+    if (e !== 'cancel' && e?.message) ElMessage.error('清空失败')
+  }
+}
+
+function startChatLogPolling() {
+  stopChatLogPolling()
+  if (chatLogAutoRefresh.value) chatLogTimer = setInterval(refreshChatLogs, 2000)
+}
+function stopChatLogPolling() {
+  if (chatLogTimer) { clearInterval(chatLogTimer); chatLogTimer = null }
+}
+
+watch(chatLogAutoRefresh, v => { if (v) startChatLogPolling(); else stopChatLogPolling() })
+watch(activeTab, v => {
+  if (v === 'chatlogs') { refreshChatLogs(); startChatLogPolling() }
+  else stopChatLogPolling()
+})
 
 // ---------- 聊天 ----------
 const messages = ref([])
@@ -847,6 +1000,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKey)
   stopLogPolling()
+  stopChatLogPolling()
 })
 
 function onGlobalKey(e) {
@@ -869,6 +1023,45 @@ function onGlobalKey(e) {
   font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
   max-height: 480px; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
+/* 对话日志（虚拟滚动） */
+.chatlog-toolbar { display: flex; align-items: center; margin-bottom: 8px; }
+.chatlog-count { font-size: 13px; color: #909399; }
+.chatlog-vlist {
+  background: #1e1e1e; border-radius: 6px;
+  height: 480px; overflow-y: auto; position: relative;
+}
+.chatlog-item {
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 52px; padding: 6px 12px; box-sizing: border-box;
+  cursor: pointer; border-bottom: 1px solid #2a2a2a;
+  background: transparent; transition: background .15s;
+}
+.chatlog-item:hover { background: #2a2a2a; }
+.chatlog-item.is-running { background: rgba(64,158,255,.12); }
+.chatlog-item.is-error { background: rgba(245,108,108,.12); }
+.chatlog-head { display: flex; align-items: center; gap: 8px; height: 100%; }
+.chatlog-status { flex-shrink: 0; }
+.chatlog-model { color: #e8e8e8; font-weight: 600; font-size: 12px; flex-shrink: 0; }
+.chatlog-time { color: #888; font-size: 11px; margin-left: auto; }
+.chatlog-tok { color: #888; font-size: 11px; }
+.chatlog-running { color: #409eff; font-size: 11px; animation: pulse 1.2s infinite; }
+.chatlog-arrow { color: #888; }
+.chatlog-body { background: #161616; padding: 10px 12px; border-radius: 4px; margin-top: 4px; }
+.chatlog-block { margin-bottom: 8px; }
+.chatlog-block:last-child { margin-bottom: 0; }
+.chatlog-label { font-size: 11px; color: #909399; margin-bottom: 4px; }
+.chatlog-label.thinking { color: #b37feb; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.chatlog-pre {
+  margin: 0; padding: 8px 10px; border-radius: 4px; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
+  font-family: 'JetBrains Mono', Consolas, monospace; color: #d4d4d4;
+}
+.chatlog-pre.user { background: #232323; }
+.chatlog-pre.response { background: #1d2b1d; color: #a6e3a1; }
+.chatlog-pre.thinking { background: #231d2b; color: #c9a6e3; }
+.chatlog-error { color: #f56c6c; font-size: 12px; padding: 6px 10px; background: #2b1d1d; border-radius: 4px; margin-bottom: 8px; }
+.chatlog-empty { color: #666; text-align: center; padding: 40px 0; font-size: 13px; }
+@keyframes pulse { 0%,100% {opacity:1} 50% {opacity:.4} }
 .form-tip { font-size: 12px; color: #909399; margin-top: 6px; }
 
 .chat-layout { display: flex; gap: 12px; height: 540px; }

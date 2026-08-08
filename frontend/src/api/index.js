@@ -52,6 +52,18 @@ export const getServiceLogs = (id, tail = 200, since = null, until = null) => {
   if (until) params.until = until
   return api.get(`/services/${id}/logs`, { params }).then(r => r.data)
 }
+// 对话日志（chat_api_logs）
+export const getChatLogs = (model, limit = 200) => {
+  const params = { limit }
+  if (model) params.model = model
+  return api.get('/stats/chat-logs', { params }).then(r => r.data)
+}
+export const getChatLogModels = () => api.get('/stats/chat-log-models').then(r => r.data)
+export const clearChatLogs = (model) => {
+  const params = {}
+  if (model) params.model = model
+  return api.delete('/stats/chat-logs', { params }).then(r => r.data)
+}
 export const getParamSchema = () => api.get('/services/params/schema').then(r => r.data)
 export const chatProxy = (id, data) => api.post(`/services/${id}/chat`, data).then(r => r.data)
 export const clientConfig = (id) => api.get(`/services/${id}/client-config`).then(r => r.data)

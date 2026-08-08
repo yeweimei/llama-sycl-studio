@@ -124,15 +124,25 @@ def recent_requests(limit: int = Query(50, ge=1, le=500)):
 
 
 @router.get("/chat-logs")
-def chat_logs(limit: int = Query(100, ge=1, le=200)):
-    """对话内容日志（chat_api_logs），最新在前；running 状态优先包含"""
+def chat_logs(limit: int = Query(100, ge=1, le=500), model: Optional[str] = None):
+    """对话内容日志（chat_api_logs），最新在前；running 状态优先包含
+
+    model: 可选，按模型名精确过滤（服务详情页用）
+    """
+    where = ""
+    params: list = []
+    if model:
+        where = "AND model_name=?"
+        params.append(model)
     with get_conn() as conn:
         # 先取 running（进行中），再补最近 done/error
         running = conn.execute(
-            "SELECT * FROM chat_api_logs WHERE status='running' ORDER BY id DESC"
+            f"SELECT * FROM chat_api_logs WHERE status='running' {where} ORDER BY id DESC",
+            tuple(params),
         ).fetchall()
         done = conn.execute(
-            "SELECT * FROM chat_api_logs ORDER BY id DESC LIMIT ?", (limit,)
+            f"SELECT * FROM chat_api_logs WHERE 1=1 {where} ORDER BY id DESC LIMIT ?",
+            tuple(params) + (limit,),
         ).fetchall()
     out = []
     seen = set()
@@ -152,9 +162,22 @@ def chat_logs(limit: int = Query(100, ge=1, le=200)):
     return {"items": out[:limit]}
 
 
-@router.delete("/chat-logs")
-def clear_chat_logs():
-    """清空对话日志"""
+@router.get("/chat-log-models")
+def chat_log_models():
+    """返回有对话日志记录的模型列表（去重）"""
     with get_conn() as conn:
-        conn.execute("DELETE FROM chat_api_logs")
+        rows = conn.execute(
+            "SELECT DISTINCT model_name FROM chat_api_logs ORDER BY model_name"
+        ).fetchall()
+    return {"models": [r[0] for r in rows if r[0]]}
+
+
+@router.delete("/chat-logs")
+def clear_chat_logs(model: Optional[str] = None):
+    """清空对话日志（可选按模型）"""
+    with get_conn() as conn:
+        if model:
+            conn.execute("DELETE FROM chat_api_logs WHERE model_name=?", (model,))
+        else:
+            conn.execute("DELETE FROM chat_api_logs")
     return {"ok": True}
