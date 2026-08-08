@@ -89,7 +89,8 @@
               class="chatlog-item"
               :class="{ 'is-running': log.status === 'running', 'is-error': log.status === 'error' }"
               :style="{ transform: `translateY(${log._offset}px)` }"
-              @click="toggleChatLog(log)"
+              @click="openChatLogDetail(log)"
+              :title="'点击查看详情'"
             >
               <div class="chatlog-head">
                 <el-tag size="small" :type="chatLogStatusType(log.status)" effect="dark" class="chatlog-status">{{ chatLogStatusLabel(log.status) }}</el-tag>
@@ -97,30 +98,43 @@
                 <span class="chatlog-time">{{ fmtChatLogTime(log.created_at) }}</span>
                 <span v-if="log.completion_tokens" class="chatlog-tok">{{ log.completion_tokens }} tok</span>
                 <span v-if="log.status === 'running'" class="chatlog-running">生成中...</span>
-                <el-icon class="chatlog-arrow"><ArrowDown v-if="!chatLogExpanded.has(log.id)" /><ArrowUp v-else /></el-icon>
-              </div>
-              <div v-if="chatLogExpanded.has(log.id)" class="chatlog-body" @click.stop>
-                <div v-if="log.error" class="chatlog-error">{{ log.error }}</div>
-                <div class="chatlog-block">
-                  <div class="chatlog-label">用户输入</div>
-                  <pre class="chatlog-pre user">{{ log.user_message || '(空)' }}</pre>
-                </div>
-                <div v-if="log.thinking" class="chatlog-block">
-                  <div class="chatlog-label thinking" @click.stop="toggleChatLogThinking(log)">
-                    <el-icon><CaretRight v-if="!chatLogThinking.has(log.id)" /><CaretBottom v-else /></el-icon>
-                    思考过程 ({{ log.thinking.length }} 字符)
-                  </div>
-                  <pre v-if="chatLogThinking.has(log.id)" class="chatlog-pre thinking">{{ log.thinking }}</pre>
-                </div>
-                <div class="chatlog-block">
-                  <div class="chatlog-label">模型输出</div>
-                  <pre class="chatlog-pre response">{{ log.response || (log.status === 'running' ? '(等待输出...)' : '(空)') }}</pre>
-                </div>
+                <span class="chatlog-preview">{{ chatLogPreview(log) }}</span>
               </div>
             </div>
           </div>
           <div v-if="!chatLogsLoading && chatLogs.length === 0" class="chatlog-empty">暂无对话日志</div>
         </div>
+
+        <!-- 对话日志详情弹窗 -->
+        <el-dialog v-model="chatLogDetailVisible" :title="chatLogDetailTitle" width="640px" top="6vh" class="chatlog-dialog">
+          <div v-if="chatLogDetail" class="chatlog-detail">
+            <div v-if="chatLogDetail.error" class="chatlog-error">{{ chatLogDetail.error }}</div>
+            <div class="chatlog-block">
+              <div class="chatlog-label">用户输入</div>
+              <pre class="chatlog-pre user">{{ chatLogDetail.user_message || '(空)' }}</pre>
+            </div>
+            <div v-if="chatLogDetail.thinking" class="chatlog-block">
+              <div class="chatlog-label thinking" @click="chatLogThinkingOpen = !chatLogThinkingOpen">
+                <el-icon><CaretRight v-if="!chatLogThinkingOpen" /><CaretBottom v-else /></el-icon>
+                思考过程 ({{ chatLogDetail.thinking.length }} 字符)
+              </div>
+              <pre v-if="chatLogThinkingOpen" class="chatlog-pre thinking">{{ chatLogDetail.thinking }}</pre>
+            </div>
+            <div class="chatlog-block">
+              <div class="chatlog-label">模型输出</div>
+              <pre class="chatlog-pre response">{{ chatLogDetail.response || (chatLogDetail.status === 'running' ? '(等待输出...)' : '(空)') }}</pre>
+            </div>
+          </div>
+          <template #footer>
+            <span class="chatlog-dialog-meta">
+              <span v-if="chatLogDetail?.total_ms">耗时 {{ (chatLogDetail.total_ms / 1000).toFixed(1) }}s</span>
+              <span v-if="chatLogDetail?.prompt_tokens">输入 {{ chatLogDetail.prompt_tokens }} tok</span>
+              <span v-if="chatLogDetail?.completion_tokens">输出 {{ chatLogDetail.completion_tokens }} tok</span>
+              <span v-if="chatLogDetail?.created_at">时间 {{ fmtChatLogFull(chatLogDetail.created_at) }}</span>
+            </span>
+            <el-button @click="chatLogDetailVisible = false">关闭</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
 
       <!-- ================= 聊天测试台 ================= -->
@@ -463,18 +477,25 @@ async function exportLogs() {
   }
 }
 
-// ---------- 对话日志（虚拟滚动）----------
-const CHATLOG_ROW_H = 52           // 每行固定高度（折叠态）
+// ---------- 对话日志（虚拟滚动 + 弹窗详情）----------
+const CHATLOG_ROW_H = 52           // 每行固定高度
 const CHATLOG_OVERSCAN = 6         // 可视区外预渲染行数
 const chatLogs = ref([])
 const chatLogsLoading = ref(false)
 const chatLogAutoRefresh = ref(true)
-const chatLogExpanded = ref(new Set())
-const chatLogThinking = ref(new Set())
 const chatLogViewport = ref(null)
 const chatLogScrollTop = ref(0)
 const chatLogViewportH = ref(480)
+// 详情弹窗
+const chatLogDetailVisible = ref(false)
+const chatLogDetail = ref(null)
+const chatLogThinkingOpen = ref(false)
 let chatLogTimer = null
+
+const chatLogDetailTitle = computed(() => {
+  const d = chatLogDetail.value
+  return d ? `对话日志 #${d.id} · ${d.model_name || ''} · ${chatLogStatusLabel(d.status)}` : '对话日志'
+})
 
 const chatLogTotalHeight = computed(() => chatLogs.value.length * CHATLOG_ROW_H)
 
@@ -507,17 +528,23 @@ function fmtChatLogTime(ts) {
   const p = n => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
-function toggleChatLog(log) {
-  const s = new Set(chatLogExpanded.value)
-  if (s.has(log.id)) s.delete(log.id)
-  else s.add(log.id)
-  chatLogExpanded.value = s
+function fmtChatLogFull(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
-function toggleChatLogThinking(log) {
-  const s = new Set(chatLogThinking.value)
-  if (s.has(log.id)) s.delete(log.id)
-  else s.add(log.id)
-  chatLogThinking.value = s
+function chatLogPreview(log) {
+  const r = (log.response || '').replace(/\s+/g, ' ').trim()
+  if (r) return r.slice(0, 60) + (r.length > 60 ? '...' : '')
+  if (log.status === 'running') return '生成中...'
+  if (log.error) return log.error.slice(0, 60)
+  return ''
+}
+function openChatLogDetail(log) {
+  chatLogDetail.value = log
+  chatLogThinkingOpen.value = false
+  chatLogDetailVisible.value = true
 }
 
 async function refreshChatLogs() {
@@ -526,10 +553,6 @@ async function refreshChatLogs() {
     const modelName = service.value?.name || ''
     const d = await getChatLogs(modelName, 300)
     const items = (d && (d.items || d.data?.items)) || []
-    // 新 running 自动展开
-    const s = new Set(chatLogExpanded.value)
-    for (const it of items) if (it.status === 'running') s.add(it.id)
-    chatLogExpanded.value = s
     chatLogs.value = items
   } catch (e) {
     // 静默
@@ -1032,34 +1055,38 @@ function onGlobalKey(e) {
 }
 .chatlog-item {
   position: absolute; left: 0; right: 0; top: 0;
-  height: 52px; padding: 6px 12px; box-sizing: border-box;
+  height: 52px; padding: 0 12px; box-sizing: border-box;
   cursor: pointer; border-bottom: 1px solid #2a2a2a;
   background: transparent; transition: background .15s;
 }
 .chatlog-item:hover { background: #2a2a2a; }
 .chatlog-item.is-running { background: rgba(64,158,255,.12); }
 .chatlog-item.is-error { background: rgba(245,108,108,.12); }
-.chatlog-head { display: flex; align-items: center; gap: 8px; height: 100%; }
+.chatlog-head { display: flex; align-items: center; gap: 8px; height: 100%; overflow: hidden; }
 .chatlog-status { flex-shrink: 0; }
 .chatlog-model { color: #e8e8e8; font-weight: 600; font-size: 12px; flex-shrink: 0; }
-.chatlog-time { color: #888; font-size: 11px; margin-left: auto; }
-.chatlog-tok { color: #888; font-size: 11px; }
-.chatlog-running { color: #409eff; font-size: 11px; animation: pulse 1.2s infinite; }
-.chatlog-arrow { color: #888; }
-.chatlog-body { background: #161616; padding: 10px 12px; border-radius: 4px; margin-top: 4px; }
-.chatlog-block { margin-bottom: 8px; }
+.chatlog-time { color: #888; font-size: 11px; flex-shrink: 0; }
+.chatlog-tok { color: #888; font-size: 11px; flex-shrink: 0; }
+.chatlog-running { color: #409eff; font-size: 11px; animation: pulse 1.2s infinite; flex-shrink: 0; }
+.chatlog-preview {
+  color: #aaa; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1; min-width: 0; margin-left: 4px; font-family: 'JetBrains Mono', Consolas, monospace;
+}
+/* 详情弹窗 */
+.chatlog-detail { max-height: 60vh; overflow-y: auto; }
+.chatlog-dialog-meta { color: #909399; font-size: 12px; margin-right: 12px; display: inline-flex; gap: 14px; }
+.chatlog-block { margin-bottom: 10px; }
 .chatlog-block:last-child { margin-bottom: 0; }
-.chatlog-label { font-size: 11px; color: #909399; margin-bottom: 4px; }
+.chatlog-label { font-size: 12px; color: #909399; margin-bottom: 4px; font-weight: 500; }
 .chatlog-label.thinking { color: #b37feb; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 .chatlog-pre {
-  margin: 0; padding: 8px 10px; border-radius: 4px; font-size: 12px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
-  font-family: 'JetBrains Mono', Consolas, monospace; color: #d4d4d4;
+  margin: 0; padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
+  font-family: 'JetBrains Mono', Consolas, monospace; color: #d4d4d4; background: #232323;
 }
-.chatlog-pre.user { background: #232323; }
 .chatlog-pre.response { background: #1d2b1d; color: #a6e3a1; }
 .chatlog-pre.thinking { background: #231d2b; color: #c9a6e3; }
-.chatlog-error { color: #f56c6c; font-size: 12px; padding: 6px 10px; background: #2b1d1d; border-radius: 4px; margin-bottom: 8px; }
+.chatlog-error { color: #f56c6c; font-size: 13px; padding: 6px 10px; background: #2b1d1d; border-radius: 4px; margin-bottom: 8px; }
 .chatlog-empty { color: #666; text-align: center; padding: 40px 0; font-size: 13px; }
 @keyframes pulse { 0%,100% {opacity:1} 50% {opacity:.4} }
 .form-tip { font-size: 12px; color: #909399; margin-top: 6px; }

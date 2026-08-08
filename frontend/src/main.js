@@ -18,7 +18,6 @@ const router = createRouter({
     { path: '/downloads', component: () => import('./views/Downloads.vue'), meta: { title: '模型下载' } },
     { path: '/monitor', component: () => import('./views/Monitor.vue'), meta: { title: '系统监控' } },
     { path: '/stats', component: () => import('./views/Stats.vue'), meta: { title: 'API统计' } },
-    { path: '/chat-logs', component: () => import('./views/ChatLogs.vue'), meta: { title: '对话日志' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '设置' } },
   ],
 })
