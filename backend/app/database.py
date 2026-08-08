@@ -132,6 +132,26 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_model ON api_request_logs(model_name);
 
+            -- 对话内容日志（chat_proxy 记录的输入/输出/thinking，最近 1000 条）
+            CREATE TABLE IF NOT EXISTS chat_api_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT NOT NULL,
+                stream INTEGER DEFAULT 0,
+                user_message TEXT DEFAULT '',
+                response TEXT DEFAULT '',
+                thinking TEXT DEFAULT '',
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_ms INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'running',
+                status_code INTEGER DEFAULT 200,
+                error TEXT DEFAULT '',
+                created_at INTEGER,
+                finished_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_api_logs_created ON chat_api_logs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_chat_api_logs_status ON chat_api_logs(status);
+
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sid INTEGER NOT NULL,

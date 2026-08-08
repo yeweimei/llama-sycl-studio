@@ -254,6 +254,8 @@ async def v1_proxy(path: str, request: Request):
 
     # 判断是否是流式请求 + 清洗工具 schema（llama.cpp 要求 pattern 锚定）
     is_stream = False
+    chat_log_id = 0
+    chat_user_msg = ""
     if request.method == "POST" and body:
         try:
             import json
@@ -262,6 +264,13 @@ async def v1_proxy(path: str, request: Request):
             if path in ("chat/completions", "chat", "completions"):
                 if _sanitize_tools(payload):
                     body = json.dumps(payload).encode("utf-8")
+                # 对话内容日志：创建 running 记录（仅 chat 请求）
+                try:
+                    msgs = payload.get("messages") or []
+                    chat_user_msg = services._last_user_message(msgs)
+                    chat_log_id = services._chat_log_create(model_name, 1 if is_stream else 0, chat_user_msg)
+                except Exception:
+                    chat_log_id = 0
         except Exception:
             pass
 
@@ -270,13 +279,54 @@ async def v1_proxy(path: str, request: Request):
     if is_stream:
         # SSE 流式转发
         async def gen():
+            import json as _json2
+            _resp_buf = []
+            _think_buf = []
+            _line_buf = ""
+            import time as _t
+            _last_flush = _t.time()
+
+            def _flush():
+                nonlocal _last_flush
+                if _resp_buf or _think_buf:
+                    services._chat_log_append(chat_log_id, "".join(_resp_buf), "".join(_think_buf))
+                    _resp_buf.clear()
+                    _think_buf.clear()
+                _last_flush = _t.time()
+
             async with httpx.AsyncClient(timeout=timeout) as client:
                 try:
                     async with client.stream("POST", target_url, content=body, headers=headers) as r:
                         async for chunk in r.aiter_bytes():
+                            if chat_log_id and chunk:
+                                _line_buf += chunk.decode("utf-8", "ignore")
+                                while "\n" in _line_buf:
+                                    line, _line_buf = _line_buf.split("\n", 1)
+                                    line = line.strip()
+                                    if line.startswith("data:") and "[DONE]" not in line:
+                                        try:
+                                            _c = _json2.loads(line[5:].strip())
+                                            delta = (_c.get("choices") or [{}])[0].get("delta", {})
+                                            cc = delta.get("content")
+                                            tt = delta.get("reasoning_content")
+                                            if isinstance(cc, str) and cc:
+                                                _resp_buf.append(cc)
+                                            if isinstance(tt, str) and tt:
+                                                _think_buf.append(tt)
+                                        except Exception:
+                                            pass
+                                # 定期落库
+                                if _resp_buf or _think_buf:
+                                    if _t.time() - _last_flush >= 1.5 or len("".join(_resp_buf)) >= 4096:
+                                        _flush()
                             yield chunk
                 except httpx.HTTPError as e:
+                    if chat_log_id:
+                        services._chat_log_finish(chat_log_id, ok=False, status_code=502, error=str(e))
                     yield f"data: {{\"error\": \"{e}\"}}\n\n"
+            if chat_log_id:
+                _flush()
+                services._chat_log_finish(chat_log_id, ok=True, status_code=200)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -291,7 +341,27 @@ async def v1_proxy(path: str, request: Request):
                 params=request.query_params,
             )
         except httpx.HTTPError as e:
+            if chat_log_id:
+                services._chat_log_finish(chat_log_id, ok=False, status_code=502, error=str(e))
             raise HTTPException(502, f"Router 不可达: {e}")
+
+    # 非流式：记录对话内容
+    if chat_log_id and path in ("chat/completions", "chat", "completions") and request.method == "POST":
+        try:
+            import time as _t
+            _resp_json = r.json()
+            choice = (_resp_json.get("choices") or [{}])[0]
+            msg = choice.get("message", {})
+            resp_text = msg.get("content", "") or ""
+            think_text = msg.get("reasoning_content", "") or ""
+            usage = _resp_json.get("usage", {})
+            services._chat_log_append(chat_log_id, resp_text[:20000], think_text[:20000])
+            services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code,
+                                      prompt_tokens=usage.get("prompt_tokens", 0),
+                                      completion_tokens=usage.get("completion_tokens", 0),
+                                      total_ms=0)
+        except Exception:
+            services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code)
 
         # 透传响应
         resp_headers = {}

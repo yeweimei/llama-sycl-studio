@@ -15,6 +15,97 @@ from app.routers.stats import _record_stats
 router = APIRouter()
 
 
+# ── 对话内容日志（chat_api_logs，最近 1000 条）──
+CHAT_LOG_MAX_ROWS = 1000
+
+
+def _chat_log_create(model_name: str, stream: int, user_message: str) -> int:
+    """创建一条 running 状态的对话日志，返回 log_id"""
+    try:
+        with get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO chat_api_logs (model_name, stream, user_message, status, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (model_name, stream, (user_message or "")[:4000], "running", int(time.time())),
+            )
+            log_id = cur.lastrowid
+        _chat_log_prune()
+        return log_id
+    except Exception:
+        return 0
+
+
+def _chat_log_append(log_id: int, response_piece: str = "", thinking_piece: str = "", flush: bool = False):
+    """追加 response/thinking 片段；flush=True 时立即落库，否则靠 next 调用落库"""
+    if not log_id:
+        return
+    try:
+        with get_conn() as conn:
+            if response_piece or thinking_piece:
+                conn.execute(
+                    "UPDATE chat_api_logs SET response = response || ?, thinking = thinking || ? WHERE id=?",
+                    (response_piece, thinking_piece, log_id),
+                )
+            if flush:
+                conn.execute(
+                    "UPDATE chat_api_logs SET status='done', finished_at=? WHERE id=?",
+                    (int(time.time()), log_id),
+                )
+    except Exception:
+        pass
+
+
+def _chat_log_finish(log_id: int, ok: bool = True, status_code: int = 200,
+                     prompt_tokens: int = 0, completion_tokens: int = 0,
+                     total_ms: int = 0, error: str = ""):
+    """请求结束：更新状态/计数/耗时"""
+    if not log_id:
+        return
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE chat_api_logs SET status=?, status_code=?, prompt_tokens=?, "
+                "completion_tokens=?, total_ms=?, error=?, finished_at=? WHERE id=?",
+                ("error" if not ok else "done", status_code,
+                 prompt_tokens, completion_tokens, total_ms, (error or "")[:500],
+                 int(time.time()), log_id),
+            )
+    except Exception:
+        pass
+
+
+def _chat_log_prune():
+    """清理超出最近 1000 条的最旧记录"""
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "DELETE FROM chat_api_logs WHERE id NOT IN "
+                "(SELECT id FROM chat_api_logs ORDER BY id DESC LIMIT ?)",
+                (CHAT_LOG_MAX_ROWS,),
+            )
+    except Exception:
+        pass
+
+
+def _last_user_message(messages: list) -> str:
+    """提取最后一条 user 消息文本（支持多模态 content）"""
+    if not messages:
+        return ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            c = m.get("content", "")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                parts = []
+                for it in c:
+                    if isinstance(it, dict) and it.get("type") == "text":
+                        parts.append(str(it.get("text", "")))
+                return " ".join(parts)
+            return str(c)
+    return ""
+
+
 class ServiceCreate(BaseModel):
     name: Optional[str] = None   # 可选：为空时自动推导为 router ID
     model_path: str
@@ -913,6 +1004,9 @@ async def chat_proxy(sid: int, body: ChatRequest):
 
     timeout = httpx.Timeout(600.0, connect=10.0)
 
+    # 对话内容日志：创建 running 记录
+    log_id = _chat_log_create(model_name, 1 if body.stream else 0, _last_user_message(body.messages))
+
     if not body.stream:
         import time as _time
         t0 = _time.time()
@@ -924,11 +1018,14 @@ async def chat_proxy(sid: int, body: ChatRequest):
                     # 记录失败明细
                     _record_stats(model_name, stream=False, ok=False, status_code=502,
                                   total_ms=int((_time.time() - t0) * 1000), error=str(e))
+                    _chat_log_finish(log_id, ok=False, status_code=502, total_ms=int((_time.time() - t0) * 1000), error=str(e))
                     raise HTTPException(502, f"转发失败: {e}")
                 if r.status_code != 200:
                     _record_stats(model_name, stream=False, ok=False, status_code=r.status_code,
                                   total_ms=int((_time.time() - t0) * 1000),
                                   error=r.text[:300])
+                    _chat_log_finish(log_id, ok=False, status_code=r.status_code,
+                                     total_ms=int((_time.time() - t0) * 1000), error=r.text[:500])
                     raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
                 data = r.json()
                 # 埋点统计
@@ -939,6 +1036,19 @@ async def chat_proxy(sid: int, body: ChatRequest):
                               completion_tokens=usage.get("completion_tokens", 0),
                               prefill_ms=elapsed_ms, stream=False, ok=True,
                               status_code=200, total_ms=elapsed_ms)
+                # 对话内容日志：非流式直接拿完整内容
+                try:
+                    choice = data.get("choices", [{}])[0]
+                    msg = choice.get("message", {})
+                    resp_text = msg.get("content", "") or ""
+                    think_text = msg.get("reasoning_content", "") or ""
+                    _chat_log_append(log_id, resp_text[:20000], think_text[:20000])
+                except Exception:
+                    pass
+                _chat_log_finish(log_id, ok=True, status_code=200,
+                                 prompt_tokens=usage.get("prompt_tokens", 0),
+                                 completion_tokens=usage.get("completion_tokens", 0),
+                                 total_ms=elapsed_ms)
                 return data
         finally:
             instance_mgr.end_request(sid)
@@ -949,6 +1059,19 @@ async def chat_proxy(sid: int, body: ChatRequest):
         first_token_time = None
         prompt_tokens = 0
         completion_tokens = 0
+        # 对话内容日志：累积 response/thinking 片段 + 定期落库
+        _resp_buf = []
+        _think_buf = []
+        _last_flush = _time.time()
+
+        def _flush_chat(batch_resp: list, batch_think: list):
+            nonlocal _last_flush
+            now_t = _time.time()
+            _chat_log_append(log_id, "".join(batch_resp), "".join(batch_think))
+            batch_resp.clear()
+            batch_think.clear()
+            _last_flush = now_t
+
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 try:
@@ -962,23 +1085,37 @@ async def chat_proxy(sid: int, body: ChatRequest):
                                 if line.startswith("data:") and "[DONE]" not in line:
                                     try:
                                         chunk = json.loads(line[5:].strip())
+                                        # 累积输出内容 + thinking
+                                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                                        c = delta.get("content")
+                                        t = delta.get("reasoning_content")
+                                        if isinstance(c, str) and c:
+                                            _resp_buf.append(c)
+                                        if isinstance(t, str) and t:
+                                            _think_buf.append(t)
                                         u = chunk.get("usage")
                                         if u:
                                             prompt_tokens = u.get("prompt_tokens", 0)
                                             completion_tokens = u.get("completion_tokens", 0)
                                         else:
-                                            t = chunk.get("timings")
-                                            if t:
-                                                prompt_tokens = t.get("prompt_n", 0)
-                                                completion_tokens = t.get("predicted_n", 0)
+                                            tt = chunk.get("timings")
+                                            if tt:
+                                                prompt_tokens = tt.get("prompt_n", 0)
+                                                completion_tokens = tt.get("predicted_n", 0)
                                     except Exception:
                                         pass
+                                    # 定期落库（每 1.5s 或 buffer 达 4KB）
+                                    if _resp_buf or _think_buf:
+                                        if _time.time() - _last_flush >= 1.5 or len("".join(_resp_buf)) >= 4096:
+                                            _flush_chat(_resp_buf, _think_buf)
                                 yield line + "\n"
                 except httpx.HTTPError as e:
                     # 流式转发失败：记录失败明细（流式无法返回 HTTP 错误码，置 502）
                     total_ms = int((_time.time() - t0) * 1000)
                     _record_stats(model_name, stream=True, ok=False, status_code=502,
                                   total_ms=total_ms, error=str(e))
+                    _flush_chat(_resp_buf, _think_buf)
+                    _chat_log_finish(log_id, ok=False, status_code=502, total_ms=total_ms, error=str(e))
                     yield f"data: {{\"error\": \"{e}\"}}\n\n"
         finally:
             instance_mgr.end_request(sid)
@@ -990,6 +1127,11 @@ async def chat_proxy(sid: int, body: ChatRequest):
                       completion_tokens=completion_tokens,
                       prefill_ms=prefill_ms, decode_ms=decode_ms,
                       stream=True, ok=True, status_code=200, total_ms=total_ms)
+        # 对话内容日志：收尾落库 + 完成
+        _flush_chat(_resp_buf, _think_buf)
+        _chat_log_finish(log_id, ok=True, status_code=200,
+                         prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                         total_ms=total_ms)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

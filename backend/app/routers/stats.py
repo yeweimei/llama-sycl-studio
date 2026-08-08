@@ -121,3 +121,40 @@ def recent_requests(limit: int = Query(50, ge=1, le=500)):
         d = dict(r)
         out.append(d)
     return out
+
+
+@router.get("/chat-logs")
+def chat_logs(limit: int = Query(100, ge=1, le=200)):
+    """对话内容日志（chat_api_logs），最新在前；running 状态优先包含"""
+    with get_conn() as conn:
+        # 先取 running（进行中），再补最近 done/error
+        running = conn.execute(
+            "SELECT * FROM chat_api_logs WHERE status='running' ORDER BY id DESC"
+        ).fetchall()
+        done = conn.execute(
+            "SELECT * FROM chat_api_logs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    out = []
+    seen = set()
+    # running 优先
+    for r in running:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        seen.add(d["id"])
+        out.append(d)
+    # 再补最近记录（去重）
+    for r in done:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        if d["id"] not in seen:
+            seen.add(d["id"])
+            out.append(d)
+    return {"items": out[:limit]}
+
+
+@router.delete("/chat-logs")
+def clear_chat_logs():
+    """清空对话日志"""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM chat_api_logs")
+    return {"ok": True}
