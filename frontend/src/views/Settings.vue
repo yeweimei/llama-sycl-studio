@@ -299,6 +299,20 @@
         <el-form-item label="mmap">
           <el-switch v-model="editingPreset.mmap" />
         </el-form-item>
+        <el-form-item label="MoE 专家 CPU">
+          <el-switch v-model="editingPreset.cpu_moe" />
+          <span style="margin-left:8px;color:#909399;font-size:12px">专家权重放 CPU（MoE 模型提速）</span>
+        </el-form-item>
+        <el-form-item label="MTP 投机解码">
+          <el-switch v-model="editingPreset.mtp" />
+          <span style="margin-left:8px;color:#909399;font-size:12px">多 token 预测加速</span>
+        </el-form-item>
+        <el-form-item v-if="editingPreset.mtp" label="MTP 预测长度">
+          <el-input-number v-model="editingPreset.mtp_n_max" :min="1" :max="16" style="width:100%" />
+        </el-form-item>
+        <el-form-item v-if="editingPreset.mtp" label="MTP 模型">
+          <el-input v-model="editingPreset.mtp_model" placeholder="如 mtp-gemma-4-12B-it.gguf（留空=自投机）" clearable />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="presetDialog = false">取消</el-button>
@@ -400,6 +414,7 @@ const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
   flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true,
+  cpu_moe: false, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 
 async function doChangePassword() {
