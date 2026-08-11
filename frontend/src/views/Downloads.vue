@@ -343,6 +343,7 @@ async function doDownload(row) {
     mmprojChoice.value = '__auto__'
     mmprojDialogVisible.value = true
   } else {
+    pendingDownload.value = row
     await confirmDownload()
   }
 }

@@ -136,7 +136,7 @@ def _list_huggingface(repo_id: str) -> list[dict]:
             files.append({
                 "filename": fn,
                 "size": size,
-                "is_mmproj": fn.startswith("mmproj"),
+                "is_mmproj": "mmproj" in fn.lower(),
             })
 
     import urllib.error
