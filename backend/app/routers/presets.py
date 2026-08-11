@@ -51,7 +51,7 @@ def _find_mmproj(model_name: str) -> str:
         if not d.exists() or d in seen:
             continue
         seen.add(d)
-        for p in sorted(d.glob("mmproj*.gguf")):
+        for p in sorted(d.glob("*mmproj*.gguf")):
             return str(p)
     return ""
 

@@ -120,7 +120,7 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         # 自动检测同目录 mmproj
         try:
             p = Path(model_path)
-            found = sorted(p.parent.glob("mmproj*.gguf"))
+            found = sorted(p.parent.glob("*mmproj*.gguf"))
             if found:
                 mmproj = str(found[0])
         except Exception:

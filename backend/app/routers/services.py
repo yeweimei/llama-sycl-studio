@@ -386,7 +386,7 @@ def list_services():
             from pathlib import Path as _P
             try:
                 mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
-                found = sorted(mm_dir.glob("mmproj*.gguf"))
+                found = sorted(mm_dir.glob("*mmproj*.gguf"))
                 if found:
                     has_mmproj = True
                     mmproj_path = str(found[0])
@@ -638,7 +638,7 @@ def get_service(sid: int):
         from pathlib import Path as _P
         try:
             mm_dir = (_P(settings.model_dir) / mp.replace("/models/", "")).parent
-            found = sorted(mm_dir.glob("mmproj*.gguf"))
+            found = sorted(mm_dir.glob("*mmproj*.gguf"))
             if found:
                 d["has_mmproj"] = True
                 d["mmproj_path"] = str(found[0])
