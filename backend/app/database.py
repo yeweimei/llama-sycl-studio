@@ -84,6 +84,9 @@ def init_db():
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
                 device TEXT DEFAULT '0',
+                rope_scaling TEXT DEFAULT '',
+                rope_scale REAL,
+                yarn_orig_ctx INTEGER,
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER
@@ -179,6 +182,12 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
         if "device" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN device TEXT DEFAULT 'SYCL0'")
+        if "rope_scaling" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN rope_scaling TEXT DEFAULT ''")
+        if "rope_scale" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN rope_scale REAL")
+        if "yarn_orig_ctx" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN yarn_orig_ctx INTEGER")
         # 迁移旧 device 值: "0"->"SYCL0", "1"->"SYCL1"
         for old, new in [("0", "SYCL0"), ("1", "SYCL1")]:
             conn.execute("UPDATE model_presets SET device=? WHERE device=?", (new, old))

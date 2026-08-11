@@ -68,6 +68,14 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     # ctx-size：预设值（核心：per-model 上下文）
     ctx = preset.get("ctx_size") or 8192
     args += ["--ctx-size", str(ctx)]
+    # RoPE/YaRN 长上下文缩放（Qwen 社区建议 >32K 必须启用，不能只加 ctx-size）
+    rs = preset.get("rope_scaling")
+    if rs:  # none/linear/yarn
+        args += ["--rope-scaling", str(rs)]
+        if preset.get("rope_scale"):
+            args += ["--rope-scale", str(preset["rope_scale"])]
+        if preset.get("yarn_orig_ctx"):
+            args += ["--yarn-orig-ctx", str(preset["yarn_orig_ctx"])]
     # 采样/性能参数
     if preset.get("temp") is not None:
         args += ["--temp", str(preset["temp"])]

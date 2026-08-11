@@ -93,6 +93,14 @@ def _write_config_ini() -> dict:
         lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
         dev = _normalize_device(d.get("device"))
         lines.append(f"device = {dev}")
+        # RoPE/YaRN 长上下文缩放（Qwen 社区建议 >32K 必须启用）
+        rs = d.get("rope_scaling")
+        if rs:
+            lines.append(f"rope-scaling = {rs}")
+            if d.get("rope_scale"):
+                lines.append(f"rope-scale = {d['rope_scale']}")
+            if d.get("yarn_orig_ctx"):
+                lines.append(f"yarn-orig-ctx = {d['yarn_orig_ctx']}")
         # 自动检测 mmproj 并写入（多模态投影文件）
         mmproj = _find_mmproj(d["model_name"])
         if mmproj:
@@ -138,6 +146,9 @@ class PresetCreate(BaseModel):
     mtp_model: str = ""
     mtp_n_max: int = 3
     device: str = "SYCL0"
+    rope_scaling: str = ""
+    rope_scale: float | None = None
+    yarn_orig_ctx: int | None = None
     extra_args: dict = {}
 
 
@@ -159,6 +170,9 @@ class PresetUpdate(BaseModel):
     mtp_model: str | None = None
     mtp_n_max: int | None = None
     device: str | None = None
+    rope_scaling: str | None = None
+    rope_scale: float | None = None
+    yarn_orig_ctx: int | None = None
     extra_args: dict | None = None
 
 
@@ -177,6 +191,9 @@ def list_presets():
         d["mtp"] = bool(d.get("mtp", 0))
         d["mtp_model"] = d.get("mtp_model", "")
         d["mtp_n_max"] = d.get("mtp_n_max", 3)
+        d["rope_scaling"] = d.get("rope_scaling", "")
+        d["rope_scale"] = d.get("rope_scale")
+        d["yarn_orig_ctx"] = d.get("yarn_orig_ctx")
         d["device"] = _normalize_device(d.get("device"))
         d["extra_args"] = json.loads(d["extra_args"] or "{}")
         out.append(d)
@@ -192,13 +209,14 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, device, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, device, rope_scaling, rope_scale, yarn_orig_ctx, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
-             body.mtp_n_max or 3, _normalize_device(body.device), json.dumps(body.extra_args), now(), now()),
+             body.mtp_n_max or 3, _normalize_device(body.device), body.rope_scaling or "",
+             body.rope_scale, body.yarn_orig_ctx, json.dumps(body.extra_args), now(), now()),
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
@@ -233,6 +251,13 @@ def update_preset(pid: int, body: PresetUpdate):
             updates["mtp_model"] = body.mtp_model
         if body.mtp_n_max is not None:
             updates["mtp_n_max"] = body.mtp_n_max
+        # rope_scaling：空串也是有效值（''=关闭），需区分 None（不修改）与 ''（清空）
+        if body.rope_scaling is not None:
+            updates["rope_scaling"] = body.rope_scaling
+        if body.rope_scale is not None:
+            updates["rope_scale"] = body.rope_scale
+        if body.yarn_orig_ctx is not None:
+            updates["yarn_orig_ctx"] = body.yarn_orig_ctx
         if body.extra_args is not None:
             updates["extra_args"] = json.dumps(body.extra_args)
 

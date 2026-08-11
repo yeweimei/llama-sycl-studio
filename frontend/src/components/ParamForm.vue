@@ -106,6 +106,45 @@
       </el-col>
     </el-row>
 
+    <!-- 长上下文缩放（YaRN） -->
+    <el-divider content-position="left">
+      <span style="cursor:pointer;user-select:none" @click="yarnOpen = !yarnOpen">
+        {{ yarnOpen ? '▾' : '▸' }} 长上下文缩放（YaRN / RoPE）
+      </span>
+    </el-divider>
+    <div v-show="yarnOpen">
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <el-form-item label="长上下文缩放">
+            <el-switch v-model="model.rope_scaling" active-value="yarn" inactive-value="" />
+            <div class="form-tip" style="width:100%">Qwen 社区建议：超过 32K 长上下文必须启用 YaRN 缩放，不能只加大 ctx-size</div>
+          </el-form-item>
+        </el-col>
+        <el-col :span="12" v-if="model.rope_scaling">
+          <el-form-item label="缩放方法">
+            <el-select v-model="model.rope_scaling" style="width:100%">
+              <el-option value="yarn" label="yarn（YaRN，推荐）" />
+              <el-option value="linear" label="linear（线性）" />
+            </el-select>
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16" v-if="model.rope_scaling">
+        <el-col :span="12">
+          <el-form-item label="缩放因子">
+            <el-input-number v-model="model.rope_scale" :min="0.5" :max="10" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
+            <div class="form-tip" style="width:100%">YaRN 建议 = 目标上下文 / 原始上下文，如 128K/32K = 4.0</div>
+          </el-form-item>
+        </el-col>
+        <el-col :span="12">
+          <el-form-item label="原始上下文">
+            <el-input-number v-model="model.yarn_orig_ctx" :min="1024" :max="262144" :step="1024" controls-position="right" style="width:100%" />
+            <div class="form-tip" style="width:100%">模型训练时的原始上下文长度，如 32768</div>
+          </el-form-item>
+        </el-col>
+      </el-row>
+    </div>
+
     <!-- 高级采样参数（存入 extra_args 透传 llama.cpp） -->
     <el-divider content-position="left">
       <span style="cursor:pointer;user-select:none" @click="samplingOpen = !samplingOpen">
@@ -247,6 +286,7 @@ const emit = defineEmits(['update:modelValue'])
 
 const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const samplingOpen = ref(false)
+const yarnOpen = ref(false)
 
 // 参数说明数据（name/desc/tip/recommend）
 const HELP_MAP = {
@@ -343,6 +383,9 @@ const DEFAULT_ARGS = {
   mtp: false,
   mtp_model: '',
   mtp_n_max: 3,
+  rope_scaling: '',
+  rope_scale: null,
+  yarn_orig_ctx: null,
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）
