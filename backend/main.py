@@ -374,17 +374,17 @@ async def v1_proxy(path: str, request: Request):
         except Exception:
             services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code)
 
-        # 透传响应
-        resp_headers = {}
-        for k, v in r.headers.items():
-            if k.lower() not in ("transfer-encoding", "content-encoding", "content-length"):
-                resp_headers[k] = v
+    # 透传响应（所有 /v1/* 请求，含 embeddings/completions 等非 chat 路径）
+    resp_headers = {}
+    for k, v in r.headers.items():
+        if k.lower() not in ("transfer-encoding", "content-encoding", "content-length"):
+            resp_headers[k] = v
 
-        return JSONResponse(
-            content=r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
-            status_code=r.status_code,
-            headers=resp_headers,
-        )
+    return JSONResponse(
+        content=r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
+        status_code=r.status_code,
+        headers=resp_headers,
+    )
 
 
 # 前端构建产物（生产模式挂载，SPA history fallback）
