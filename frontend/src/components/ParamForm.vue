@@ -116,7 +116,7 @@
       <el-row :gutter="16">
         <el-col :span="12">
           <el-form-item label="长上下文缩放">
-            <el-switch v-model="model.rope_scaling" active-value="yarn" inactive-value="" />
+            <el-switch v-model="model.rope_scaling" active-value="yarn" inactive-value="" @change="onYarnSwitch" />
             <div class="form-tip" style="width:100%">Qwen 社区建议：超过 32K 长上下文必须启用 YaRN 缩放，不能只加大 ctx-size</div>
           </el-form-item>
         </el-col>
@@ -287,6 +287,14 @@ const emit = defineEmits(['update:modelValue'])
 const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const samplingOpen = ref(false)
 const yarnOpen = ref(false)
+
+// 关闭 YaRN 开关时联动清空缩放因子/原始上下文，避免残留脏值保存到 DB
+function onYarnSwitch(val) {
+  if (!val) {
+    model.value.rope_scale = null
+    model.value.yarn_orig_ctx = null
+  }
+}
 
 // 参数说明数据（name/desc/tip/recommend）
 const HELP_MAP = {

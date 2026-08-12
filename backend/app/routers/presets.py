@@ -254,10 +254,21 @@ def update_preset(pid: int, body: PresetUpdate):
         # rope_scaling：空串也是有效值（''=关闭），需区分 None（不修改）与 ''（清空）
         if body.rope_scaling is not None:
             updates["rope_scaling"] = body.rope_scaling
-        if body.rope_scale is not None:
-            updates["rope_scale"] = body.rope_scale
-        if body.yarn_orig_ctx is not None:
-            updates["yarn_orig_ctx"] = body.yarn_orig_ctx
+            if body.rope_scaling == "":
+                # 关闭缩放时联动清空 scale/orig（否则残留 0/旧值，面板显示像没关干净）
+                updates["rope_scale"] = None
+                updates["yarn_orig_ctx"] = None
+            else:
+                # 开启/切换缩放方法时，scale/orig 正常更新
+                if body.rope_scale is not None:
+                    updates["rope_scale"] = body.rope_scale
+                if body.yarn_orig_ctx is not None:
+                    updates["yarn_orig_ctx"] = body.yarn_orig_ctx
+        else:
+            if body.rope_scale is not None:
+                updates["rope_scale"] = body.rope_scale
+            if body.yarn_orig_ctx is not None:
+                updates["yarn_orig_ctx"] = body.yarn_orig_ctx
         if body.extra_args is not None:
             updates["extra_args"] = json.dumps(body.extra_args)
 
