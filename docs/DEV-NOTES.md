@@ -57,6 +57,12 @@
 - el-switch 的 `@change` 回调参数是**切换后的值**（`inactive-value` 时关闭为 falsy）。
 - 开关关闭时要联动清空关联字段（如关 YaRN 清 scale/orig），否则残留旧值保存进 DB，面板重开显示脏数据。
 
+### 1.4 ⚠️ 同一个字段不要绑两个控件（el-switch + el-select）
+- **血泪案例**（2026-08-12, commit 8b849c7）：「长上下文缩放」开关和「缩放方法」下拉最初都 `v-model` 绑 `model.rope_scaling`。用户用下拉选过方法后，再点开关关闭时，el-switch 会写入**布尔值 `true`**（不是 `''`/`yarn`）→ 后端 `str` 字段校验 422 `string_type`。
+- **正解**：开关绑独立布尔字段（`rope_enabled`），下拉绑字符串字段（`rope_scaling`）；emit 时转换回后端格式；normalize 时从字符串推导开关状态。
+- **后端双保险**：字符串字段的 validator 也要容错布尔（`isinstance(v, bool)`: True→'yarn', False→''）。
+- **排障手法**：前端报 422 但后端日志只有状态码时，用浏览器打开页面 + 注入 fetch/XHR 监听（捕获请求体 + 响应体），点保存就能抓到真实 payload 和 422 detail——比猜快得多。
+
 ---
 
 ## 2. 后端 API（FastAPI + SQLite）

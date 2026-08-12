@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-08-12**：推理参数面板新增**长上下文缩放（YaRN/RoPE）**支持 + 修复保存 422 系列问题。功能：`rope_scaling/rope_scale/yarn_orig_ctx` 三字段（DB 建表+ALTER，config.ini + _build_args 双透传）；4 轮修复：① Services.vue payload 漏 rope 字段（0621576）② el-input-number 空字符串 422（3e6ad17/91c5935 全数字字段 mode='before' validator）③ **真凶 el-switch 与 el-select 绑同一字段产生布尔值**（8b849c7，拆 rope_enabled 开关字段 + 后端容错布尔）。坑与手法见 `DEV-NOTES.md` §1.4
+
 - **2026-08-08**：对话日志改进——从独立页（/chat-logs）移入**服务详情页**（ServiceDetail.vue 新增「💬 对话日志」tab），黑底滚动展示与运行日志同风格，**虚拟滚动**（固定行高 52px + 可视区渲染 + 懒渲染 thinking）支持上千条无压力；chat-logs API 支持按模型过滤（?model=）/ 清空（DELETE ?model=）；commit 7d3b644
 - **2026-08-08**：对话内容日志——新增 `chat_api_logs` 表（最近 1000 条）+ 记录输入/输出/thinking（/v1/* 代理 main.py + /{sid}/chat services.py 双路径），提交 5241565
 - **2026-08-07**：Gemma4-12B 性能优化（threads 8→20，单路 31.5→44.5 tps，并发总吞吐 26→61.6 tps）；MTP 保存 bug 修复（Services.vue/Settings.vue 补 MTP 字段，commit 6f1093d；部署必须 `--rebuild` 否则容器跑旧镜像）；Gemma4 性能基线：单路 44 tps、首 token 54ms、prompt 处理 224 tps
