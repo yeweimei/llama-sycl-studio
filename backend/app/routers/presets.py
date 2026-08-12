@@ -151,7 +151,10 @@ class PresetCreate(BaseModel):
     yarn_orig_ctx: int | None = None
     extra_args: dict = {}
 
-    @field_validator("rope_scale", "yarn_orig_ctx", mode="before")
+    @field_validator(
+        "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", mode="before",
+    )
     @classmethod
     def _empty_to_none(cls, v):
         # 前端 el-input-number 清空后可能提交空字符串，在类型解析前归一化为 None 避免 422
@@ -183,7 +186,10 @@ class PresetUpdate(BaseModel):
     yarn_orig_ctx: int | None = None
     extra_args: dict | None = None
 
-    @field_validator("rope_scale", "yarn_orig_ctx", mode="before")
+    @field_validator(
+        "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", mode="before",
+    )
     @classmethod
     def _empty_to_none(cls, v):
         # 前端 el-input-number 清空后可能提交空字符串，在类型解析前归一化为 None 避免 422
