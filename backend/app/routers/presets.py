@@ -1,7 +1,7 @@
 """模型预设配置 API - 管理不同模型的启动参数预设"""
 import json
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.database import get_conn, now
 from app.config import settings
 
@@ -151,6 +151,14 @@ class PresetCreate(BaseModel):
     yarn_orig_ctx: int | None = None
     extra_args: dict = {}
 
+    @field_validator("rope_scale", "yarn_orig_ctx", mode="before")
+    @classmethod
+    def _empty_to_none(cls, v):
+        # 前端 el-input-number 清空后可能提交空字符串，在类型解析前归一化为 None 避免 422
+        if v == "" or v is None:
+            return None
+        return v
+
 
 class PresetUpdate(BaseModel):
     ctx_size: int | None = None
@@ -174,6 +182,14 @@ class PresetUpdate(BaseModel):
     rope_scale: float | None = None
     yarn_orig_ctx: int | None = None
     extra_args: dict | None = None
+
+    @field_validator("rope_scale", "yarn_orig_ctx", mode="before")
+    @classmethod
+    def _empty_to_none(cls, v):
+        # 前端 el-input-number 清空后可能提交空字符串，在类型解析前归一化为 None 避免 422
+        if v == "" or v is None:
+            return None
+        return v
 
 
 @router.get("")
