@@ -162,6 +162,19 @@ class PresetCreate(BaseModel):
             return None
         return v
 
+    @field_validator("rope_scaling", mode="before")
+    @classmethod
+    def _rope_scaling_normalize(cls, v):
+        # el-switch 与 el-select 绑同一字段可能产生布尔值或空串：
+        # True/'' 都视为关闭(存 ''), 'yarn'/'linear' 保留；'' 是有效关闭值不能归 None
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return "yarn" if v else ""
+        if v == "":
+            return ""
+        return str(v)
+
 
 class PresetUpdate(BaseModel):
     ctx_size: int | None = None
@@ -196,6 +209,19 @@ class PresetUpdate(BaseModel):
         if v == "" or v is None:
             return None
         return v
+
+    @field_validator("rope_scaling", mode="before")
+    @classmethod
+    def _rope_scaling_normalize(cls, v):
+        # el-switch 与 el-select 绑同一字段可能产生布尔值或空串：
+        # True/'' 都视为关闭(存 ''), 'yarn'/'linear' 保留；'' 是有效关闭值不能归 None
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return "yarn" if v else ""
+        if v == "":
+            return ""
+        return str(v)
 
 
 @router.get("")

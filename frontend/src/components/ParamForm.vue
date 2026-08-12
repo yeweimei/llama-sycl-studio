@@ -116,11 +116,11 @@
       <el-row :gutter="16">
         <el-col :span="12">
           <el-form-item label="长上下文缩放">
-            <el-switch v-model="model.rope_scaling" active-value="yarn" inactive-value="" @change="onYarnSwitch" />
+            <el-switch v-model="model.rope_enabled" @change="onYarnSwitch" />
             <div class="form-tip" style="width:100%">Qwen 社区建议：超过 32K 长上下文必须启用 YaRN 缩放，不能只加大 ctx-size</div>
           </el-form-item>
         </el-col>
-        <el-col :span="12" v-if="model.rope_scaling">
+        <el-col :span="12" v-if="model.rope_enabled">
           <el-form-item label="缩放方法">
             <el-select v-model="model.rope_scaling" style="width:100%">
               <el-option value="yarn" label="yarn（YaRN，推荐）" />
@@ -129,7 +129,7 @@
           </el-form-item>
         </el-col>
       </el-row>
-      <el-row :gutter="16" v-if="model.rope_scaling">
+      <el-row :gutter="16" v-if="model.rope_enabled">
         <el-col :span="12">
           <el-form-item label="缩放因子">
             <el-input-number v-model="model.rope_scale" :min="0.5" :max="10" :step="0.1" :precision="2" controls-position="right" style="width:100%" />
@@ -293,6 +293,7 @@ function onYarnSwitch(val) {
   if (!val) {
     model.value.rope_scale = null
     model.value.yarn_orig_ctx = null
+    model.value.rope_scaling = ''
   }
 }
 
@@ -392,6 +393,7 @@ const DEFAULT_ARGS = {
   mtp_model: '',
   mtp_n_max: 3,
   rope_scaling: '',
+  rope_enabled: false,
   rope_scale: null,
   yarn_orig_ctx: null,
 }
@@ -420,6 +422,8 @@ function normalize(v) {
   // sampling 从 extra_args.sampling 读（旧数据没有则用默认）
   const extra = (src.extra_args && typeof src.extra_args === 'object') ? src.extra_args : {}
   base.sampling = { ...DEFAULT_SAMPLING, ...(extra.sampling || {}) }
+  // rope_enabled 从 rope_scaling 推导（后端只存 rope_scaling）
+  base.rope_enabled = !!base.rope_scaling
   // 兼容旧字段（之前存在 model 顶层的采样参数）
   for (const k of Object.keys(DEFAULT_SAMPLING)) {
     if (src[k] !== undefined && src[k] !== null && base.sampling[k] === DEFAULT_SAMPLING[k]) {
@@ -445,6 +449,13 @@ watch(
   model,
   (v) => {
     const out = { ...v }
+    // rope_enabled → rope_scaling（后端只认 rope_scaling: ''/yarn/linear）
+    if (!v.rope_enabled) {
+      out.rope_scaling = ''
+    } else if (!v.rope_scaling) {
+      out.rope_scaling = 'yarn'
+    }
+    delete out.rope_enabled
     // 把 sampling 打平进 extra_args（后端透传 llama.cpp）
     out.extra_args = { ...(v.extra_args || {}), sampling: { ...v.sampling } }
     emit('update:modelValue', out)
