@@ -101,6 +101,11 @@ def _write_config_ini() -> dict:
                 lines.append(f"rope-scale = {d['rope_scale']}")
             if d.get("yarn_orig_ctx"):
                 lines.append(f"yarn-orig-ctx = {d['yarn_orig_ctx']}")
+        # MTP 草稿 KV cache 量化（默认 f16 浪费显存，建议 q8_0）——仅非空才写，空则用默认
+        if d.get("spec_draft_type_k"):
+            lines.append(f"spec-draft-type-k = {d['spec_draft_type_k']}")
+        if d.get("spec_draft_type_v"):
+            lines.append(f"spec-draft-type-v = {d['spec_draft_type_v']}")
         # 思考（Reasoning）：--reasoning on/off/auto + --reasoning-budget N
         reasoning = d.get("reasoning")
         if reasoning:
@@ -151,6 +156,8 @@ class PresetCreate(BaseModel):
     mtp: bool = False
     mtp_model: str = ""
     mtp_n_max: int = 3
+    spec_draft_type_k: str = ""
+    spec_draft_type_v: str = ""
     device: str = "SYCL0"
     rope_scaling: str = ""
     rope_scale: float | None = None
@@ -200,6 +207,8 @@ class PresetUpdate(BaseModel):
     mtp: bool | None = None
     mtp_model: str | None = None
     mtp_n_max: int | None = None
+    spec_draft_type_k: str | None = None
+    spec_draft_type_v: str | None = None
     device: str | None = None
     rope_scaling: str | None = None
     rope_scale: float | None = None
@@ -247,6 +256,8 @@ def list_presets():
         d["mtp"] = bool(d.get("mtp", 0))
         d["mtp_model"] = d.get("mtp_model", "")
         d["mtp_n_max"] = d.get("mtp_n_max", 3)
+        d["spec_draft_type_k"] = d.get("spec_draft_type_k", "")
+        d["spec_draft_type_v"] = d.get("spec_draft_type_v", "")
         d["rope_scaling"] = d.get("rope_scaling", "")
         d["rope_scale"] = d.get("rope_scale")
         d["yarn_orig_ctx"] = d.get("yarn_orig_ctx")
@@ -267,13 +278,14 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
-             body.mtp_n_max or 3, _normalize_device(body.device), body.rope_scaling or "",
+             body.mtp_n_max or 3, body.spec_draft_type_k or "", body.spec_draft_type_v or "",
+             _normalize_device(body.device), body.rope_scaling or "",
              body.rope_scale, body.yarn_orig_ctx, body.reasoning or "", body.reasoning_budget,
              json.dumps(body.extra_args), now(), now()),
         )
@@ -310,6 +322,11 @@ def update_preset(pid: int, body: PresetUpdate):
             updates["mtp_model"] = body.mtp_model
         if body.mtp_n_max is not None:
             updates["mtp_n_max"] = body.mtp_n_max
+        # spec_draft_type_k/v：空串也是有效值（''=不传，用默认 f16），区分 None（不修改）与 ''（清空）
+        if body.spec_draft_type_k is not None:
+            updates["spec_draft_type_k"] = body.spec_draft_type_k
+        if body.spec_draft_type_v is not None:
+            updates["spec_draft_type_v"] = body.spec_draft_type_v
         # rope_scaling：空串也是有效值（''=关闭），需区分 None（不修改）与 ''（清空）
         if body.rope_scaling is not None:
             updates["rope_scaling"] = body.rope_scaling

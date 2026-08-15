@@ -117,6 +117,11 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         mtp_n_max = preset.get("mtp_n_max")
         if mtp_n_max:
             args += ["--spec-draft-n-max", str(mtp_n_max)]
+        # MTP 草稿 KV cache 量化（默认 f16 浪费显存，建议 q8_0；仅非空才传，空则用默认）
+        if preset.get("spec_draft_type_k"):
+            args += ["--spec-draft-type-k", str(preset["spec_draft_type_k"])]
+        if preset.get("spec_draft_type_v"):
+            args += ["--spec-draft-type-v", str(preset["spec_draft_type_v"])]
     if preset.get("jinja"):
         args += ["--jinja"]
     if preset.get("n_gpu_layers") is not None:

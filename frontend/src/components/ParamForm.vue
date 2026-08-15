@@ -39,6 +39,24 @@
           <div class="form-tip" style="width:100%">每次投机预测的 token 数（默认 3，越大加速越多但接受率下降）</div>
         </el-form-item>
       </el-col>
+      <el-col :span="12">
+        <el-form-item label="草稿 KV-K">
+          <el-select v-model="model.spec_draft_type_k" style="width:100%" clearable placeholder="默认 f16">
+            <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
+          </el-select>
+          <div class="form-tip" style="width:100%">MTP 草稿 KV cache 量化，建议 q8_0（省显存）；留空=默认 f16</div>
+        </el-form-item>
+      </el-col>
+    </el-row>
+    <el-row :gutter="16" v-if="model.mtp">
+      <el-col :span="12">
+        <el-form-item label="草稿 KV-V">
+          <el-select v-model="model.spec_draft_type_v" style="width:100%" clearable placeholder="默认 f16">
+            <el-option v-for="t in kvTypes" :key="t" :label="t" :value="t" />
+          </el-select>
+          <div class="form-tip" style="width:100%">MTP 草稿 KV cache 量化，建议 q8_0（省显存）；留空=默认 f16</div>
+        </el-form-item>
+      </el-col>
     </el-row>
     <el-row :gutter="16">
       <el-col :span="12">
@@ -435,6 +453,8 @@ const DEFAULT_ARGS = {
   mtp: false,
   mtp_model: '',
   mtp_n_max: 3,
+  spec_draft_type_k: '',
+  spec_draft_type_v: '',
   rope_scaling: '',
   rope_enabled: false,
   rope_scale: null,
