@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-08-12**：推理参数面板新增**思考（Reasoning）**配置（commit 8d88ed5）。功能：`reasoning`（on/off/auto 字符串枚举）+ `reasoning_budget`（整数可空，-1 不限/0 立即结束/N>0 预算）两字段，控制 Qwen 思维链长度（llama.cpp b10369 `--reasoning`/`--reasoning-budget`）。实现遵循 DEV-NOTES §1：三处同步（ParamForm DEFAULT_ARGS+控件+normalize / Services.vue payload 枚举 / presets.py 全链路）+ 双透传（instance_mgr `_build_args` + `_write_config_ini`）+ 开关绑独立布尔字段 `reasoning_enabled`（复用 YaRN 拆字段方案，避免同字段双绑 422）+ 后端 mode='before' validator 容错空串/布尔。**顺带修复**：补齐 database.py 遗漏的 cpu_moe/mtp/mtp_model/mtp_n_max 四列 ALTER 迁移（presets.py INSERT 早已引用但从未加迁移，新库建预设必崩）。部署验证：容器 healthy + bundle hash 更新 + 实际启动 Qwen3.5-9B-MTP 实例，进程 cmdline 含 `--reasoning on --reasoning-budget 1024`；关闭 reasoning='' 重启后参数消失；config.ini 同步生成 reasoning 行。
+
 - **2026-08-12**：推理参数面板新增**长上下文缩放（YaRN/RoPE）**支持 + 修复保存 422 系列问题。功能：`rope_scaling/rope_scale/yarn_orig_ctx` 三字段（DB 建表+ALTER，config.ini + _build_args 双透传）；4 轮修复：① Services.vue payload 漏 rope 字段（0621576）② el-input-number 空字符串 422（3e6ad17/91c5935 全数字字段 mode='before' validator）③ **真凶 el-switch 与 el-select 绑同一字段产生布尔值**（8b849c7，拆 rope_enabled 开关字段 + 后端容错布尔）。坑与手法见 `DEV-NOTES.md` §1.4
 
 - **2026-08-08**：对话日志改进——从独立页（/chat-logs）移入**服务详情页**（ServiceDetail.vue 新增「💬 对话日志」tab），黑底滚动展示与运行日志同风格，**虚拟滚动**（固定行高 52px + 可视区渲染 + 懒渲染 thinking）支持上千条无压力；chat-logs API 支持按模型过滤（?model=）/ 清空（DELETE ?model=）；commit 7d3b644
