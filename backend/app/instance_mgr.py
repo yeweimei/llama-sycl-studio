@@ -76,6 +76,12 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
             args += ["--rope-scale", str(preset["rope_scale"])]
         if preset.get("yarn_orig_ctx"):
             args += ["--yarn-orig-ctx", str(preset["yarn_orig_ctx"])]
+    # 思考（Reasoning）：--reasoning on/off/auto + --reasoning-budget N（控制思维链长度）
+    reasoning = preset.get("reasoning")
+    if reasoning:
+        args += ["--reasoning", str(reasoning)]
+        if preset.get("reasoning_budget") is not None:
+            args += ["--reasoning-budget", str(preset["reasoning_budget"])]
     # 采样/性能参数
     if preset.get("temp") is not None:
         args += ["--temp", str(preset["temp"])]

@@ -145,6 +145,40 @@
       </el-row>
     </div>
 
+    <!-- 思考（Reasoning） -->
+    <el-divider content-position="left">
+      <span style="cursor:pointer;user-select:none" @click="reasoningOpen = !reasoningOpen">
+        {{ reasoningOpen ? '▾' : '▸' }} 思考（Reasoning）
+      </span>
+    </el-divider>
+    <div v-show="reasoningOpen">
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <el-form-item label="思考开关">
+            <el-switch v-model="model.reasoning_enabled" @change="onReasoningSwitch" />
+            <div class="form-tip" style="width:100%">控制模型思考链：on=总是思考 / off=关闭思考 / auto=自动（Qwen 思维链过长时可关闭或限预算）</div>
+          </el-form-item>
+        </el-col>
+        <el-col :span="12" v-if="model.reasoning_enabled">
+          <el-form-item label="思考模式">
+            <el-select v-model="model.reasoning" style="width:100%">
+              <el-option value="on" label="on（总是思考）" />
+              <el-option value="off" label="off（关闭思考）" />
+              <el-option value="auto" label="auto（自动）" />
+            </el-select>
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-row :gutter="16" v-if="model.reasoning_enabled">
+        <el-col :span="12">
+          <el-form-item label="思考预算">
+            <el-input-number v-model="model.reasoning_budget" :min="-1" :step="128" controls-position="right" style="width:100%" />
+            <div class="form-tip" style="width:100%">-1=不限 / 0=立即结束 / N&gt;0=思考 token 预算（如 1024）</div>
+          </el-form-item>
+        </el-col>
+      </el-row>
+    </div>
+
     <!-- 高级采样参数（存入 extra_args 透传 llama.cpp） -->
     <el-divider content-position="left">
       <span style="cursor:pointer;user-select:none" @click="samplingOpen = !samplingOpen">
@@ -287,6 +321,7 @@ const emit = defineEmits(['update:modelValue'])
 const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
 const samplingOpen = ref(false)
 const yarnOpen = ref(false)
+const reasoningOpen = ref(false)
 
 // 关闭 YaRN 开关时联动清空缩放因子/原始上下文，避免残留脏值保存到 DB
 function onYarnSwitch(val) {
@@ -294,6 +329,14 @@ function onYarnSwitch(val) {
     model.value.rope_scale = null
     model.value.yarn_orig_ctx = null
     model.value.rope_scaling = ''
+  }
+}
+
+// 关闭思考开关时联动清空思考模式/预算
+function onReasoningSwitch(val) {
+  if (!val) {
+    model.value.reasoning = ''
+    model.value.reasoning_budget = null
   }
 }
 
@@ -396,6 +439,9 @@ const DEFAULT_ARGS = {
   rope_enabled: false,
   rope_scale: null,
   yarn_orig_ctx: null,
+  reasoning: '',
+  reasoning_enabled: false,
+  reasoning_budget: null,
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）
@@ -424,6 +470,9 @@ function normalize(v) {
   base.sampling = { ...DEFAULT_SAMPLING, ...(extra.sampling || {}) }
   // rope_enabled 从 rope_scaling 推导（后端只存 rope_scaling）
   base.rope_enabled = !!base.rope_scaling
+  // reasoning_enabled 从 reasoning 推导（后端只存 reasoning）
+  base.reasoning_enabled = !!base.reasoning
+  if (base.reasoning === '') base.reasoning = 'auto'  // 默认模式 auto，开启开关后生效
   // 兼容旧字段（之前存在 model 顶层的采样参数）
   for (const k of Object.keys(DEFAULT_SAMPLING)) {
     if (src[k] !== undefined && src[k] !== null && base.sampling[k] === DEFAULT_SAMPLING[k]) {
@@ -456,6 +505,13 @@ watch(
       out.rope_scaling = 'yarn'
     }
     delete out.rope_enabled
+    // reasoning_enabled → reasoning（后端只认 reasoning: ''/on/off/auto）
+    if (!v.reasoning_enabled) {
+      out.reasoning = ''
+    } else if (!v.reasoning) {
+      out.reasoning = 'auto'
+    }
+    delete out.reasoning_enabled
     // 把 sampling 打平进 extra_args（后端透传 llama.cpp）
     out.extra_args = { ...(v.extra_args || {}), sampling: { ...v.sampling } }
     emit('update:modelValue', out)

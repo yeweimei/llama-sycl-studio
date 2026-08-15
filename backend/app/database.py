@@ -84,9 +84,15 @@ def init_db():
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
                 device TEXT DEFAULT '0',
+                cpu_moe INTEGER DEFAULT 0,
+                mtp INTEGER DEFAULT 0,
+                mtp_model TEXT DEFAULT '',
+                mtp_n_max INTEGER DEFAULT 3,
                 rope_scaling TEXT DEFAULT '',
                 rope_scale REAL,
                 yarn_orig_ctx INTEGER,
+                reasoning TEXT DEFAULT '',
+                reasoning_budget INTEGER,
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER
@@ -188,6 +194,19 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN rope_scale REAL")
         if "yarn_orig_ctx" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN yarn_orig_ctx INTEGER")
+        if "reasoning" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning TEXT DEFAULT ''")
+        if "reasoning_budget" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_budget INTEGER")
+        # 补齐此前遗漏的列（presets.py INSERT 已引用但从未加迁移/建表，导致新库建预设报错）
+        if "cpu_moe" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN cpu_moe INTEGER DEFAULT 0")
+        if "mtp" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN mtp INTEGER DEFAULT 0")
+        if "mtp_model" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN mtp_model TEXT DEFAULT ''")
+        if "mtp_n_max" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN mtp_n_max INTEGER DEFAULT 3")
         # 迁移旧 device 值: "0"->"SYCL0", "1"->"SYCL1"
         for old, new in [("0", "SYCL0"), ("1", "SYCL1")]:
             conn.execute("UPDATE model_presets SET device=? WHERE device=?", (new, old))

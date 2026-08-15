@@ -636,6 +636,7 @@ async function doSaveEdit() {
       mmap: p.mmap, device: editForm.value.gpu_id || 'SYCL0',
       cpu_moe: p.cpu_moe, mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
       rope_scaling: p.rope_scaling || '', rope_scale: (p.rope_scale === '' || p.rope_scale === null || p.rope_scale === undefined) ? null : Number(p.rope_scale), yarn_orig_ctx: (p.yarn_orig_ctx === '' || p.yarn_orig_ctx === null || p.yarn_orig_ctx === undefined) ? null : Number(p.yarn_orig_ctx),
+      reasoning: p.reasoning || '', reasoning_budget: (p.reasoning_budget === '' || p.reasoning_budget === null || p.reasoning_budget === undefined) ? null : Number(p.reasoning_budget),
       extra_args: p.extra_args || {},
     }
     if (editForm.value.presetId) {

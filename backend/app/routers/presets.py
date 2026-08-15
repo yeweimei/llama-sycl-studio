@@ -101,6 +101,12 @@ def _write_config_ini() -> dict:
                 lines.append(f"rope-scale = {d['rope_scale']}")
             if d.get("yarn_orig_ctx"):
                 lines.append(f"yarn-orig-ctx = {d['yarn_orig_ctx']}")
+        # 思考（Reasoning）：--reasoning on/off/auto + --reasoning-budget N
+        reasoning = d.get("reasoning")
+        if reasoning:
+            lines.append(f"reasoning = {reasoning}")
+            if d.get("reasoning_budget") is not None:
+                lines.append(f"reasoning-budget = {d['reasoning_budget']}")
         # 自动检测 mmproj 并写入（多模态投影文件）
         mmproj = _find_mmproj(d["model_name"])
         if mmproj:
@@ -149,11 +155,13 @@ class PresetCreate(BaseModel):
     rope_scaling: str = ""
     rope_scale: float | None = None
     yarn_orig_ctx: int | None = None
+    reasoning: str = ""
+    reasoning_budget: int | None = None
     extra_args: dict = {}
 
     @field_validator(
         "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
-        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", mode="before",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", mode="before",
     )
     @classmethod
     def _empty_to_none(cls, v):
@@ -162,15 +170,14 @@ class PresetCreate(BaseModel):
             return None
         return v
 
-    @field_validator("rope_scaling", mode="before")
+    @field_validator("rope_scaling", "reasoning", mode="before")
     @classmethod
-    def _rope_scaling_normalize(cls, v):
-        # el-switch 与 el-select 绑同一字段可能产生布尔值或空串：
-        # True/'' 都视为关闭(存 ''), 'yarn'/'linear' 保留；'' 是有效关闭值不能归 None
+    def _enum_string_normalize(cls, v):
+        # 字符串枚举字段：可能收到布尔值（el-switch 误绑）或空串；'' 是有效关闭值不能归 None
         if v is None:
             return None
         if isinstance(v, bool):
-            return "yarn" if v else ""
+            return "on" if v else ""
         if v == "":
             return ""
         return str(v)
@@ -197,11 +204,13 @@ class PresetUpdate(BaseModel):
     rope_scaling: str | None = None
     rope_scale: float | None = None
     yarn_orig_ctx: int | None = None
+    reasoning: str | None = None
+    reasoning_budget: int | None = None
     extra_args: dict | None = None
 
     @field_validator(
         "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
-        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", mode="before",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", mode="before",
     )
     @classmethod
     def _empty_to_none(cls, v):
@@ -210,15 +219,14 @@ class PresetUpdate(BaseModel):
             return None
         return v
 
-    @field_validator("rope_scaling", mode="before")
+    @field_validator("rope_scaling", "reasoning", mode="before")
     @classmethod
-    def _rope_scaling_normalize(cls, v):
-        # el-switch 与 el-select 绑同一字段可能产生布尔值或空串：
-        # True/'' 都视为关闭(存 ''), 'yarn'/'linear' 保留；'' 是有效关闭值不能归 None
+    def _enum_string_normalize(cls, v):
+        # 字符串枚举字段：可能收到布尔值或空串；'' 是有效关闭值不能归 None
         if v is None:
             return None
         if isinstance(v, bool):
-            return "yarn" if v else ""
+            return "on" if v else ""
         if v == "":
             return ""
         return str(v)
@@ -242,6 +250,8 @@ def list_presets():
         d["rope_scaling"] = d.get("rope_scaling", "")
         d["rope_scale"] = d.get("rope_scale")
         d["yarn_orig_ctx"] = d.get("yarn_orig_ctx")
+        d["reasoning"] = d.get("reasoning", "")
+        d["reasoning_budget"] = d.get("reasoning_budget")
         d["device"] = _normalize_device(d.get("device"))
         d["extra_args"] = json.loads(d["extra_args"] or "{}")
         out.append(d)
@@ -257,14 +267,15 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, device, rope_scaling, rope_scale, yarn_orig_ctx, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
              body.mtp_n_max or 3, _normalize_device(body.device), body.rope_scaling or "",
-             body.rope_scale, body.yarn_orig_ctx, json.dumps(body.extra_args), now(), now()),
+             body.rope_scale, body.yarn_orig_ctx, body.reasoning or "", body.reasoning_budget,
+             json.dumps(body.extra_args), now(), now()),
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
@@ -317,6 +328,16 @@ def update_preset(pid: int, body: PresetUpdate):
                 updates["rope_scale"] = body.rope_scale
             if body.yarn_orig_ctx is not None:
                 updates["yarn_orig_ctx"] = body.yarn_orig_ctx
+        # reasoning：空串也是有效值（''=不配置），区分 None（不修改）与 ''（清空）
+        if body.reasoning is not None:
+            updates["reasoning"] = body.reasoning
+            if body.reasoning == "":
+                # 关闭思考时联动清空 budget
+                updates["reasoning_budget"] = None
+            elif body.reasoning_budget is not None:
+                updates["reasoning_budget"] = body.reasoning_budget
+        elif body.reasoning_budget is not None:
+            updates["reasoning_budget"] = body.reasoning_budget
         if body.extra_args is not None:
             updates["extra_args"] = json.dumps(body.extra_args)
 
