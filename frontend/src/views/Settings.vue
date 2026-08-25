@@ -128,6 +128,7 @@
         <el-card shadow="never" style="margin-top:16px">
           <div class="card-title">
             <span>🔧 引擎管理</span>
+            <el-button size="small" type="danger" plain @click="doCleanupOld"><el-icon><Delete /></el-icon>&nbsp;清理旧版本</el-button>
             <el-button size="small" @click="loadEngineInfo"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
           </div>
           <el-descriptions :column="2" size="small" border style="margin-bottom:12px" v-if="engineInfo">
@@ -330,10 +331,10 @@ import {
   listTemplates, deleteTemplate, containerInfo, getRouterCtx,
   getProxySettings, saveProxySettings, authChangePassword,
   listPresets, createPreset, updatePreset, deletePreset, generateConfigIni,
-  getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine,
+  getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine, cleanupEngine,
   getAlertConfig, saveAlertConfig, testAlert as sendTestAlert,
 } from '../api'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Delete } from '@element-plus/icons-vue'
 
 const keys = ref([])
 const templates = ref([])
@@ -407,6 +408,34 @@ async function doRollback(version) {
     await loadEngineInfo()
   } catch (e) {
     ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function doCleanupOld() {
+  // 先 dry-run 预览将删除的版本，确认后再执行
+  let preview
+  try {
+    preview = await cleanupEngine(3, true)
+  } catch (e) {
+    ElMessage.error('预览失败: ' + (e.response?.data?.detail || e.message))
+    return
+  }
+  if (!preview.deleted || preview.deleted.length === 0) {
+    ElMessage.info('没有可清理的旧版本')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将删除 ${preview.deleted.length} 个旧版本备份：\n${preview.deleted.join('、')}\n\n保留：${preview.kept.join('、')}`,
+      '清理旧版本', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) { return }
+  try {
+    const r = await cleanupEngine(3, false)
+    ElMessage.success(`已清理 ${r.deleted.length} 个旧版本：${r.deleted.join('、')}`)
+    await loadEngineInfo()
+  } catch (e) {
+    ElMessage.error('清理失败: ' + (e.response?.data?.detail || e.message))
   }
 }
 

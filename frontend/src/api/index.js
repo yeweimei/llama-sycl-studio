@@ -149,5 +149,7 @@ export const getEngineVersion = () => api.get('/engine/version').then(r => r.dat
 export const getEngineUpgrades = () => api.get('/engine/upgrades').then(r => r.data)
 export const upgradeEngine = (version) => api.post('/engine/upgrade', { version }).then(r => r.data)
 export const rollbackEngine = (version) => api.post('/engine/rollback', { version }).then(r => r.data)
+export const cleanupEngine = (keep = 3, dryRun = false) => api.post('/engine/cleanup', { keep, dry_run: dryRun }).then(r => r.data)
+export const restartAllServices = () => api.post('/services/restart-all').then(r => r.data)
 
 export default api

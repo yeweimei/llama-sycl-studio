@@ -80,3 +80,49 @@ body {
   .el-form-item__label { float: none; display: block; text-align: left; padding-bottom: 4px; }
   .el-form-item__content { margin-left: 0 !important; }
 }
+
+/* ====== 2026-08-25 UI 美化：主题色 + 卡片圆角 ====== */
+:root {
+  /* 科技蓝主色（替代默认 #409eff） */
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #5b8def;
+  --el-color-primary-light-5: #8fb0f4;
+  --el-color-primary-light-7: #c0d2f8;
+  --el-color-primary-light-8: #d6e2fb;
+  --el-color-primary-light-9: #ebf1fd;
+  --el-color-primary-dark-2: #1d4ed8;
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+}
+
+/* 卡片统一圆角 + 细边框 */
+.el-card {
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+}
+
+/* 表格圆角 */
+.el-table {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* 按钮圆角统一 */
+.el-button {
+  border-radius: 7px;
+}
+
+/* 对话框圆角 */
+.el-dialog {
+  border-radius: 12px;
+}
+
+/* 页面容器轻微留白优化 */
+.page-container {
+  padding: 20px;
+}
+
+/* 主内容区卡片间距统一 */
+.el-card + .el-card {
+  margin-top: 16px;
+}

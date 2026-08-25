@@ -188,9 +188,10 @@ def _read_active_version() -> str:
 
 def _get_current_version() -> str:
     """检测当前 llama-server 版本，统一返回 bXXXXX 规范格式。
-    兼容两种输出：
-      - 新版: llama-server --version  b10246 (sha...)  -> b10246
-      - 旧版: version: 10200 (5f55650a7) built_with... -> b10200"""
+    兼容三种输出：
+      - 新版 launcher: version: 0.3.0-dev (build 10622, ...) -> b10622
+      - 新版: llama-server --version  b10246 (sha...)        -> b10246
+      - 旧版: version: 10200 (5f55650a7) built_with...       -> b10200"""
     try:
         r = subprocess.run(
             [str(CURRENT_BIN), "--version"],
@@ -200,10 +201,15 @@ def _get_current_version() -> str:
         import re
         for line in output.splitlines():
             line = line.strip()
-            # 优先 bXXXXX 格式
+            # 优先 bXXXXX 格式（launcher 也可能带 bXXXXX 字样）
             m = re.search(r"\bb\d+\b", line)
             if m:
                 return m.group(0)
+        # launcher 格式: version: 0.3.0-dev (build 10622, commit ...) -> b10622
+        for line in output.splitlines():
+            m = re.search(r"build\s+(\d+)", line)
+            if m:
+                return f"b{m.group(1)}"
         # 兼容旧版: version: 10200 (sha) -> 补 b 前缀
         for line in output.splitlines():
             m = re.search(r"version:\s*(\d+)", line)
@@ -285,6 +291,51 @@ class UpgradeRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     version: str
+
+
+class CleanupRequest(BaseModel):
+    keep: int = 3  # 保留最近几个版本（不含 active）
+    dry_run: bool = False  # True=只预览将删除列表，不实际删除
+
+
+@router.post("/cleanup")
+def engine_cleanup(body: CleanupRequest):
+    """清理旧版本备份：保留 active 版本 + 最近 keep 个版本，其余删除。
+    dry_run=True 时只返回将删除的列表不实际删除（前端确认弹窗用）。"""
+    if body.keep < 0:
+        raise HTTPException(400, "keep 不能为负")
+    active = _read_active_version() or _get_current_version()
+
+    def ver_num(name: str) -> int:
+        m = re.match(r"b(\d+)", name)
+        return int(m.group(1)) if m else 0
+
+    # 新格式备份目录 BIN_DIR/bXXXX
+    dirs = [d for d in BIN_DIR.iterdir() if d.is_dir() and d.name.startswith("b")]
+    dirs.sort(key=lambda d: ver_num(d.name), reverse=True)
+    keep = {active}
+    for d in dirs:
+        if len(keep) >= body.keep + 1:
+            break
+        keep.add(d.name)
+    # 旧格式单文件 BIN_DIR/llama-server-bXXXX
+    legacy = [f for f in BIN_DIR.glob("llama-server-b*")]
+
+    if body.dry_run:
+        deleted = [d.name for d in dirs if d.name not in keep]
+        deleted += [f.name for f in legacy if f.name.replace("llama-server-", "") not in keep]
+        return {"ok": True, "dry_run": True, "deleted": deleted, "kept": sorted(keep)}
+
+    deleted = []
+    for d in dirs:
+        if d.name not in keep:
+            shutil.rmtree(d, ignore_errors=True)
+            deleted.append(d.name)
+    for f in legacy:
+        if f.name.replace("llama-server-", "") not in keep:
+            f.unlink(missing_ok=True)
+            deleted.append(f.name)
+    return {"ok": True, "dry_run": False, "deleted": deleted, "kept": sorted(keep)}
 
 
 @router.get("/version")

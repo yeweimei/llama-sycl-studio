@@ -765,6 +765,37 @@ def restart_service(sid: int):
         raise HTTPException(400, str(e))
 
 
+@router.post("/restart-all")
+def restart_all_services():
+    """整体重启总开关：停止并重启所有已加载（loaded）的模型实例。
+    按“先全部停止、再逐个启动”执行，避免重启期间资源争抢。"""
+    from app import instance_mgr
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, model_path FROM services WHERE status='loaded'"
+        ).fetchall()
+    if not rows:
+        return {"ok": True, "restarted": [], "message": "当前没有已加载的服务"}
+    # 先全部停止
+    stopped = []
+    for sid, name, _mp in rows:
+        try:
+            instance_mgr.stop_instance(sid)
+            stopped.append(name)
+        except Exception as e:
+            pass
+    time.sleep(2)
+    # 再逐个启动（不阻塞等就绪，前端轮询刷新状态）
+    restarted = []
+    for sid, name, model_path in rows:
+        try:
+            instance_mgr.start_instance(sid, name, model_path or "")
+            restarted.append({"id": sid, "name": name, "ok": True})
+        except Exception as e:
+            restarted.append({"id": sid, "name": name, "ok": False, "error": str(e)})
+    return {"ok": True, "restarted": restarted, "stopped": stopped}
+
+
 @router.delete("/{sid}")
 def delete_service(sid: int):
     """硬删除模型注册：物理删除 DB 记录 + 清理关联数据（预设/标签/聊天/统计），

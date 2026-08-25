@@ -19,6 +19,7 @@ const router = createRouter({
     { path: '/monitor', component: () => import('./views/Monitor.vue'), meta: { title: '系统监控' } },
     { path: '/stats', component: () => import('./views/Stats.vue'), meta: { title: 'API统计' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '设置' } },
+    { path: '/help', component: () => import('./views/Help.vue'), meta: { title: '帮助中心' } },
   ],
 })
 
