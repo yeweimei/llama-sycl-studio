@@ -291,28 +291,44 @@ def _download_worker(tid: int, source: str, repo_id: str, filename: str, local_p
 
         req = urllib.request.Request(url, headers=headers)
         opener = proxy.build_opener()
-        with opener.open(req, timeout=60) as resp, open(tmp, "ab") as f:
-            total = existing + int(resp.headers.get("Content-Length", 0) or 0)
+        with opener.open(req, timeout=60) as resp:
+            # 服务端若忽略 Range（返回 200 全量而非 206），必须从头写，否则会错误追加到旧 .part
+            append_mode = existing > 0 and resp.status == 206
+            total = existing if append_mode else 0
+            total += int(resp.headers.get("Content-Length", 0) or 0)
             task["total_bytes"] = total
-            task["downloaded_bytes"] = existing
-            while True:
-                # 检查停止标志
-                if task.get("stop"):
-                    task["status"] = "cancelled"
-                    return
+            task["downloaded_bytes"] = existing if append_mode else 0
+            with open(tmp, "ab" if append_mode else "wb") as f:
+                while True:
+                    # 检查停止标志
+                    if task.get("stop"):
+                        task["status"] = "cancelled"
+                        return
 
-                # 检查暂停标志
-                if task.get("paused"):
-                    time.sleep(0.5)
-                    continue
+                    # 检查暂停标志
+                    if task.get("paused"):
+                        time.sleep(0.5)
+                        continue
 
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                f.write(chunk)
-                task["downloaded_bytes"] += len(chunk)
-                if total > 0:
-                    task["progress"] = round(task["downloaded_bytes"] / total * 100, 1)
+                    chunk = resp.read(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    task["downloaded_bytes"] += len(chunk)
+                    if total > 0:
+                        task["progress"] = round(task["downloaded_bytes"] / total * 100, 1)
+
+        # 完成：大小完整性校验（服务端给了 Content-Length 时）
+        # 连接中途断流时 read() 可能静默返回空而非抛异常，不校验会把截断文件当完成
+        if total > 0 and task["downloaded_bytes"] < total:
+            task["status"] = "error"
+            task["error"] = f"下载不完整: {task['downloaded_bytes']}/{total} 字节（保留 .part 可重试续传）"
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE download_tasks SET status='error', error=?, updated_at=? WHERE id=?",
+                    (task["error"], now(), tid),
+                )
+            return
 
         # 完成：改名为正式文件
         tmp.rename(target)
