@@ -143,7 +143,6 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_model ON api_request_logs(model_name);
-            CREATE INDEX IF NOT EXISTS idx_api_request_logs_endpoint ON api_request_logs(endpoint);
 
             -- 对话内容日志（chat_proxy 记录的输入/输出/thinking，最近 1000 条）
             CREATE TABLE IF NOT EXISTS chat_api_logs (
@@ -192,6 +191,7 @@ def init_db():
         log_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_request_logs)").fetchall()]
         if "endpoint" not in log_cols:
             conn.execute("ALTER TABLE api_request_logs ADD COLUMN endpoint TEXT DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_api_request_logs_endpoint ON api_request_logs(endpoint)")
         # api_stats 成功率/错误列（2026-08-25：端点统计聚合）
         stats_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_stats)").fetchall()]
         if "ok_count" not in stats_cols:
