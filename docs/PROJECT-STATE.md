@@ -127,6 +127,7 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 十、下一步待办
 
+- [ ] **下载完整性校验**（2026-08-25 Ornith 事件）：下载任务中断时仍标记 done（HF 源 mmproj 只下了 8% 却 done），应校验 downloaded_bytes==total_bytes，不一致标记失败/自动重试
 - [ ] TDAI L1-dedup Headers Timeout 优化（可选：调大等锁/接受降级）
 - [ ] 观察 TDAI L2 提取在 MTP 模型下的长期稳定性
 - [ ] 上游 issue/PR：TencentCloud/TencentDB-Agent-Memory（死循环防护 + thinking 适配，issue 草稿 `/tmp/tdai-issue.md`）
