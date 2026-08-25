@@ -335,6 +335,9 @@ def _env() -> dict:
         env["LD_LIBRARY_PATH"] = ":".join(libs + [cur]).strip(":")
     env["ZES_ENABLE_SYSMAN"] = env.get("ZES_ENABLE_SYSMAN", "1")
     env["GGML_SYCL_ENABLE_FLASH_ATTN"] = env.get("GGML_SYCL_ENABLE_FLASH_ATTN", "1")
+    # 默认关闭 host pinned memory（llama.cpp #26789）：iGPU 上触发 memcpy OOM
+    # （UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY），核显/独显双 GPU 实测需置 0
+    env["GGML_SYCL_ENABLE_HOST_PINNED_MEM"] = env.get("GGML_SYCL_ENABLE_HOST_PINNED_MEM", "0")
     return env
 
 
