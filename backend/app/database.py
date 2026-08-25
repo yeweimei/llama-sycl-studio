@@ -138,10 +138,12 @@ def init_db():
                 prefill_ms INTEGER DEFAULT 0,
                 decode_ms INTEGER DEFAULT 0,
                 error TEXT DEFAULT '',
+                endpoint TEXT DEFAULT '',
                 created_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_model ON api_request_logs(model_name);
+            CREATE INDEX IF NOT EXISTS idx_api_request_logs_endpoint ON api_request_logs(endpoint);
 
             -- 对话内容日志（chat_proxy 记录的输入/输出/thinking，最近 1000 条）
             CREATE TABLE IF NOT EXISTS chat_api_logs (
@@ -186,6 +188,16 @@ def init_db():
     # Migrations: add columns if not exist
     with get_conn() as conn:
         preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
+        # api_request_logs 端点列（2026-08-25：API 端点统计）
+        log_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_request_logs)").fetchall()]
+        if "endpoint" not in log_cols:
+            conn.execute("ALTER TABLE api_request_logs ADD COLUMN endpoint TEXT DEFAULT ''")
+        # api_stats 成功率/错误列（2026-08-25：端点统计聚合）
+        stats_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_stats)").fetchall()]
+        if "ok_count" not in stats_cols:
+            conn.execute("ALTER TABLE api_stats ADD COLUMN ok_count INTEGER DEFAULT 0")
+        if "fail_count" not in stats_cols:
+            conn.execute("ALTER TABLE api_stats ADD COLUMN fail_count INTEGER DEFAULT 0")
         if "mmap" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
         if "device" not in preset_cols:

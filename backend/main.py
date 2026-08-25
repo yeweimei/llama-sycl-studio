@@ -276,6 +276,9 @@ async def v1_proxy(path: str, request: Request):
 
     timeout = httpx.Timeout(600.0, connect=10.0)
 
+    import time as _tstat
+    _t_start = _tstat.time()
+
     if is_stream:
         # SSE 流式转发
         async def gen():
@@ -323,10 +326,24 @@ async def v1_proxy(path: str, request: Request):
                 except httpx.HTTPError as e:
                     if chat_log_id:
                         services._chat_log_finish(chat_log_id, ok=False, status_code=502, error=str(e))
+                    try:
+                        stats._record_stats(model_name or f"/v1/{path}", stream=True, ok=False,
+                                            status_code=502, total_ms=int((_tstat.time() - _t_start) * 1000),
+                                            error=str(e), endpoint=f"/v1/{path}", method=request.method)
+                    except Exception:
+                        pass
                     yield f"data: {{\"error\": \"{e}\"}}\n\n"
             if chat_log_id:
                 _flush()
                 services._chat_log_finish(chat_log_id, ok=True, status_code=200)
+            try:
+                stats._record_stats(model_name or f"/v1/{path}", stream=True,
+                                    ok=r.status_code < 400, status_code=r.status_code,
+                                    total_ms=int((_tstat.time() - _t_start) * 1000),
+                                    error="" if r.status_code < 400 else "stream error",
+                                    endpoint=f"/v1/{path}", method=request.method)
+            except Exception:
+                pass
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -343,6 +360,12 @@ async def v1_proxy(path: str, request: Request):
         except httpx.HTTPError as e:
             if chat_log_id:
                 services._chat_log_finish(chat_log_id, ok=False, status_code=502, error=str(e))
+            try:
+                stats._record_stats(model_name or f"/v1/{path}", stream=False, ok=False,
+                                    status_code=502, total_ms=int((_tstat.time() - _t_start) * 1000),
+                                    error=str(e), endpoint=f"/v1/{path}", method=request.method)
+            except Exception:
+                pass
             raise HTTPException(502, f"Router 不可达: {e}")
 
     # 非流式：记录对话内容
@@ -373,6 +396,27 @@ async def v1_proxy(path: str, request: Request):
                                           total_ms=0)
         except Exception:
             services._chat_log_finish(chat_log_id, ok=True, status_code=r.status_code)
+
+    # 非流式：统计埋点（端点维度，含 embeddings/models 等全部 /v1/*）
+    try:
+        _stat_usage = {}
+        try:
+            _stat_data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if isinstance(_stat_data, dict):
+                _stat_usage = _stat_data.get("usage", {}) or {}
+        except Exception:
+            pass
+        stats._record_stats(
+            model_name or f"/v1/{path}",
+            prompt_tokens=_stat_usage.get("prompt_tokens", 0),
+            completion_tokens=_stat_usage.get("completion_tokens", 0),
+            stream=False, ok=r.status_code < 400, status_code=r.status_code,
+            total_ms=int((_tstat.time() - _t_start) * 1000),
+            error="" if r.status_code < 400 else (r.text or "")[:300],
+            endpoint=f"/v1/{path}", method=request.method,
+        )
+    except Exception:
+        pass
 
     # 透传响应（所有 /v1/* 请求，含 embeddings/completions 等非 chat 路径）
     resp_headers = {}

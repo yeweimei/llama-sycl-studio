@@ -12,8 +12,12 @@ router = APIRouter()
 def _record_stats(model_name: str, prompt_tokens: int = 0, completion_tokens: int = 0,
                   prefill_ms: int = 0, decode_ms: int = 0,
                   stream: bool = False, ok: bool = True, status_code: int = 200,
-                  total_ms: int = 0, error: str = ""):
-    """记录一次 API 调用统计（聚合表 + 请求明细表）"""
+                  total_ms: int = 0, error: str = "",
+                  endpoint: str = "", method: str = "POST"):
+    """记录一次 API 调用统计（聚合表 + 请求明细表）
+
+    endpoint: 对外 API 路径（如 /v1/chat/completions），用于端点维度统计；
+    method: HTTP 方法（GET/POST/...）。"""
     t_now = int(_t.time())
     total_ms = total_ms or (prefill_ms + decode_ms)
     try:
@@ -23,27 +27,32 @@ def _record_stats(model_name: str, prompt_tokens: int = 0, completion_tokens: in
             if row:
                 d = dict(row)
                 conn.execute(
-                    "UPDATE api_stats SET request_count=?, prompt_tokens=?, completion_tokens=?, "
-                    "total_prefill_ms=?, total_decode_ms=?, updated_at=? WHERE model_name=?",
-                    (d["request_count"] + 1, d["prompt_tokens"] + prompt_tokens,
+                    "UPDATE api_stats SET request_count=?, ok_count=?, fail_count=?, prompt_tokens=?, "
+                    "completion_tokens=?, total_prefill_ms=?, total_decode_ms=?, updated_at=? "
+                    "WHERE model_name=?",
+                    (d["request_count"] + 1, (d.get("ok_count") or 0) + (1 if ok else 0),
+                     (d.get("fail_count") or 0) + (0 if ok else 1),
+                     d["prompt_tokens"] + prompt_tokens,
                      d["completion_tokens"] + completion_tokens,
                      d["total_prefill_ms"] + prefill_ms, d["total_decode_ms"] + decode_ms,
                      now(), model_name),
                 )
             else:
                 conn.execute(
-                    "INSERT INTO api_stats (model_name, request_count, prompt_tokens, completion_tokens, "
-                    "total_prefill_ms, total_decode_ms, updated_at) VALUES (?,?,?,?,?,?,?)",
-                    (model_name, 1, prompt_tokens, completion_tokens, prefill_ms, decode_ms, now()),
+                    "INSERT INTO api_stats (model_name, request_count, ok_count, fail_count, "
+                    "prompt_tokens, completion_tokens, total_prefill_ms, total_decode_ms, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (model_name, 1, 1 if ok else 0, 0 if ok else 1, prompt_tokens, completion_tokens,
+                     prefill_ms, decode_ms, now()),
                 )
-            # 请求明细表
+            # 请求明细表（含端点维度）
             conn.execute(
                 "INSERT INTO api_request_logs (model_name, stream, ok, status_code, prompt_tokens, "
-                "completion_tokens, total_ms, prefill_ms, decode_ms, error, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "completion_tokens, total_ms, prefill_ms, decode_ms, error, endpoint, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (model_name, 1 if stream else 0, 1 if ok else 0, status_code,
                  prompt_tokens, completion_tokens, total_ms, prefill_ms, decode_ms,
-                 (error or "")[:500], t_now),
+                 (error or "")[:500], (endpoint or "")[:200], t_now),
             )
     except Exception:
         pass
@@ -107,6 +116,51 @@ def stats_trends(hours: int = Query(24, ge=1, le=168), bucket_minutes: int = Que
             "avg_decode_ms": round(d["decode_ms"] / n, 1),
         })
     return {"buckets": out, "bucket_seconds": bucket_s, "since": since}
+
+
+@router.get("/endpoints")
+def endpoint_stats(hours: int = Query(0, ge=0, le=720)):
+    """按 API 端点聚合统计：次数/成功率/状态码分布/平均延迟/token。
+    hours=0 表示全部时间。"""
+    where = ""
+    params: list = []
+    if hours > 0:
+        since = int(_t.time()) - hours * 3600
+        where = "WHERE created_at>=?"
+        params.append(since)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT endpoint, status_code, ok, prompt_tokens, completion_tokens, total_ms "
+            f"FROM api_request_logs {where}",
+            tuple(params),
+        ).fetchall()
+    agg: dict[str, dict] = {}
+    for r in rows:
+        ep = r["endpoint"] or "(unknown)"
+        d = agg.setdefault(ep, {"endpoint": ep, "requests": 0, "ok": 0, "fail": 0,
+                                "prompt_tokens": 0, "completion_tokens": 0,
+                                "total_ms": 0, "status_codes": {}})
+        d["requests"] += 1
+        d["ok"] += 1 if r["ok"] else 0
+        d["fail"] += 0 if r["ok"] else 1
+        d["prompt_tokens"] += r["prompt_tokens"] or 0
+        d["completion_tokens"] += r["completion_tokens"] or 0
+        d["total_ms"] += r["total_ms"] or 0
+        sc = str(r["status_code"] or 0)
+        d["status_codes"][sc] = d["status_codes"].get(sc, 0) + 1
+    out = []
+    for ep, d in agg.items():
+        n = d["requests"] or 1
+        d["success_rate"] = round(d["ok"] / n * 100, 1)
+        d["avg_total_ms"] = round(d["total_ms"] / n, 1)
+        # 状态码分布转列表（降序）
+        d["status_code_list"] = [{"code": int(k), "count": v} for k, v in
+                                  sorted(d["status_codes"].items(), key=lambda x: -x[1])]
+        d.pop("status_codes", None)
+        d.pop("total_ms", None)
+        out.append(d)
+    out.sort(key=lambda x: -x["requests"])
+    return {"endpoints": out, "total": sum(x["requests"] for x in out)}
 
 
 @router.get("/requests")

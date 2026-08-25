@@ -1047,12 +1047,12 @@ async def chat_proxy(sid: int, body: ChatRequest):
                     r = await client.post(url, json=payload, headers=headers)
                 except httpx.HTTPError as e:
                     # 记录失败明细
-                    _record_stats(model_name, stream=False, ok=False, status_code=502,
+                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=502,
                                   total_ms=int((_time.time() - t0) * 1000), error=str(e))
                     _chat_log_finish(log_id, ok=False, status_code=502, total_ms=int((_time.time() - t0) * 1000), error=str(e))
                     raise HTTPException(502, f"转发失败: {e}")
                 if r.status_code != 200:
-                    _record_stats(model_name, stream=False, ok=False, status_code=r.status_code,
+                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=r.status_code,
                                   total_ms=int((_time.time() - t0) * 1000),
                                   error=r.text[:300])
                     _chat_log_finish(log_id, ok=False, status_code=r.status_code,
@@ -1062,7 +1062,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 # 埋点统计
                 elapsed_ms = int((_time.time() - t0) * 1000)
                 usage = data.get("usage", {})
-                _record_stats(model_name,
+                _record_stats(model_name, endpoint="/v1/chat/completions",
                               prompt_tokens=usage.get("prompt_tokens", 0),
                               completion_tokens=usage.get("completion_tokens", 0),
                               prefill_ms=elapsed_ms, stream=False, ok=True,
@@ -1143,7 +1143,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 except httpx.HTTPError as e:
                     # 流式转发失败：记录失败明细（流式无法返回 HTTP 错误码，置 502）
                     total_ms = int((_time.time() - t0) * 1000)
-                    _record_stats(model_name, stream=True, ok=False, status_code=502,
+                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=True, ok=False, status_code=502,
                                   total_ms=total_ms, error=str(e))
                     _flush_chat(_resp_buf, _think_buf)
                     _chat_log_finish(log_id, ok=False, status_code=502, total_ms=total_ms, error=str(e))
@@ -1154,7 +1154,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
         total_ms = int((_time.time() - t0) * 1000)
         prefill_ms = int((first_token_time - t0) * 1000) if first_token_time else total_ms
         decode_ms = max(0, total_ms - prefill_ms)
-        _record_stats(model_name, prompt_tokens=prompt_tokens,
+        _record_stats(model_name, endpoint="/v1/chat/completions", prompt_tokens=prompt_tokens,
                       completion_tokens=completion_tokens,
                       prefill_ms=prefill_ms, decode_ms=decode_ms,
                       stream=True, ok=True, status_code=200, total_ms=total_ms)
