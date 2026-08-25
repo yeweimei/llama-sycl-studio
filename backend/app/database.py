@@ -201,6 +201,8 @@ def init_db():
             conn.execute("ALTER TABLE api_stats ADD COLUMN ok_count INTEGER DEFAULT 0")
         if "fail_count" not in stats_cols:
             conn.execute("ALTER TABLE api_stats ADD COLUMN fail_count INTEGER DEFAULT 0")
+        # 迁移兼容：旧行（迁移前无 ok/fail 统计）按 request_count 补齐成功率
+        conn.execute("UPDATE api_stats SET ok_count = request_count WHERE ok_count = 0 AND fail_count = 0")
         if "mmap" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN mmap INTEGER DEFAULT 1")
         if "device" not in preset_cols:
