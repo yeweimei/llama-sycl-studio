@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-08-25**：**llama.cpp 正式升级 b10369 → b10622（0.3.0-dev build 10622）**，核显/独显双 GPU 全部可用（commit 56eb393）。背景：b10622 在旧配置下核显 OOM（`UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY` @ memcpy），排查定位根因 = llama.cpp #26789（commit a97123e4，host pinned memory 默认开启，iGPU 上 memcpy 到设备失败）。**解法：`GGML_SYCL_ENABLE_HOST_PINNED_MEM=0`**（instance_mgr._env() + entrypoint.sh 默认设置，允许环境变量覆盖）。另：驱动已升 26.27（PPA），8-19 的"核显误判 0 内存"问题随之消失；b10488 时代的独显 flash-attn IGC 崩溃在 26.27 下未复现。清理垃圾目录 `bin/b0`（#26789 之前 launcher 版本号解析 bug 产物）与 `bin/unknown`。详见「九.X」更新。
+
 - **2026-08-12**：MTP 投机解码区新增**草稿 KV cache 量化**配置（commit 28b206b）。功能：`spec_draft_type_k/spec_draft_type_v` 两字段（f16/q8_0/q4_0/q4_1/f32 可空，空=默认 f16），对应 `--spec-draft-type-k/v`（别名 `--cache-type-k-draft/v-draft`）。背景：MTP 草稿 KV 默认 f16 浪费显存，35B 主模型显存紧张（13.2/16GB），显式设 q8_0 可省显存（参考 insidentally.com 文章）。实现遵循 DEV-NOTES §1：三处同步（ParamForm MTP 区下拉 + Services payload + presets.py 全链路）+ 双透传（instance_mgr `_build_args` + `_write_config_ini`，仅非空才传）+ DB 建表/ALTER 双路径。**已配置 Qwen3.6-35B-A3B-MTP 主模型（预设 id=16）spec_draft_type_k/v=q8_0 并重启生效**。部署验证：容器 healthy + bundle `Services-D4kuJbFq.js` + 实测 pid 启动命令含 `--spec-draft-type-k q8_0 --spec-draft-type-v q8_0` + config.ini 同步生成。
 
 - **2026-08-12**：推理参数面板新增**思考（Reasoning）**配置（commit 8d88ed5）。功能：`reasoning`（on/off/auto 字符串枚举）+ `reasoning_budget`（整数可空，-1 不限/0 立即结束/N>0 预算）两字段，控制 Qwen 思维链长度（llama.cpp b10369 `--reasoning`/`--reasoning-budget`）。实现遵循 DEV-NOTES §1：三处同步（ParamForm DEFAULT_ARGS+控件+normalize / Services.vue payload 枚举 / presets.py 全链路）+ 双透传（instance_mgr `_build_args` + `_write_config_ini`）+ 开关绑独立布尔字段 `reasoning_enabled`（复用 YaRN 拆字段方案，避免同字段双绑 422）+ 后端 mode='before' validator 容错空串/布尔。**顺带修复**：补齐 database.py 遗漏的 cpu_moe/mtp/mtp_model/mtp_n_max 四列 ALTER 迁移（presets.py INSERT 早已引用但从未加迁移，新库建预设必崩）。部署验证：容器 healthy + bundle hash 更新 + 实际启动 Qwen3.5-9B-MTP 实例，进程 cmdline 含 `--reasoning on --reasoning-budget 1024`；关闭 reasoning='' 重启后参数消失；config.ini 同步生成 reasoning 行。
@@ -98,6 +100,26 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 - **2026-08-06**：MTP 预测长度可配置（`--spec-draft-n-max`，commit e98b6d0）；面板 MTP 开关（47765d2）；Qwen3.6 cpu_moe 调优（b5e8ea3）；proxy 工具 schema pattern 清洗（c1db157）；TDAI LLM 切 Qwen3.5-9B-MTP；L1 超时 600s→1800s 固化 `l1-timeout-30min` 镜像；Qwen3.6 主模型切 MTP 版（cpu_moe+mtp 双开）
 - **2026-08-05**：Qwen3.6-35B-A3B 部署（IQ3_XXS 13.2GB）；NUC12 端点修复（embedding 501、/v1/models）；驱动回退 26.18（26.27 IGC 编译 flash-attn 崩溃）
 - **2026-08-04**：v1.0 显存估算 + 并发控制（M8/M9）；缓存卷持久化；实例管理修复链
+
+## 九.X、llama.cpp 升级陷阱（2026-08-19 排查记录）
+
+**现象**：WebUI「升级 llama.cpp」到最新版（b10488）后，核显/独显跑模型都失败。
+
+**根因**：b10488 新版 SYCL 与 NUC12 当前驱动/oneAPI 组合不兼容，双 GPU 双错：
+- **核显 SYCL1**：`UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY` —— 新版 SYCL `get_memory_info` 读不到核显共享内存（`ext_intel_free_memory is not supported` 警告，SYSMAN 未生效），误判核显 0 可用内存→假 OOM 崩溃
+- **独显 SYCL0**：`IGC: Internal Compiler Error ... Error OP FLASH_ATTN_EXT` —— 新版 flash-attn kernel 在当前 26.18 驱动 + oneAPI 2025.3 的 IGC 上编译崩溃（**和 2026-08-05 回退到 26.18 同一类坑**）
+
+**环境**：驱动 intel-opencl-icd 26.18.38308 / level-zero 1.15.38308 / oneAPI 2025.3
+
+**对比实测**（同模型 Qwen3-Embedding-0.6B、同 device、同 SYSMAN=1）：
+- b10369：核显 ✅ 正常 listening
+- b10488：核显 ❌ OOM 崩溃 / 独显 ❌ IGC flash-attn 崩溃
+
+**PPING 解法**：回滚到 b10369（当前 active 就是它）。**不要升级 b10488**，除非：① 更新 oneAPI（含新 IGC）+ GPU 驱动（>26.18）后，先 `--list-devices` + 核显实测加载通过再启用；② 或单测核显能否用关 flash-attn 绕过（独显关 flash-attn 可能可过，但核显读内存问题仍在，不建议）。
+
+**2026-08-25 更新（b10622 已解禁）**：驱动升到 **26.27**（PPA）后，b10622 的 `get_memory_info` 已能读到核显 free 内存（~12GB），"误判 0 内存"消失；但加载仍 OOM——**新根因 = llama.cpp #26789（commit a97123e4，8-14 合入）host pinned memory**：`sycl::malloc_host` 在 iGPU 上 memcpy 到设备失败（`UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY`）。**✅ 解法：`GGML_SYCL_ENABLE_HOST_PINNED_MEM=0`**（默认关闭即可，性能影响可忽略；官方 SYCL.md 已收录该开关）。已实测 b10622 + PINNED=0：核显（Qwen3-Embedding/PaddleOCR）+ 独显（Qwen3.8-9B-Distill）全部正常加载与推理，独显 flash-attn 无 IGC 崩溃。**2026-08-25 已正式切 b10622（active_version=b10622，commit 56eb393）**。
+
+**升级机制备忘**：`POST /api/engine/upgrade` 下载→替换 /app→备份到 `BIN_DIR/{ver}/`→写 `active_version`；**真正生效靠容器重启时 entrypoint `cp -a BIN_DIR/{active}/. /app/`**。升级/回滚后必须**重启容器**才生效。`engine_last_upgrade` 存 epoch 秒，`/root/.llama-studio/bin/active_version` 是当前激活版本。
 
 ## 十、下一步待办
 
