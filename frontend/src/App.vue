@@ -165,11 +165,23 @@ onUnmounted(() => clearInterval(timer))
 </script>
 
 <style scoped>
-.layout { min-height: 100vh; }
+.layout {
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
 .aside {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
   border-right: none;
   box-shadow: 2px 0 12px rgba(15, 23, 42, 0.12);
+}
+/* 内层容器（header + main）占满剩余高度，禁止页面级滚动 */
+.layout > .el-container {
+  height: 100vh;
+  overflow: hidden;
 }
 .logo {
   height: 60px;
@@ -206,6 +218,7 @@ onUnmounted(() => clearInterval(timer))
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
 }
 .header {
+  flex-shrink: 0;
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid #e2e8f0;
@@ -219,11 +232,17 @@ onUnmounted(() => clearInterval(timer))
 .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .header-time { color: #909399; font-size: 13px; }
 .hamburger-btn { display: none; padding: 4px 8px; }
-.main { background: linear-gradient(180deg, #f1f5f9 0%, #f8fafc 100%); padding: 0; }
+.main {
+  background: linear-gradient(180deg, #f1f5f9 0%, #f8fafc 100%);
+  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 
 /* 移动端抽屉样式 */
 :deep(.mobile-drawer .el-drawer__body) {
   padding: 0;
+  overflow-y: auto;
 }
 :deep(.mobile-drawer) {
   background: #0f172a;
