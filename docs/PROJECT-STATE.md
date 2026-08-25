@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-08-25（四）**：**下载完整性校验**（commit 0d6222c + 0a39c78，Ornith 事件后续修复）：① `_download_worker` 完成时校验 `downloaded_bytes == total_bytes`——连接断流导致 read() 静默返回空时不再把截断文件当完成，标记 error「下载不完整: X/Y 字节（保留 .part 可重试续传）」且不 rename ② 修复 Range 被忽略（服务端返回 200 全量而非 206）时错误追加到旧 .part 的问题（改用 wb 从头写）③ download_tasks 补 `error` 列（失败原因持久化，前端可显示；此前仅内存态有）。**实测验证**：本地截断源（发 1/3 断流）→ error + 错误信息 + .part 保留；完整源 → done + 字节精确匹配。⚠️ 测试技巧：worker 走代理（ProxyHandler 无 no_proxy），本地 127.0.0.1 源需临时关 proxy_enabled 才能测。
+
 - **2026-08-25（三）**：**API 统计全面升级**（commit f9c1bdd + 后续修复 5cad591/dc28cfe/941cc43/eef94e2）：① 后端新增**端点维度统计**——`api_request_logs` 加 `endpoint`+`method` 列（建表+ALTER 迁移），v1_proxy 全量埋点（非流式/流式/失败分支/`/v1/models` 分支），services.py chat 记录 `endpoint=/v1/chat/completions`；`api_stats` 补 `ok_count/fail_count`（模型成功率），旧行按 request_count 补齐（迁移兼容）② 新增 `GET /api/stats/endpoints`（按端点聚合：次数/成功率/状态码分布/平均延迟/tokens，支持时间范围）③ 前端 Stats 页全面重构：ECharts 仪表盘（渐变 KPI 卡片、请求趋势三模式切换、状态码环形图、端点统计表带方法徽章/成功率进度条/状态码 tags、模型统计加成功率、最近请求加端点/状态码列、时间范围切换 1h/6h/24h/7d）。⚠️ 踩坑：CREATE INDEX endpoint 在 executescript 里对旧表报 no such column（迁移顺序问题），修复为先 ALTER 加列再建索引。
 
 - **2026-08-25（二）**：功能开发（commit 88f7292）：① 修复 `_get_current_version()` 正则——兼容 launcher 格式 `version: 0.3.0-dev (build 10622)`，不再解析成 b0 ② 新增 `POST /api/engine/cleanup`（保留 active+最近 N 个版本，支持 dry_run 预览；Settings 页「清理旧版本」按钮）③ 新增 `POST /api/services/restart-all` 整体重启总开关（顶栏红色按钮 + 帮助页入口，先全停再逐个启动）④ 新增 `/help` 帮助中心页（引擎/实例/API 快捷命令、升级回滚说明、关键环境变量表、常见问题 FAQ）⑤ UI 美化：深色渐变侧边栏 + 高亮菜单、科技蓝主题色（--el-color-primary 系列）、卡片/表格/对话框圆角、顶栏毛玻璃。已验证：引擎版本正确显示 b10622；cleanup 实际删除 7 个旧版本（保留 b10369/b10437/b10488/b10622）；restart-all 重启 3 个 loaded 实例成功。
@@ -127,7 +129,7 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 十、下一步待办
 
-- [ ] **下载完整性校验**（2026-08-25 Ornith 事件）：下载任务中断时仍标记 done（HF 源 mmproj 只下了 8% 却 done），应校验 downloaded_bytes==total_bytes，不一致标记失败/自动重试
+- [x] ~~**下载完整性校验**（2026-08-25 Ornith 事件）~~ 已修复（0d6222c + 0a39c78），实测验证通过
 - [ ] TDAI L1-dedup Headers Timeout 优化（可选：调大等锁/接受降级）
 - [ ] 观察 TDAI L2 提取在 MTP 模型下的长期稳定性
 - [ ] 上游 issue/PR：TencentCloud/TencentDB-Agent-Memory（死循环防护 + thinking 适配，issue 草稿 `/tmp/tdai-issue.md`）
