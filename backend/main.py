@@ -198,6 +198,12 @@ async def v1_proxy(path: str, request: Request):
                     "owned_by": "llama-studio",
                     "created": created,
                 })
+            # 统计埋点（端点维度）
+            try:
+                stats._record_stats("v1/models", stream=False, ok=True, status_code=200,
+                                    total_ms=0, endpoint="/v1/models", method=request.method)
+            except Exception:
+                pass
             return {"object": "list", "data": data}
         except Exception:
             pass
