@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-08-25（三）**：**API 统计全面升级**（commit f9c1bdd + 后续修复 5cad591/dc28cfe/941cc43/eef94e2）：① 后端新增**端点维度统计**——`api_request_logs` 加 `endpoint`+`method` 列（建表+ALTER 迁移），v1_proxy 全量埋点（非流式/流式/失败分支/`/v1/models` 分支），services.py chat 记录 `endpoint=/v1/chat/completions`；`api_stats` 补 `ok_count/fail_count`（模型成功率），旧行按 request_count 补齐（迁移兼容）② 新增 `GET /api/stats/endpoints`（按端点聚合：次数/成功率/状态码分布/平均延迟/tokens，支持时间范围）③ 前端 Stats 页全面重构：ECharts 仪表盘（渐变 KPI 卡片、请求趋势三模式切换、状态码环形图、端点统计表带方法徽章/成功率进度条/状态码 tags、模型统计加成功率、最近请求加端点/状态码列、时间范围切换 1h/6h/24h/7d）。⚠️ 踩坑：CREATE INDEX endpoint 在 executescript 里对旧表报 no such column（迁移顺序问题），修复为先 ALTER 加列再建索引。
+
 - **2026-08-25（二）**：功能开发（commit 88f7292）：① 修复 `_get_current_version()` 正则——兼容 launcher 格式 `version: 0.3.0-dev (build 10622)`，不再解析成 b0 ② 新增 `POST /api/engine/cleanup`（保留 active+最近 N 个版本，支持 dry_run 预览；Settings 页「清理旧版本」按钮）③ 新增 `POST /api/services/restart-all` 整体重启总开关（顶栏红色按钮 + 帮助页入口，先全停再逐个启动）④ 新增 `/help` 帮助中心页（引擎/实例/API 快捷命令、升级回滚说明、关键环境变量表、常见问题 FAQ）⑤ UI 美化：深色渐变侧边栏 + 高亮菜单、科技蓝主题色（--el-color-primary 系列）、卡片/表格/对话框圆角、顶栏毛玻璃。已验证：引擎版本正确显示 b10622；cleanup 实际删除 7 个旧版本（保留 b10369/b10437/b10488/b10622）；restart-all 重启 3 个 loaded 实例成功。
 
 - **2026-08-25**：**llama.cpp 正式升级 b10369 → b10622（0.3.0-dev build 10622）**，核显/独显双 GPU 全部可用（commit 56eb393）。背景：b10622 在旧配置下核显 OOM（`UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY` @ memcpy），排查定位根因 = llama.cpp #26789（commit a97123e4，host pinned memory 默认开启，iGPU 上 memcpy 到设备失败）。**解法：`GGML_SYCL_ENABLE_HOST_PINNED_MEM=0`**（instance_mgr._env() + entrypoint.sh 默认设置，允许环境变量覆盖）。另：驱动已升 26.27（PPA），8-19 的"核显误判 0 内存"问题随之消失；b10488 时代的独显 flash-attn IGC 崩溃在 26.27 下未复现。清理垃圾目录 `bin/b0`（#26789 之前 launcher 版本号解析 bug 产物）与 `bin/unknown`。详见「九.X」更新。
