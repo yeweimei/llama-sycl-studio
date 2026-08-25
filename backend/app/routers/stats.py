@@ -45,14 +45,14 @@ def _record_stats(model_name: str, prompt_tokens: int = 0, completion_tokens: in
                     (model_name, 1, 1 if ok else 0, 0 if ok else 1, prompt_tokens, completion_tokens,
                      prefill_ms, decode_ms, now()),
                 )
-            # 请求明细表（含端点维度）
+            # 请求明细表（含端点/方法维度）
             conn.execute(
                 "INSERT INTO api_request_logs (model_name, stream, ok, status_code, prompt_tokens, "
-                "completion_tokens, total_ms, prefill_ms, decode_ms, error, endpoint, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "completion_tokens, total_ms, prefill_ms, decode_ms, error, endpoint, method, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (model_name, 1 if stream else 0, 1 if ok else 0, status_code,
                  prompt_tokens, completion_tokens, total_ms, prefill_ms, decode_ms,
-                 (error or "")[:500], (endpoint or "")[:200], t_now),
+                 (error or "")[:500], (endpoint or "")[:200], (method or "POST")[:20], t_now),
             )
     except Exception:
         pass
@@ -130,14 +130,15 @@ def endpoint_stats(hours: int = Query(0, ge=0, le=720)):
         params.append(since)
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT endpoint, status_code, ok, prompt_tokens, completion_tokens, total_ms "
+            f"SELECT endpoint, method, status_code, ok, prompt_tokens, completion_tokens, total_ms "
             f"FROM api_request_logs {where}",
             tuple(params),
         ).fetchall()
     agg: dict[str, dict] = {}
     for r in rows:
         ep = r["endpoint"] or "(unknown)"
-        d = agg.setdefault(ep, {"endpoint": ep, "requests": 0, "ok": 0, "fail": 0,
+        d = agg.setdefault(ep, {"endpoint": ep, "method": (r["method"] or "POST").upper(),
+                                "requests": 0, "ok": 0, "fail": 0,
                                 "prompt_tokens": 0, "completion_tokens": 0,
                                 "total_ms": 0, "status_codes": {}})
         d["requests"] += 1

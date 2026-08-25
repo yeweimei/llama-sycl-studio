@@ -139,6 +139,7 @@ def init_db():
                 decode_ms INTEGER DEFAULT 0,
                 error TEXT DEFAULT '',
                 endpoint TEXT DEFAULT '',
+                method TEXT DEFAULT 'POST',
                 created_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at);
@@ -192,6 +193,8 @@ def init_db():
         if "endpoint" not in log_cols:
             conn.execute("ALTER TABLE api_request_logs ADD COLUMN endpoint TEXT DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_request_logs_endpoint ON api_request_logs(endpoint)")
+        if "method" not in log_cols:
+            conn.execute("ALTER TABLE api_request_logs ADD COLUMN method TEXT DEFAULT 'POST'")
         # api_stats 成功率/错误列（2026-08-25：端点统计聚合）
         stats_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_stats)").fetchall()]
         if "ok_count" not in stats_cols:
