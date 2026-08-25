@@ -195,6 +195,10 @@ def init_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_api_request_logs_endpoint ON api_request_logs(endpoint)")
         if "method" not in log_cols:
             conn.execute("ALTER TABLE api_request_logs ADD COLUMN method TEXT DEFAULT 'POST'")
+        # download_tasks 错误信息列（2026-08-25：下载失败原因持久化）
+        dl_cols = [r[1] for r in conn.execute("PRAGMA table_info(download_tasks)").fetchall()]
+        if "error" not in dl_cols:
+            conn.execute("ALTER TABLE download_tasks ADD COLUMN error TEXT DEFAULT ''")
         # api_stats 成功率/错误列（2026-08-25：端点统计聚合）
         stats_cols = [r[1] for r in conn.execute("PRAGMA table_info(api_stats)").fetchall()]
         if "ok_count" not in stats_cols:

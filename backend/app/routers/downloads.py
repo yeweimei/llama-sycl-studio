@@ -347,8 +347,8 @@ def _download_worker(tid: int, source: str, repo_id: str, filename: str, local_p
         task["error"] = str(e)
         with get_conn() as conn:
             conn.execute(
-                "UPDATE download_tasks SET status='error', updated_at=? WHERE id=?",
-                (now(), tid),
+                "UPDATE download_tasks SET status='error', error=?, updated_at=? WHERE id=?",
+                (str(e)[:500], now(), tid),
             )
 
 
