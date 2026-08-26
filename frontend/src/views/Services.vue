@@ -224,7 +224,7 @@ import {
   getServiceLogs, createService, updateService, restartService,
   listPresets, createPreset, updatePreset,
   listModels, getSelectableGpus, listModelTags, updateModelTags,
-  gpuStatus,
+  gpuStatus, getEngineBackends,
 } from '../api'
 
 const services = ref([])
@@ -283,6 +283,7 @@ const useManualName = ref(false)
 const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
+const currentBackend = ref('sycl-fp16')
 const gpuTotalGiB = ref(0)
 
 // 空闲自动卸载选项（分钟）
@@ -561,9 +562,9 @@ async function doCreate() {
   creating.value = true
   try {
     await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null, idle_unload_min: form.value.idle_unload_min || 0 })
-    // 保存推理参数为预设
+    // 保存推理参数为预设（按当前后端存一套）
     try {
-      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0' })
+      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0', backend: currentBackend.value })
     } catch (e) {
       // 预设已存在则忽略，用户可在编辑时更新
     }
@@ -578,9 +579,9 @@ async function doCreate() {
 }
 
 async function openEdit(row) {
-  // 拉取预设列表，找当前模型的预设
+  // 拉取当前后端的预设列表，找当前模型的预设（SYCL/Vulkan 各一套）
   try {
-    _allPresets.value = await listPresets()
+    _allPresets.value = await listPresets(currentBackend.value)
   } catch (e) {
     _allPresets.value = []
   }
@@ -626,9 +627,10 @@ async function doSaveEdit() {
       gpu_id: editForm.value.gpu_id || null,
       idle_unload_min: editForm.value.idle_unload_min || 0,
     })
-    // 2. 保存推理参数到 model_presets 表（upsert）
+    // 2. 保存推理参数到 model_presets 表（upsert，按当前后端）
     const p = editForm.value.preset
     const payload = {
+      backend: currentBackend.value,
       ctx_size: p.ctx_size, temp: p.temp, threads: p.threads,
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
@@ -738,6 +740,11 @@ onMounted(async () => {
     const [models, gpus, tags] = await Promise.all([listModels(), getSelectableGpus(), listModelTags()])
     modelList.value = models
     gpuList.value = gpus
+    // 当前引擎后端（推理参数按后端存两套模板）
+    try {
+      const eb = await getEngineBackends()
+      currentBackend.value = eb.current || 'sycl-fp16'
+    } catch (e) { /* ignore */ }
     const tm = {}
     for (const t of tags) tm[t.model_name] = t
     svcTagMap.value = tm

@@ -221,6 +221,53 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning TEXT DEFAULT ''")
         if "reasoning_budget" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_budget INTEGER")
+        # 多后端 preset 模板（2026-08-26：SYCL/Vulkan 各一套推理参数）
+        # 重建表：UNIQUE(model_name) → UNIQUE(model_name, backend)，旧数据归入 sycl-fp16
+        if "backend" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets RENAME TO model_presets_old")
+            conn.execute("""CREATE TABLE model_presets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT NOT NULL,
+                backend TEXT DEFAULT 'sycl-fp16',
+                ctx_size INTEGER DEFAULT 8192,
+                temp REAL DEFAULT 0.7,
+                threads INTEGER DEFAULT 8,
+                batch_size INTEGER DEFAULT 2048,
+                ubatch_size INTEGER DEFAULT 512,
+                parallel INTEGER DEFAULT 4,
+                cache_type_k TEXT DEFAULT 'q8_0',
+                cache_type_v TEXT DEFAULT 'q8_0',
+                flash_attn INTEGER DEFAULT 1,
+                jinja INTEGER DEFAULT 1,
+                n_gpu_layers INTEGER DEFAULT 99,
+                mmap INTEGER DEFAULT 1,
+                device TEXT DEFAULT '0',
+                cpu_moe INTEGER DEFAULT 0,
+                mtp INTEGER DEFAULT 0,
+                mtp_model TEXT DEFAULT '',
+                mtp_n_max INTEGER DEFAULT 3,
+                spec_draft_type_k TEXT DEFAULT '',
+                spec_draft_type_v TEXT DEFAULT '',
+                rope_scaling TEXT DEFAULT '',
+                rope_scale REAL,
+                yarn_orig_ctx INTEGER,
+                reasoning TEXT DEFAULT '',
+                reasoning_budget INTEGER,
+                extra_args TEXT DEFAULT '{}',
+                created_at INTEGER,
+                updated_at INTEGER,
+                UNIQUE(model_name, backend)
+            )""")
+            old_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets_old)").fetchall()]
+            col_list = ", ".join(old_cols)
+            conn.execute(
+                f"INSERT INTO model_presets ({col_list}, backend) SELECT {col_list}, 'sycl-fp16' FROM model_presets_old"
+            )
+            conn.execute("DROP TABLE model_presets_old")
+            # 重建后刷新列列表（新表含全部列，避免后续 ADD COLUMN 冲突）
+            preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
+        else:
+            preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
         # 补齐此前遗漏的列（presets.py INSERT 已引用但从未加迁移/建表，导致新库建预设报错）
         if "cpu_moe" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN cpu_moe INTEGER DEFAULT 0")

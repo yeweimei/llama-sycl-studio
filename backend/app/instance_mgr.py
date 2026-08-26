@@ -39,14 +39,28 @@ def _get_lock():
     return _lock
 
 
+def _current_backend() -> str:
+    """当前激活引擎后端：读卷内 active_version（vulkan-b10622 → vulkan；b10622 → sycl-fp16）"""
+    try:
+        ver = (Path(settings.data_dir) / "bin" / "active_version").read_text().strip()
+        return "vulkan" if ver.startswith("vulkan-") else "sycl-fp16"
+    except Exception:
+        return "sycl-fp16"
+
+
 def _preset_dict(model_name: str) -> dict | None:
-    """读取模型预设（含 ctx_size/parallel/device 等）"""
+    """读取模型预设（含 ctx_size/parallel/device 等）
+    按当前引擎后端取对应模板；该后端无模板时回退 sycl-fp16（兼容旧数据）"""
     try:
         with get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM model_presets WHERE model_name=?", (model_name,)
-            ).fetchone()
-        return dict(row) if row else None
+            for backend in (_current_backend(), "sycl-fp16"):
+                row = conn.execute(
+                    "SELECT * FROM model_presets WHERE model_name=? AND backend=?",
+                    (model_name, backend),
+                ).fetchone()
+                if row:
+                    return dict(row)
+        return None
     except Exception:
         return None
 

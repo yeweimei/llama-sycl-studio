@@ -129,24 +129,36 @@
           <div class="card-title">
             <span>🔧 引擎管理</span>
             <el-button size="small" type="danger" plain @click="doCleanupOld"><el-icon><Delete /></el-icon>&nbsp;清理旧版本</el-button>
-            <el-button size="small" @click="loadEngineInfo"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
+            <el-button size="small" @click="loadEngineBackends"><el-icon><Refresh /></el-icon>&nbsp;刷新</el-button>
           </div>
-          <el-descriptions :column="2" size="small" border style="margin-bottom:12px" v-if="engineInfo">
-            <el-descriptions-item label="当前版本">
-              <el-tag type="success">{{ engineInfo.current }}</el-tag>
-              <el-tag v-if="engineInfo.current_flavor" size="small" style="margin-left:6px" :type="engineInfo.current_flavor === 'vulkan' ? 'warning' : 'info'">{{ FLAVOR_LABELS[engineInfo.current_flavor] || engineInfo.current_flavor }}</el-tag>
+
+          <!-- 推理后端统一开关 -->
+          <div style="margin-bottom:12px;padding:12px;background:#f8f9fb;border-radius:8px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">推理后端</div>
+            <el-radio-group v-model="selectedFlavor" @change="onBackendChange" :disabled="switchingBackend">
+              <el-radio-button v-for="b in engineBackends?.backends || []" :key="b.flavor" :value="b.flavor">
+                {{ b.label }}<template v-if="b.active">（当前）</template>
+              </el-radio-button>
+            </el-radio-group>
+            <div class="form-tip" style="margin-top:6px">
+              切换后端会切换 llama.cpp 推理引擎构建（SYCL / Vulkan 各存一套版本与推理参数），<b>切换后需重启全部推理服务生效</b>。
+            </div>
+          </div>
+
+          <!-- 选中后端状态 -->
+          <el-descriptions v-if="currentBackend" :column="3" size="small" border style="margin-bottom:12px">
+            <el-descriptions-item label="当前后端">
+              <el-tag :type="currentBackend.flavor === 'vulkan' ? 'warning' : 'info'">{{ currentBackend.label }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="已安装版本">{{ engineInfo.installed?.length || 0 }} 个</el-descriptions-item>
+            <el-descriptions-item label="激活版本">
+              <el-tag type="success">{{ currentBackend.active_version || '-' }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="已安装版本">{{ currentBackend.installed?.length || 0 }} 个</el-descriptions-item>
           </el-descriptions>
 
-          <div style="font-size:13px;font-weight:600;margin-bottom:8px">已安装版本（可回滚）</div>
-          <el-table :data="engineInfo?.installed || []" size="small" stripe style="margin-bottom:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">已安装版本（{{ currentBackend?.label }}，可回滚）</div>
+          <el-table :data="currentBackend?.installed || []" size="small" stripe style="margin-bottom:16px">
             <el-table-column prop="version" label="版本" width="130" />
-            <el-table-column label="构建" width="90">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.flavor === 'vulkan' ? 'warning' : 'info'">{{ FLAVOR_LABELS[row.flavor] || row.flavor }}</el-tag>
-              </template>
-            </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag v-if="row.active" size="small" type="success">当前</el-tag>
@@ -160,21 +172,14 @@
             </el-table-column>
           </el-table>
 
-          <div style="font-size:13px;font-weight:600;margin-bottom:8px">可用升级（GitHub Release，SYCL / Vulkan 双构建）</div>
-          <el-table :data="engineUpgrades" size="small" stripe v-loading="engineLoading" style="margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">可用升级（{{ currentBackend?.label }}，GitHub Release）</div>
+          <el-table :data="currentBackend?.available || []" size="small" stripe v-loading="engineLoading" style="margin-bottom:12px">
             <el-table-column prop="version" label="版本" width="120" />
-            <el-table-column label="大小" width="140">
-              <template #default="{ row }">
-                <span v-if="row.assets?.['sycl-fp16']">SYCL {{ row.assets['sycl-fp16'].size_human }}</span>
-                <span v-if="row.assets?.['sycl-fp16'] && row.assets?.vulkan" style="color:#909399"> / </span>
-                <span v-if="row.assets?.vulkan" style="color:#e6a23c">Vulkan {{ row.assets.vulkan.size_human }}</span>
-              </template>
-            </el-table-column>
+            <el-table-column prop="size_human" label="大小" width="100" />
             <el-table-column prop="published_at" label="发布时间" min-width="150" />
-            <el-table-column label="操作" width="150">
+            <el-table-column label="操作" width="100">
               <template #default="{ row }">
-                <el-button v-if="row.assets?.['sycl-fp16']" size="small" type="primary" link :loading="engineUpgrading === 'sycl-fp16-' + row.version" @click="doUpgrade(row.version, 'sycl-fp16')">SYCL</el-button>
-                <el-button v-if="row.assets?.vulkan" size="small" type="warning" link :loading="engineUpgrading === 'vulkan-' + row.version" @click="doUpgrade(row.version, 'vulkan')">Vulkan</el-button>
+                <el-button size="small" type="primary" link :loading="engineUpgrading === selectedFlavor + '-' + row.version" @click="doUpgrade(row.version, selectedFlavor)">安装</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -337,14 +342,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listApiKeys, createApiKey, deleteApiKey, toggleApiKey,
   listTemplates, deleteTemplate, containerInfo, getRouterCtx,
   getProxySettings, saveProxySettings, authChangePassword,
   listPresets, createPreset, updatePreset, deletePreset, generateConfigIni,
-  getEngineVersion, getEngineUpgrades, upgradeEngine, rollbackEngine, cleanupEngine,
+  getEngineVersion, getEngineUpgrades, getEngineBackends, switchEngine,
+  upgradeEngine, rollbackEngine, cleanupEngine, restartAllServices,
   getAlertConfig, saveAlertConfig, testAlert as sendTestAlert,
 } from '../api'
 import { Refresh, Delete } from '@element-plus/icons-vue'
@@ -371,18 +377,22 @@ const presetDialog = ref(false)
 const editingPreset = ref({})
 
 // ---------- 引擎管理 ----------
-const engineInfo = ref(null)
-const engineUpgrades = ref([])
+const engineBackends = ref(null)
+const selectedFlavor = ref('sycl-fp16')
+const switchingBackend = ref(false)
 const engineLoading = ref(false)
 const engineUpgrading = ref('')
 const FLAVOR_LABELS = { 'sycl-fp16': 'SYCL', vulkan: 'Vulkan' }
+const currentBackend = computed(() =>
+  (engineBackends.value?.backends || []).find(b => b.flavor === selectedFlavor.value) || null
+)
 
-async function loadEngineInfo() {
+async function loadEngineBackends() {
   engineLoading.value = true
   try {
-    const [info, upgrades] = await Promise.all([getEngineVersion(), getEngineUpgrades()])
-    engineInfo.value = info
-    engineUpgrades.value = upgrades
+    const data = await getEngineBackends()
+    engineBackends.value = data
+    selectedFlavor.value = data.current || 'sycl-fp16'
   } catch (e) {
     ElMessage.error('引擎信息加载失败: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -390,11 +400,51 @@ async function loadEngineInfo() {
   }
 }
 
+async function onBackendChange(flavor) {
+  const target = (engineBackends.value?.backends || []).find(b => b.flavor === flavor)
+  const label = target?.label || flavor
+  // 已是当前后端：仅查看，不动作
+  if (target?.active) {
+    ElMessage.info(`当前已是 ${label} 后端`)
+    return
+  }
+  // 该后端没有已安装版本：引导先安装
+  if (!target?.installed?.some(v => !v.active)) {
+    ElMessage.warning(`${label} 后端尚未安装任何版本，请先在下方向导选择版本安装`)
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认将推理后端切换到 ${label}？\n\n切换将替换 llama.cpp 引擎构建，并需要重启全部推理服务生效（推理参数将使用 ${label} 模板）。`,
+      '切换推理后端', { confirmButtonText: '切换', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) { return }
+  switchingBackend.value = true
+  try {
+    const r = await switchEngine(flavor)
+    ElMessage.success(r.message || `已切换到 ${label}`)
+    await loadEngineBackends()
+    // 提示重启全部推理服务
+    try {
+      await ElMessageBox.confirm(
+        `引擎构建已切换为 ${label}，需要重启全部推理服务才能生效。是否现在重启？`,
+        '重启推理服务', { confirmButtonText: '立即重启', cancelButtonText: '稍后', type: 'warning' }
+      )
+      await restartAllServices()
+      ElMessage.success('已重启全部推理服务')
+    } catch (e) { /* 用户取消重启 */ }
+  } catch (e) {
+    ElMessage.error('切换失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    switchingBackend.value = false
+  }
+}
+
 async function doUpgrade(version, flavor = 'sycl-fp16') {
   const label = FLAVOR_LABELS[flavor] || flavor
   try {
     await ElMessageBox.confirm(
-      `确认安装 llama.cpp ${label} ${version}？安装后需重启容器生效。`,
+      `确认安装 llama.cpp ${label} ${version}？安装后需重启服务生效。`,
       '安装确认', { confirmButtonText: '安装', cancelButtonText: '取消', type: 'warning' }
     )
   } catch (e) { return }
@@ -402,7 +452,7 @@ async function doUpgrade(version, flavor = 'sycl-fp16') {
   try {
     const r = await upgradeEngine(version, flavor)
     ElMessage.success(r.message || `已安装 ${label} ${version}`)
-    await loadEngineInfo()
+    await loadEngineBackends()
   } catch (e) {
     ElMessage.error('升级失败: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -420,7 +470,7 @@ async function doRollback(version) {
   try {
     const r = await rollbackEngine(version)
     ElMessage.success(r.message || `已回滚到 ${version}`)
-    await loadEngineInfo()
+    await loadEngineBackends()
   } catch (e) {
     ElMessage.error('回滚失败: ' + (e.response?.data?.detail || e.message))
   }
@@ -448,7 +498,7 @@ async function doCleanupOld() {
   try {
     const r = await cleanupEngine(3, false)
     ElMessage.success(`已清理 ${r.deleted.length} 个旧版本：${r.deleted.join('、')}`)
-    await loadEngineInfo()
+    await loadEngineBackends()
   } catch (e) {
     ElMessage.error('清理失败: ' + (e.response?.data?.detail || e.message))
   }
@@ -609,7 +659,7 @@ async function generateConfig() {
 }
 
 onMounted(() => {
-  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets(); loadEngineInfo(); loadAlert()
+  loadKeys(); loadTemplates(); loadContainerInfo(); loadProxy(); loadPresets(); loadEngineBackends(); loadAlert()
 })
 </script>
 

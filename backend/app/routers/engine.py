@@ -370,6 +370,86 @@ def engine_cleanup(body: CleanupRequest):
     return {"ok": True, "dry_run": False, "deleted": deleted, "kept": sorted(keep)}
 
 
+class SwitchRequest(BaseModel):
+    flavor: str = DEFAULT_FLAVOR  # sycl-fp16 | vulkan
+    version: str | None = None  # 缺省自动选该后端已安装最高版本
+
+
+@router.get("/backends")
+def engine_backends():
+    """后端总览：各推理后端（SYCL/Vulkan）的激活状态、已安装版本、可用版本
+    前端设置页统一开关据此渲染"""
+    installed = _list_local_versions()
+    try:
+        releases = _fetch_releases()
+    except Exception:
+        releases = []
+    active_name = _read_active_version() or ""
+    active_flavor = _dir_flavor(active_name) if active_name else DEFAULT_FLAVOR
+    current_ver = _get_current_version()
+
+    out = []
+    for flavor, label in FLAVOR_LABELS.items():
+        inst = [v for v in installed if v["flavor"] == flavor]
+        avail = []
+        for rel in releases:
+            asset = rel.get("assets", {}).get(flavor)
+            if asset:
+                avail.append({
+                    "version": rel["version"],
+                    "size_human": asset["size_human"],
+                    "published_at": rel.get("published_at", ""),
+                })
+        out.append({
+            "flavor": flavor,
+            "label": label,
+            "active": flavor == active_flavor,
+            "active_version": current_ver if flavor == active_flavor else "",
+            "installed": inst,
+            "available": avail,
+        })
+    return {
+        "current": active_flavor,
+        "current_version": current_ver,
+        "backends": out,
+    }
+
+
+@router.post("/switch")
+def engine_switch(body: SwitchRequest):
+    """切换推理后端（SYCL <-> Vulkan）。version 缺省时自动选该后端已安装最高版本；
+    本地已有备份则免下载切换，否则报错提示先安装"""
+    flavor = body.flavor
+    if flavor not in FLAVOR_ASSETS:
+        raise HTTPException(400, f"不支持的构建类型: {flavor}（可选 {list(FLAVOR_ASSETS)}）")
+    label = FLAVOR_LABELS.get(flavor, flavor)
+
+    active_name = _read_active_version() or ""
+    # 已激活同后端：直接返回
+    if _dir_flavor(active_name) == flavor:
+        if body.version is None or body.version == active_name:
+            return {"ok": True, "already": True, "flavor": flavor,
+                    "version": active_name, "message": f"当前已是 {label} 后端"}
+
+    # 选版本：显式指定（校验本地已装）或该后端已安装最高版本
+    installed = [v for v in _list_local_versions() if v["flavor"] == flavor and not v["active"]]
+    if body.version:
+        version = _sanitize_version(body.version)
+        local_dir = BIN_DIR / _flavor_dir(flavor, version)
+        if not (local_dir.is_dir() and (local_dir / "llama-server").exists()):
+            raise HTTPException(404, f"{label} {version} 未安装，请先在版本列表安装")
+    else:
+        vers = sorted(
+            (v["version"] for v in installed if v["version"].startswith("b")),
+            key=lambda x: int(x[1:]) if x[1:].isdigit() else 0, reverse=True,
+        )
+        if not vers:
+            raise HTTPException(400, f"{label} 后端未安装任何版本，请先在版本列表安装")
+        version = vers[0]
+
+    return engine_upgrade(UpgradeRequest(version=version, flavor=flavor))
+
+
 @router.get("/version")
 def engine_version():
     """当前版本 + 安装历史（含 flavor 构建标签）"""

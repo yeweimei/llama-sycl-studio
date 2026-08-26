@@ -148,6 +148,8 @@ export const parsePdf = (sid, file) => {
 // ---------- 引擎管理 ----------
 export const getEngineVersion = () => api.get('/engine/version').then(r => r.data)
 export const getEngineUpgrades = () => api.get('/engine/upgrades').then(r => r.data)
+export const getEngineBackends = () => api.get('/engine/backends').then(r => r.data)
+export const switchEngine = (flavor, version = null) => api.post('/engine/switch', { flavor, version }).then(r => r.data)
 export const upgradeEngine = (version, flavor = 'sycl-fp16') => api.post('/engine/upgrade', { version, flavor }).then(r => r.data)
 export const rollbackEngine = (version) => api.post('/engine/rollback', { version }).then(r => r.data)
 export const cleanupEngine = (keep = 3, dryRun = false) => api.post('/engine/cleanup', { keep, dry_run: dryRun }).then(r => r.data)

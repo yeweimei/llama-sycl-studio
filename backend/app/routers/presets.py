@@ -140,6 +140,7 @@ def _write_config_ini() -> dict:
 
 class PresetCreate(BaseModel):
     model_name: str
+    backend: str = "sycl-fp16"  # sycl-fp16 | vulkan：同一模型各后端一套参数
     ctx_size: int = 8192
     temp: float = 0.7
     threads: int = 8
@@ -242,13 +243,19 @@ class PresetUpdate(BaseModel):
 
 
 @router.get("")
-def list_presets():
-    """列出所有模型预设"""
+def list_presets(backend: str | None = None):
+    """列出所有模型预设（可选按 backend 过滤）"""
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM model_presets ORDER BY model_name").fetchall()
+        if backend:
+            rows = conn.execute(
+                "SELECT * FROM model_presets WHERE backend=? ORDER BY model_name", (backend,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM model_presets ORDER BY model_name, backend").fetchall()
     out = []
     for r in rows:
         d = dict(r)
+        d["backend"] = d.get("backend", "sycl-fp16")
         d["flash_attn"] = bool(d["flash_attn"])
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
@@ -271,16 +278,20 @@ def list_presets():
 
 @router.post("")
 def create_preset(body: PresetCreate):
-    """创建模型预设"""
+    """创建模型预设（同一模型可按 backend 各存一套）"""
+    backend = body.backend or "sycl-fp16"
     with get_conn() as conn:
-        dup = conn.execute("SELECT id FROM model_presets WHERE model_name=?", (body.model_name,)).fetchone()
+        dup = conn.execute(
+            "SELECT id FROM model_presets WHERE model_name=? AND backend=?",
+            (body.model_name, backend),
+        ).fetchone()
         if dup:
-            raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
+            raise HTTPException(400, f"模型 {body.model_name} 的 {backend} 预设已存在")
         conn.execute(
-            "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
+            "INSERT INTO model_presets (model_name, backend, ctx_size, temp, threads, batch_size, ubatch_size, "
             "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (body.model_name, backend, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
@@ -291,7 +302,7 @@ def create_preset(body: PresetCreate):
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
-    return {"ok": True, "model_name": body.model_name}
+    return {"ok": True, "model_name": body.model_name, "backend": backend}
 
 
 @router.put("/{pid}")
