@@ -18,8 +18,30 @@ router = APIRouter()
 BIN_DIR = Path(settings.data_dir) / "bin"
 CURRENT_BIN = Path("/app/llama-server")
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
-# SYCL fp16 Ubuntu x64 asset 命名模式
-ASSET_PATTERN = "bin-ubuntu-sycl-fp16-x64.tar.gz"
+# 各后端构建的 Ubuntu x64 asset 命名模式（flavor → 资产名子串）
+FLAVOR_ASSETS = {
+    "sycl-fp16": "bin-ubuntu-sycl-fp16-x64.tar.gz",
+    "vulkan": "bin-ubuntu-vulkan-x64.tar.gz",
+}
+DEFAULT_FLAVOR = "sycl-fp16"
+
+
+def _flavor_dir(flavor: str, version: str) -> str:
+    """flavor 对应的备份目录名：sycl-fp16 保持 b{version}（兼容现有备份目录），
+    其余 flavor 用 {flavor}-{version}（如 vulkan-b10622）与 sycl 并存"""
+    if flavor == DEFAULT_FLAVOR:
+        return version
+    return f"{flavor}-{version}"
+
+
+def _dir_flavor(name: str) -> str:
+    """从备份目录名反推 flavor：vulkan-b10622 → vulkan；b10622 → sycl-fp16"""
+    if name and name.startswith("vulkan-"):
+        return "vulkan"
+    return DEFAULT_FLAVOR
+
+
+FLAVOR_LABELS = {"sycl-fp16": "SYCL", "vulkan": "Vulkan"}
 
 
 def _atomic_replace(src: Path, dst: Path):
@@ -221,23 +243,31 @@ def _get_current_version() -> str:
 
 
 def _list_local_versions() -> list[dict]:
-    """列出本地已安装的二进制版本（去重：当前版本只出现一次）"""
+    """列出本地已安装的二进制版本（去重：当前版本只出现一次）
+    每项含 version（显示名）/ dir（备份目录名，rollback 用）/ flavor"""
     versions = []
+    active_name = _read_active_version() or ""
     current = _get_current_version()
-    versions.append({"version": current, "active": True, "path": str(CURRENT_BIN)})
+    versions.append({
+        "version": current, "dir": active_name or current, "active": True,
+        "flavor": _dir_flavor(active_name) if active_name else DEFAULT_FLAVOR,
+        "path": str(CURRENT_BIN),
+    })
     seen = {current}
     if BIN_DIR.exists():
-        # 新格式: 备份目录 BIN_DIR/bXXXX
+        # 新格式: 备份目录 BIN_DIR/bXXXX 或 BIN_DIR/vulkan-bXXXX
         for d in sorted(BIN_DIR.iterdir()):
-            if d.is_dir() and d.name.startswith("b") and d.name not in seen:
-                versions.append({"version": d.name, "active": False, "path": str(d)})
+            if d.is_dir() and d.name.startswith(("b", "vulkan-")) and d.name not in seen:
+                versions.append({"version": d.name, "dir": d.name, "active": False,
+                                 "flavor": _dir_flavor(d.name), "path": str(d)})
                 seen.add(d.name)
         # 旧格式: 单文件 BIN_DIR/llama-server-bXXXX
         for f in sorted(BIN_DIR.glob("llama-server-b*")):
             ver = f.name.replace("llama-server-", "")
             if ver in seen:
                 continue
-            versions.append({"version": ver, "active": False, "path": str(f)})
+            versions.append({"version": ver, "dir": ver, "active": False,
+                             "flavor": DEFAULT_FLAVOR, "path": str(f)})
             seen.add(ver)
     return versions
 
@@ -258,20 +288,21 @@ def _fetch_releases(per_page: int = 10) -> list[dict]:
     result = []
     for rel in data:
         tag = rel["tag_name"]
-        # 找 SYCL fp16 asset
-        asset_url = None
-        asset_size = 0
-        for a in rel["assets"]:
-            if ASSET_PATTERN in a["name"]:
-                asset_url = a["browser_download_url"]
-                asset_size = a["size"]
-                break
-        if asset_url:
+        # 收集所有 flavor 的 asset（sycl-fp16 / vulkan 并存）
+        assets = {}
+        for flavor, pattern in FLAVOR_ASSETS.items():
+            for a in rel["assets"]:
+                if pattern in a["name"]:
+                    assets[flavor] = {
+                        "url": a["browser_download_url"],
+                        "size": a["size"],
+                        "size_human": _human_size(a["size"]),
+                    }
+                    break
+        if assets:
             result.append({
                 "version": tag,
-                "url": asset_url,
-                "size": asset_size,
-                "size_human": _human_size(asset_size),
+                "assets": assets,
                 "published_at": rel.get("published_at", ""),
             })
     return result
@@ -287,6 +318,7 @@ def _human_size(n: int) -> str:
 
 class UpgradeRequest(BaseModel):
     version: str
+    flavor: str = DEFAULT_FLAVOR  # sycl-fp16 | vulkan
 
 
 class RollbackRequest(BaseModel):
@@ -307,11 +339,11 @@ def engine_cleanup(body: CleanupRequest):
     active = _read_active_version() or _get_current_version()
 
     def ver_num(name: str) -> int:
-        m = re.match(r"b(\d+)", name)
+        m = re.match(r"(?:[a-z]+-)?b(\d+)", name)
         return int(m.group(1)) if m else 0
 
-    # 新格式备份目录 BIN_DIR/bXXXX
-    dirs = [d for d in BIN_DIR.iterdir() if d.is_dir() and d.name.startswith("b")]
+    # 新格式备份目录 BIN_DIR/bXXXX 或 BIN_DIR/vulkan-bXXXX
+    dirs = [d for d in BIN_DIR.iterdir() if d.is_dir() and d.name.startswith(("b", "vulkan-"))]
     dirs.sort(key=lambda d: ver_num(d.name), reverse=True)
     keep = {active}
     for d in dirs:
@@ -340,9 +372,11 @@ def engine_cleanup(body: CleanupRequest):
 
 @router.get("/version")
 def engine_version():
-    """当前版本 + 安装历史"""
+    """当前版本 + 安装历史（含 flavor 构建标签）"""
+    active_name = _read_active_version() or ""
     return {
         "current": _get_current_version(),
+        "current_flavor": _dir_flavor(active_name) if active_name else "",
         "installed": _list_local_versions(),
     }
 
@@ -358,7 +392,8 @@ def engine_upgrades():
 
 @router.post("/upgrade")
 def engine_upgrade(body: UpgradeRequest):
-    """升级二进制：备份 -> 下载 -> 解压 -> 校验 -> 替换"""
+    """升级/切换二进制：备份 -> 下载（或免下载切换已存在目录）-> 解压 -> 校验 -> 替换
+    flavor 支持 sycl-fp16（默认）/ vulkan；同版本同 flavor 已下载过时直接切换免下载"""
     import urllib.request
     import tarfile
     import tempfile
@@ -366,6 +401,27 @@ def engine_upgrade(body: UpgradeRequest):
     version = _sanitize_version(body.version)
     if not version.startswith("b"):
         raise HTTPException(400, "版本号格式错误，应为 bXXXXX")
+    flavor = body.flavor
+    if flavor not in FLAVOR_ASSETS:
+        raise HTTPException(400, f"不支持的构建类型: {flavor}（可选 {list(FLAVOR_ASSETS)}）")
+
+    dir_name = _flavor_dir(flavor, version)
+    current_ver = _sanitize_version(_get_current_version())
+    active_name = _read_active_version() or ""
+
+    # 同版本同 flavor 已下载过：免下载直接切换（/app 替换 + 激活）
+    local_dir = BIN_DIR / dir_name
+    if local_dir.is_dir() and (local_dir / "llama-server").exists() and dir_name != active_name:
+        BIN_DIR.mkdir(parents=True, exist_ok=True)
+        replaced = _replace_from_dir(local_dir, _app_dir())
+        if not replaced:
+            raise HTTPException(500, f"本地备份 {dir_name} 不完整，无法切换")
+        _write_active_version(dir_name)
+        with get_conn() as conn:
+            _upsert_setting(conn, "engine_version", version)
+            _upsert_setting(conn, "engine_last_upgrade", str(now()))
+        return {"ok": True, "version": version, "flavor": flavor, "previous": current_ver,
+                "switched": True, "message": f"已切换到 {FLAVOR_LABELS.get(flavor, flavor)} {version}（本地备份，免下载），需重启容器生效"}
 
     # 查找下载 URL
     try:
@@ -376,16 +432,19 @@ def engine_upgrade(body: UpgradeRequest):
     target = next((r for r in releases if r["version"] == version), None)
     if not target:
         raise HTTPException(404, f"未找到版本 {version}")
+    asset = target.get("assets", {}).get(flavor)
+    if not asset:
+        raise HTTPException(404, f"版本 {version} 没有 {FLAVOR_LABELS.get(flavor, flavor)} 构建")
 
     # 步骤 1: 备份当前完整二进制集（llama-server* + lib*，含符号链接）
-    current_ver = _sanitize_version(_get_current_version())
+    # 目录名用 active 目录（vulkan-b10622）而非裸 build 号，避免覆盖另一 flavor 备份
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    backup_dir = _backup_current_set(current_ver)
+    backup_dir = _backup_current_set(active_name or current_ver)
 
     # 步骤 2: 下载
-    download_url = target["url"]
+    download_url = asset["url"]
     tmp_dir = Path(tempfile.mkdtemp())
-    archive_path = tmp_dir / f"llama-{version}.tar.gz"
+    archive_path = tmp_dir / f"llama-{flavor}-{version}.tar.gz"
 
     try:
         req = urllib.request.Request(download_url, headers={"User-Agent": "llama-studio/1.0"})
@@ -419,15 +478,15 @@ def engine_upgrade(body: UpgradeRequest):
             raise RuntimeError("解压目录中未找到需要替换的 llama-server*/lib*")
 
         # 记录到 DB + 卷内激活文件（重建容器不丢）
-        # 确保新版本完整集在卷内有备份目录（entrypoint 恢复依赖 BIN_DIR/{version}/）
-        _backup_current_set(version)
-        _write_active_version(version)
+        # 确保新版本完整集在卷内有备份目录（entrypoint 恢复依赖 BIN_DIR/{dir_name}/）
+        _backup_current_set(dir_name)
+        _write_active_version(dir_name)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
             _upsert_setting(conn, "engine_last_upgrade", str(now()))
 
-        return {"ok": True, "version": version, "previous": current_ver,
-                "message": f"已升级到 {version}，需重启容器生效"}
+        return {"ok": True, "version": version, "flavor": flavor, "previous": current_ver,
+                "switched": False, "message": f"已安装 {FLAVOR_LABELS.get(flavor, flavor)} {version}，需重启容器生效"}
 
     except Exception as e:
         # 自动回滚（恢复完整集 + 清理新版本残留）
@@ -451,8 +510,9 @@ def engine_rollback(body: RollbackRequest):
         raise HTTPException(404, f"未找到版本 {version} 的备份")
 
     current_ver = _sanitize_version(_get_current_version())
-    # 备份当前版本（如果尚未备份，幂等）
-    _backup_current_set(current_ver)
+    active_name = _read_active_version() or ""
+    # 备份当前版本（如果尚未备份，幂等）；目录名用 active 目录，避免覆盖另一 flavor 备份
+    _backup_current_set(active_name or current_ver)
 
     try:
         _restore_set(version)

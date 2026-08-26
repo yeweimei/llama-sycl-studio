@@ -190,17 +190,19 @@ def _device_label_map() -> dict:
                 env["LD_LIBRARY_PATH"] = f"{oneapi_libs}:{cur_ld}".strip(":")
             r = subprocess.run([llama_bin, "--list-devices"], capture_output=True, text=True, timeout=15, env=env)
             output = r.stdout + r.stderr
-            pattern = re.compile(r"SYCL(\d+):\s*(.+?)\s*\(\d+\s*MiB")
+            # 兼容 SYCL（SYCL0: name (MiB)）与 Vulkan（Vulkan0: name (MiB, MiB free)）输出
+            pattern = re.compile(r"(SYCL|Vulkan)(\d+):\s*(.+?)\s*\(\d+\s*MiB")
             for m in pattern.finditer(output):
-                idx = m.group(1)
-                raw_name = m.group(2).strip()
+                backend = m.group(1)
+                idx = m.group(2)
+                raw_name = m.group(3).strip()
                 if "Arc" in raw_name:
                     label = f"{raw_name} (独显)"
                 elif "Iris" in raw_name or "Xe" in raw_name:
                     label = f"{raw_name} (核显)"
                 else:
                     label = raw_name
-                result[f"SYCL{idx}"] = label
+                result[f"{backend}{idx}"] = label
     except Exception:
         pass
     setattr(_device_label_map, _cache_key, result)
@@ -477,7 +479,7 @@ def _preset_params(model_name: str) -> dict:
         params["no-mmap"] = "on"
     dev = d.get("device") or ""
     if dev and dev != "0":
-        params["device"] = dev if dev.startswith("SYCL") or dev.startswith("CPU") else f"SYCL{dev}"
+        params["device"] = dev if dev.startswith(("SYCL", "Vulkan", "CPU")) else f"SYCL{dev}"
     try:
         extra = json.loads(d.get("extra_args") or "{}")
     except Exception:

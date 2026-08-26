@@ -333,15 +333,17 @@ def selectable_gpus():
             # --list-devices 输出到 stdout，warning 行可能到 stderr
             output = r.stdout + r.stderr
             # 匹配: SYCL0: Intel(R) Arc(TM) A770M Graphics (15473 MiB, 15473 MiB free)
+            #      或 Vulkan0: Intel(R) Iris(R) Xe Graphics (ADL GT2) (46938 MiB, 42244 MiB free)
             pattern = re.compile(
-                r"SYCL(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)"
+                r"(SYCL|Vulkan)(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)"
             )
             gpus = []
             for m in pattern.finditer(output):
-                idx = int(m.group(1))
-                raw_name = m.group(2).strip()
-                total_mib = int(m.group(3))
-                free_mib = int(m.group(4))
+                backend = m.group(1)
+                idx = int(m.group(2))
+                raw_name = m.group(3).strip()
+                total_mib = int(m.group(4))
+                free_mib = int(m.group(5))
                 # 标注独显/核显
                 if "Arc" in raw_name:
                     label = "独显"
@@ -350,8 +352,9 @@ def selectable_gpus():
                 else:
                     label = "GPU"
                 gpus.append({
-                    "id": f"SYCL{idx}",
+                    "id": f"{backend}{idx}",
                     "sycl_index": idx,
+                    "backend": backend.lower(),
                     "name": f"{raw_name} ({label})",
                     "total_mib": total_mib,
                     "free_mib": free_mib,

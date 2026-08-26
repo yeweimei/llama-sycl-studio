@@ -131,7 +131,7 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     # 设备
     dev = preset.get("device") or "SYCL0"
     if dev and dev != "0":
-        dev = dev if str(dev).startswith(("SYCL", "CPU")) else f"SYCL{dev}"
+        dev = dev if str(dev).startswith(("SYCL", "Vulkan", "CPU")) else f"SYCL{dev}"
         args += ["--device", str(dev)]
     # mmproj
     mmproj = preset.get("mmproj") or ""

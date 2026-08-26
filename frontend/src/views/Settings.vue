@@ -134,13 +134,19 @@
           <el-descriptions :column="2" size="small" border style="margin-bottom:12px" v-if="engineInfo">
             <el-descriptions-item label="当前版本">
               <el-tag type="success">{{ engineInfo.current }}</el-tag>
+              <el-tag v-if="engineInfo.current_flavor" size="small" style="margin-left:6px" :type="engineInfo.current_flavor === 'vulkan' ? 'warning' : 'info'">{{ FLAVOR_LABELS[engineInfo.current_flavor] || engineInfo.current_flavor }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="已安装版本">{{ engineInfo.installed?.length || 0 }} 个</el-descriptions-item>
           </el-descriptions>
 
           <div style="font-size:13px;font-weight:600;margin-bottom:8px">已安装版本（可回滚）</div>
           <el-table :data="engineInfo?.installed || []" size="small" stripe style="margin-bottom:16px">
-            <el-table-column prop="version" label="版本" width="120" />
+            <el-table-column prop="version" label="版本" width="130" />
+            <el-table-column label="构建" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.flavor === 'vulkan' ? 'warning' : 'info'">{{ FLAVOR_LABELS[row.flavor] || row.flavor }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag v-if="row.active" size="small" type="success">当前</el-tag>
@@ -149,19 +155,26 @@
             </el-table-column>
             <el-table-column label="操作" width="100">
               <template #default="{ row }">
-                <el-button v-if="!row.active" size="small" link @click="doRollback(row.version)">回滚</el-button>
+                <el-button v-if="!row.active" size="small" link @click="doRollback(row.dir)">回滚</el-button>
               </template>
             </el-table-column>
           </el-table>
 
-          <div style="font-size:13px;font-weight:600;margin-bottom:8px">可用升级（GitHub Release）</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">可用升级（GitHub Release，SYCL / Vulkan 双构建）</div>
           <el-table :data="engineUpgrades" size="small" stripe v-loading="engineLoading" style="margin-bottom:12px">
             <el-table-column prop="version" label="版本" width="120" />
-            <el-table-column prop="size_human" label="大小" width="100" />
-            <el-table-column prop="published_at" label="发布时间" min-width="160" />
-            <el-table-column label="操作" width="100">
+            <el-table-column label="大小" width="140">
               <template #default="{ row }">
-                <el-button size="small" type="primary" link :loading="engineUpgrading === row.version" @click="doUpgrade(row.version)">升级</el-button>
+                <span v-if="row.assets?.['sycl-fp16']">SYCL {{ row.assets['sycl-fp16'].size_human }}</span>
+                <span v-if="row.assets?.['sycl-fp16'] && row.assets?.vulkan" style="color:#909399"> / </span>
+                <span v-if="row.assets?.vulkan" style="color:#e6a23c">Vulkan {{ row.assets.vulkan.size_human }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="published_at" label="发布时间" min-width="150" />
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button v-if="row.assets?.['sycl-fp16']" size="small" type="primary" link :loading="engineUpgrading === 'sycl-fp16-' + row.version" @click="doUpgrade(row.version, 'sycl-fp16')">SYCL</el-button>
+                <el-button v-if="row.assets?.vulkan" size="small" type="warning" link :loading="engineUpgrading === 'vulkan-' + row.version" @click="doUpgrade(row.version, 'vulkan')">Vulkan</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -362,6 +375,7 @@ const engineInfo = ref(null)
 const engineUpgrades = ref([])
 const engineLoading = ref(false)
 const engineUpgrading = ref('')
+const FLAVOR_LABELS = { 'sycl-fp16': 'SYCL', vulkan: 'Vulkan' }
 
 async function loadEngineInfo() {
   engineLoading.value = true
@@ -376,17 +390,18 @@ async function loadEngineInfo() {
   }
 }
 
-async function doUpgrade(version) {
+async function doUpgrade(version, flavor = 'sycl-fp16') {
+  const label = FLAVOR_LABELS[flavor] || flavor
   try {
     await ElMessageBox.confirm(
-      `确认升级 llama.cpp 到 ${version}？升级后需重启容器生效。`,
-      '升级确认', { confirmButtonText: '升级', cancelButtonText: '取消', type: 'warning' }
+      `确认安装 llama.cpp ${label} ${version}？安装后需重启容器生效。`,
+      '安装确认', { confirmButtonText: '安装', cancelButtonText: '取消', type: 'warning' }
     )
   } catch (e) { return }
-  engineUpgrading.value = version
+  engineUpgrading.value = `${flavor}-${version}`
   try {
-    const r = await upgradeEngine(version)
-    ElMessage.success(r.message || `已升级到 ${version}`)
+    const r = await upgradeEngine(version, flavor)
+    ElMessage.success(r.message || `已安装 ${label} ${version}`)
     await loadEngineInfo()
   } catch (e) {
     ElMessage.error('升级失败: ' + (e.response?.data?.detail || e.message))
