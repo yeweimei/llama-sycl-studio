@@ -444,8 +444,9 @@ def _model_memory_by_backend_device() -> dict[str, int]:
 
 
 def _xpu_smi_sensors() -> dict[str, dict]:
-    """xpu-smi 传感器（功耗/能耗），按设备名（Arc=独显 / Iris=核显）关联到角色
-    返回 {role: {pci_bdf, name, power_draw_w, power_limit_w, energy_consumed_j}}
+    """xpu-smi 传感器（功耗/能耗/真实显存），按设备名（Arc=独显 / Iris=核显）关联到角色
+    返回 {role: {pci_bdf, name, power_draw_w, power_limit_w, energy_consumed_j, memory_used_mib, memory_total_mib}}
+    ⚠️ xpu-smi 的 memory 是物理 GPU 真实显存（独显准确）；核显共享内存 used 可能 > total（不可信，调用方需校验）
     """
     sensors: dict[str, dict] = {}
     if not shutil.which("xpu-smi"):
@@ -469,17 +470,26 @@ def _xpu_smi_sensors() -> dict[str, dict]:
                 return None
 
         t = table.get(gpu_id, {})
-        name = t.get("name") or ("Arc" if gpu_id == 1 else "Iris")
-        role = "discrete" if "Arc" in name else "integrated"
+        name = t.get("name") or ""
+        pci = t.get("pci_bdf") or ""
+        # 角色判定：优先用 PCI 地址（Intel 核显固定 00:02.0），其次设备名（Arc=独显 / Iris·Xe·UHD=核显）
+        # ⚠️ 不能只看 name：部分 xpu-smi 版本不输出设备名（兜底 "Intel GPU"），此时按 PCI 判断
+        is_igpu = "00:02.0" in pci or any(k in name for k in ("Iris", "Xe", "UHD", "HD Graphics"))
+        role = "integrated" if is_igpu else "discrete"
         pd = _f(parts[2])
         pl = _f(parts[3])
         ej = _f(parts[4])
+        mu = _f(parts[0])
+        mt = _f(parts[1])
         sensors[role] = {
             "pci_bdf": t.get("pci_bdf") or None,
             "name": name,
             "power_draw_w": round(pd, 1) if pd is not None else None,
             "power_limit_w": round(pl, 1) if pl is not None else None,
             "energy_consumed_j": int(round(ej)) if ej is not None else None,
+            # 物理 GPU 真实显存（独显准确；核显共享内存 used 可能异常，调用方校验后使用）
+            "memory_used_mib": int(round(mu)) if mu is not None else None,
+            "memory_total_mib": int(round(mt)) if mt is not None else None,
         }
     return sensors
 
@@ -536,6 +546,15 @@ def gpu_status():
         dev["frequency_mhz"] = None
         dev["temperature_c"] = None
         dev["is_integrated"] = not dev["is_discrete"]
+        # ⚠️ 显存修正：SYCL 后端 --list-devices 的 free 可能是假的（SYSMAN 未启用时
+        # ext_intel_free_memory 不支持 → use total as free → used 恒为 0）。
+        # 优先用 xpu-smi 物理显存覆盖（0 <= used <= total 才算合理）；核显共享内存 used>total 时丢弃。
+        x_mu = s.get("memory_used_mib")
+        x_mt = s.get("memory_total_mib")
+        if x_mu is not None and x_mt is not None and 0 <= x_mu <= x_mt:
+            dev["memory_used_mib"] = x_mu
+            dev["memory_total_mib"] = x_mt
+            dev["memory_free_mib"] = max(x_mt - x_mu, 0)
         dev["memory_util_pct"] = round(dev["memory_used_mib"] / dev["memory_total_mib"] * 100) if dev["memory_total_mib"] > 0 else 0
     inference = _query_inference_metrics()
     return {
