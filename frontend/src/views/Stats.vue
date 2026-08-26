@@ -118,6 +118,18 @@
         <el-table-column label="Decode 均耗时" width="110" align="right">
           <template #default="{ row }">{{ row.avg_decode_ms || 0 }} ms</template>
         </el-table-column>
+        <el-table-column label="Prefill 吞吐" width="105" align="right">
+          <template #default="{ row }">
+            <span v-if="row.total_prefill_ms > 0" style="color:#8b5cf6;font-weight:600">{{ fmtTps(row.prompt_tokens / (row.total_prefill_ms / 1000)) }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="Decode 吞吐" width="105" align="right">
+          <template #default="{ row }">
+            <span v-if="row.total_decode_ms > 0" style="color:#2563eb;font-weight:600">{{ fmtTps(row.completion_tokens / (row.total_decode_ms / 1000)) }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
       </el-table>
       <el-empty v-if="!loading && !stats.length" description="暂无模型调用记录" :image-size="60" />
     </el-card>
@@ -308,6 +320,10 @@ function codeType(code) {
   if (code >= 500) return 'danger'
   if (code >= 400) return 'warning'
   return 'success'
+}
+function fmtTps(v) {
+  if (v == null || !isFinite(v) || v <= 0) return '-'
+  return v.toFixed(1) + ' t/s'
 }
 function fmtTime(ts) {
   const d = new Date(ts * 1000)

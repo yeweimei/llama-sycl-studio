@@ -120,6 +120,42 @@
         </el-row>
       </div>
 
+      <!-- 模型实时性能 -->
+      <div v-if="perf.instances?.length" style="margin-top:16px">
+        <div class="card-title" style="margin-bottom:8px"><span>模型实时性能</span>
+          <el-tag size="small" type="info" effect="plain" style="margin-left:8px">每 5s 刷新</el-tag>
+        </div>
+        <el-table :data="perf.instances" size="small" stripe>
+          <el-table-column prop="model" label="模型" min-width="170" show-overflow-tooltip />
+          <el-table-column label="状态" width="70">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.online ? 'success' : 'info'" effect="plain">{{ row.online ? '在线' : '离线' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="Decode" width="100" align="right">
+            <template #default="{ row }"><b style="color:#2563eb">{{ row.decode_tps != null ? row.decode_tps + ' t/s' : '-' }}</b></template>
+          </el-table-column>
+          <el-table-column label="Prefill" width="100" align="right">
+            <template #default="{ row }">{{ row.prefill_tps != null ? row.prefill_tps + ' t/s' : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="MTP 接受率" width="110" align="right">
+            <template #default="{ row }">
+              <span v-if="row.mtp_accept != null" :style="{ color: mtpColor(row.mtp_accept) }">{{ Math.round(row.mtp_accept * 100) }}%</span>
+              <span v-else class="sub-info">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="处理中/排队" width="100" align="right">
+            <template #default="{ row }">{{ row.requests_processing }} / {{ row.requests_deferred }}</template>
+          </el-table-column>
+          <el-table-column label="累计 Tokens (入/出)" width="150" align="right">
+            <template #default="{ row }">{{ fmtNum(row.prompt_tokens_total) }} / {{ fmtNum(row.predicted_tokens_total) }}</template>
+          </el-table-column>
+          <el-table-column label="端口" width="70" align="right">
+            <template #default="{ row }">{{ row.port }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+
       <!-- 进程列表 -->
       <div v-if="gpu.processes?.length" style="margin-top:16px">
         <div class="card-title" style="margin-bottom:8px"><span>GPU 进程</span></div>
@@ -137,6 +173,20 @@
       <div v-if="gpu.generated_at" class="sub-info" style="margin-top:8px;text-align:right">
         更新于 {{ gpu.generated_at }}
       </div>
+    </el-card>
+
+    <!-- 实时趋势 -->
+    <el-card shadow="never" style="margin-top:16px">
+      <div class="card-title">
+        <span>实时趋势（最近 5 分钟）</span>
+        <el-radio-group v-model="trendMode" size="small" style="margin-left:auto">
+          <el-radio-button value="tps">吞吐</el-radio-button>
+          <el-radio-button value="vram">显存</el-radio-button>
+          <el-radio-button value="power">功耗</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div ref="trendRef" style="height:220px" v-loading="loadingTrend"></div>
+      <el-empty v-if="!loadingTrend && !trendHistory.length" description="等待采样数据…" :image-size="50" style="margin-top:-190px" />
     </el-card>
 
     <!-- 实例心跳（M6） -->
@@ -177,14 +227,22 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { systemStatus, gpuStatus, gatewayHealth } from '../api'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { systemStatus, gpuStatus, gatewayHealth, perfInstances } from '../api'
+import * as echarts from 'echarts'
 
 const sys = ref({})
 const gpu = ref({})
 const gw = ref({ total: 0, running: 0, degraded: 0, starting: 0, instances: [] })
+const perf = ref({ instances: [] })
+const trendHistory = ref([])
+const trendMode = ref('tps')
+const loadingTrend = ref(true)
+const trendRef = ref(null)
+let trendChart = null
 let gpuTimer = null
 let gwTimer = null
+let firstPerf = true
 
 const memPercent = computed(() => {
   if (!sys.value.memory_total_gb) return 0
@@ -238,17 +296,111 @@ function fmtTime(ts) {
   const d = new Date(ts * 1000)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
 }
+function fmtNum(n) {
+  if (n == null) return '-'
+  return Number(n).toLocaleString()
+}
+function mtpColor(rate) {
+  if (rate >= 0.5) return '#10b981'
+  if (rate >= 0.3) return '#f59e0b'
+  return '#ef4444'
+}
+
+// ---------- 模型实时性能 ----------
+async function loadPerf() {
+  try {
+    const d = await perfInstances()
+    perf.value = d
+    // 累积趋势采样点（保留最近 60 个 ≈ 5 分钟）
+    const totalDecode = (d.instances || []).reduce((s, i) => s + (i.decode_tps || 0), 0)
+    const totalPrefill = (d.instances || []).reduce((s, i) => s + (i.prefill_tps || 0), 0)
+    const dgpu = (gpu.value.devices || []).find(x => !x.is_integrated)
+    const igpu = (gpu.value.devices || []).find(x => x.is_integrated)
+    trendHistory.value.push({
+      t: Date.now(),
+      decode: Math.round(totalDecode * 10) / 10,
+      prefill: Math.round(totalPrefill * 10) / 10,
+      vram: dgpu ? dgpu.memory_used_mib : null,
+      vramTotal: dgpu ? dgpu.memory_total_mib : null,
+      power: dgpu ? dgpu.power_draw_w : null,
+      igpuMem: igpu ? igpu.model_memory_mib : null,
+    })
+    if (trendHistory.value.length > 60) trendHistory.value.shift()
+    renderTrend()
+  } catch (e) { /* ignore */ }
+}
+
+function initTrend() {
+  if (!trendChart && trendRef.value) {
+    trendChart = echarts.init(trendRef.value)
+  }
+}
+
+function renderTrend() {
+  if (!trendChart) return
+  const h = trendHistory.value
+  const times = h.map(p => {
+    const d = new Date(p.t)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+  })
+  let series = []
+  let yAxis = []
+  if (trendMode.value === 'tps') {
+    series = [
+      { name: 'Decode t/s', type: 'line', data: h.map(p => p.decode), smooth: true, symbol: 'none', lineStyle: { color: '#2563eb', width: 2.5 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(37,99,235,.25)' }, { offset: 1, color: 'rgba(37,99,235,0)' }]) } },
+      { name: 'Prefill t/s', type: 'line', data: h.map(p => p.prefill), smooth: true, symbol: 'none', lineStyle: { color: '#8b5cf6', width: 2 } },
+    ]
+    yAxis = [{ type: 'value', name: 't/s', splitLine: { lineStyle: { color: '#f1f5f9' } } }]
+  } else if (trendMode.value === 'vram') {
+    series = [
+      { name: '独显占用', type: 'line', data: h.map(p => p.vram), smooth: true, symbol: 'none', lineStyle: { color: '#f59e0b', width: 2.5 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(245,158,11,.25)' }, { offset: 1, color: 'rgba(245,158,11,0)' }]) } },
+      { name: '核显模型内存', type: 'line', data: h.map(p => p.igpuMem), smooth: true, symbol: 'none', lineStyle: { color: '#06b6d4', width: 2 } },
+    ]
+    yAxis = [{ type: 'value', name: 'MiB', splitLine: { lineStyle: { color: '#f1f5f9' } } }]
+  } else {
+    series = [
+      { name: '功耗 W', type: 'line', data: h.map(p => p.power), smooth: true, symbol: 'none', lineStyle: { color: '#ef4444', width: 2.5 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(239,68,68,.25)' }, { offset: 1, color: 'rgba(239,68,68,0)' }]) } },
+    ]
+    yAxis = [{ type: 'value', name: 'W', splitLine: { lineStyle: { color: '#f1f5f9' } } }]
+  }
+  trendChart.setOption({
+    tooltip: { trigger: 'axis', backgroundColor: '#0f172a', textStyle: { color: '#e2e8f0', fontSize: 12 }, borderWidth: 0 },
+    legend: { top: 0, textStyle: { fontSize: 12 } },
+    grid: { left: 56, right: 40, top: 34, bottom: 24 },
+    xAxis: { type: 'category', data: times, axisLine: { lineStyle: { color: '#e2e8f0' } }, axisLabel: { fontSize: 10 } },
+    yAxis,
+    series,
+  }, true)
+}
+
+watch(trendMode, () => renderTrend())
+
+function resizeCharts() {
+  trendChart?.resize()
+}
 
 onMounted(() => {
   loadSys()
   loadGpu()
   loadGateway()
-  gpuTimer = setInterval(loadGpu, 5000)
+  loadPerf()
+  gpuTimer = setInterval(() => {
+    loadGpu()
+    loadPerf()
+  }, 5000)
   gwTimer = setInterval(loadGateway, 5000)
+  nextTick(() => {
+    initTrend()
+    loadingTrend.value = false
+    renderTrend()
+  })
+  window.addEventListener('resize', resizeCharts)
 })
 onUnmounted(() => {
   if (gpuTimer) clearInterval(gpuTimer)
   if (gwTimer) clearInterval(gwTimer)
+  window.removeEventListener('resize', resizeCharts)
+  trendChart?.dispose()
 })
 </script>
 

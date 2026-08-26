@@ -119,6 +119,7 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         "--host", "127.0.0.1",
         "--port", str(_port_for(sid)),
         "--alias", name,
+        "--metrics",  # 暴露 /metrics（监控页聚合每模型吞吐/MTP/请求队列）
     ]
     # embedding 模型自动加 --embeddings（否则 /v1/embeddings 返回 501）
     if "embedding" in name.lower() or "embed" in name.lower():

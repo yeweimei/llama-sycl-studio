@@ -21,7 +21,7 @@ from app import auth as auth_mod
 from app import idle_unload, self_heal
 from app.routers import services, models, downloads, gpu, settings as settings_router
 from app.routers import auth as auth_router
-from app.routers import presets, tags, stats, engine
+from app.routers import presets, tags, stats, engine, perf
 
 app = FastAPI(
     title="LLM Studio",
@@ -96,6 +96,7 @@ app.include_router(presets.router, prefix="/api/presets", tags=["presets"])
 app.include_router(tags.router, prefix="/api/model-tags", tags=["tags"])
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 app.include_router(engine.router, prefix="/api/engine", tags=["engine"])
+app.include_router(perf.router, prefix="/api/perf", tags=["perf"])
 
 
 @app.get("/api/health")
