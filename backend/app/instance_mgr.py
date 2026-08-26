@@ -48,19 +48,63 @@ def _current_backend() -> str:
         return "sycl-fp16"
 
 
+def _list_devices() -> list[dict]:
+    """解析 llama-server --list-devices（后端无关），返回 [{id, name, is_discrete, total_mib, free_mib}]
+    独显/核显按设备名标注：Arc → 独显，Iris/Xe → 核显。
+    """
+    import re as _re
+    llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
+    devices: list[dict] = []
+    try:
+        if not os.path.isfile(llama_bin):
+            return devices
+        r = subprocess.run([llama_bin, "--list-devices"], capture_output=True, text=True, timeout=15)
+        output = (r.stdout or "") + (r.stderr or "")
+        pattern = _re.compile(r"(SYCL|Vulkan)(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)")
+        for m in pattern.finditer(output):
+            raw_name = m.group(3).strip()
+            devices.append({
+                "id": f"{m.group(1)}{m.group(2)}",
+                "name": raw_name,
+                "is_discrete": "Arc" in raw_name,
+                "total_mib": int(m.group(4)),
+                "free_mib": int(m.group(5)),
+            })
+    except Exception:
+        pass
+    return devices
+
+
+def _resolve_device(role: str) -> str:
+    """语义设备角色 → 当前后端的具体设备名（动态解析 --list-devices）。
+    role: auto（优先独显）/ discrete（独显）/ integrated（核显）。
+    构建可能同时含 SYCL+Vulkan 后端，这里按当前引擎过滤（SYCL 引擎只取 SYCLx，Vulkan 引擎只取 Vulkanx）。
+    返回 '' 表示不传 --device（交给 llama.cpp 自动选）。
+    """
+    role = (role or "auto").strip().lower()
+    backend = _current_backend()  # sycl-fp16 / vulkan
+    prefix = "Vulkan" if backend == "vulkan" else "SYCL"
+    devices = [d for d in _list_devices() if d["id"].startswith(prefix)]
+    discrete = [d for d in devices if d["is_discrete"]]
+    integrated = [d for d in devices if not d["is_discrete"]]
+    if role == "discrete":
+        return discrete[0]["id"] if discrete else (devices[0]["id"] if devices else "")
+    if role == "integrated":
+        return integrated[0]["id"] if integrated else ""
+    # auto：优先独显，无独显则首个可用设备
+    return discrete[0]["id"] if discrete else (devices[0]["id"] if devices else "")
+
+
 def _preset_dict(model_name: str) -> dict | None:
-    """读取模型预设（含 ctx_size/parallel/device 等）
-    按当前引擎后端取对应模板；该后端无模板时回退 sycl-fp16（兼容旧数据）"""
+    """读取模型预设（含 ctx_size/parallel/device 等）。
+    device 为语义角色（auto/discrete/integrated），后端无关，启动时按当前后端解析。"""
     try:
         with get_conn() as conn:
-            for backend in (_current_backend(), "sycl-fp16"):
-                row = conn.execute(
-                    "SELECT * FROM model_presets WHERE model_name=? AND backend=?",
-                    (model_name, backend),
-                ).fetchone()
-                if row:
-                    return dict(row)
-        return None
+            row = conn.execute(
+                "SELECT * FROM model_presets WHERE model_name=?",
+                (model_name,),
+            ).fetchone()
+            return dict(row) if row else None
     except Exception:
         return None
 
@@ -142,11 +186,11 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         args += ["--n-gpu-layers", str(preset["n_gpu_layers"])]
     if preset.get("mmap") == 0:
         args += ["--no-mmap"]
-    # 设备
-    dev = preset.get("device") or "SYCL0"
-    if dev and dev != "0":
-        dev = dev if str(dev).startswith(("SYCL", "Vulkan", "CPU")) else f"SYCL{dev}"
-        args += ["--device", str(dev)]
+    # 设备：语义角色（auto/discrete/integrated）→ 按当前后端动态解析具体设备名（SYCL0/Vulkan1）
+    dev = preset.get("device") or "auto"
+    resolved = _resolve_device(dev)
+    if resolved:
+        args += ["--device", resolved]
     # mmproj
     mmproj = preset.get("mmproj") or ""
     if not mmproj:

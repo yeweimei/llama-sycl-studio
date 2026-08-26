@@ -144,9 +144,10 @@
           <div class="form-tip">支持 .gguf 文件或 HF 目录（含 config.json）</div>
         </el-form-item>
         <el-form-item label="显卡">
-          <el-select v-model="form.gpu_id" placeholder="选择 GPU" style="width:100%" clearable>
-            <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
+          <el-select v-model="form.gpu_id" placeholder="选择设备" style="width:100%">
+            <el-option v-for="g in deviceOptions" :key="g.value" :label="g.label" :value="g.value" />
           </el-select>
+          <div class="form-tip">自动/独显/核显（后端无关，启动时按当前引擎映射）</div>
         </el-form-item>
         <el-form-item label="空闲卸载">
           <el-select v-model="form.idle_unload_min" style="width:100%">
@@ -185,9 +186,10 @@
           </el-button>
         </el-form-item>
         <el-form-item label="显卡">
-          <el-select v-model="editForm.gpu_id" placeholder="选择 GPU" style="width:100%" clearable>
-            <el-option v-for="g in gpuList" :key="g.id" :label="g.name" :value="g.id" />
+          <el-select v-model="editForm.gpu_id" placeholder="选择设备" style="width:100%">
+            <el-option v-for="g in deviceOptions" :key="g.value" :label="g.label" :value="g.value" />
           </el-select>
+          <div class="form-tip">自动/独显/核显（后端无关，启动时按当前引擎映射）</div>
         </el-form-item>
         <el-form-item label="标签">
           <el-select v-model="editForm.custom_tags" multiple filterable allow-create default-first-option
@@ -284,8 +286,25 @@ const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
 const currentBackend = ref('sycl-fp16')
-// 设备兜底：按当前引擎后端（SYCL0 独显 / Vulkan1 独显）
-const defaultDevice = () => (currentBackend.value === 'vulkan' ? 'Vulkan1' : 'SYCL0')
+// 设备兜底：语义角色（后端无关，启动时按当前引擎解析）
+const defaultDevice = () => 'auto'
+// 设备选项：语义角色 + 当前后端解析到的具体设备名（从 selectable 推导）
+const deviceOptions = computed(() => {
+  const byRole = { discrete: [], integrated: [] }
+  for (const g of gpuList.value) {
+    const role = (g.name || '').includes('核显') ? 'integrated' : 'discrete'
+    byRole[role].push(g.id)
+  }
+  const fmt = (role, label) => {
+    const ids = byRole[role] || []
+    return { value: role, label: ids.length ? `${label} (${ids.join(' / ')})` : label }
+  }
+  return [
+    { value: 'auto', label: '自动' },
+    fmt('discrete', '独显'),
+    fmt('integrated', '核显'),
+  ]
+})
 const gpuTotalGiB = ref(0)
 
 // 空闲自动卸载选项（分钟）
@@ -545,7 +564,7 @@ async function doUnload(row) {
 // ---------- 新建/编辑 ----------
 
 function openCreate() {
-  form.value = { name: '', model_path: '', gpu_id: gpuList.value[0]?.id || '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } }
+  form.value = { name: '', model_path: '', gpu_id: defaultDevice(), idle_unload_min: 0, preset: { ...DEFAULT_PRESET } }
   useManualPath.value = false
   useManualName.value = false
   autoNameHint.value = ''
@@ -564,9 +583,9 @@ async function doCreate() {
   creating.value = true
   try {
     await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null, idle_unload_min: form.value.idle_unload_min || 0 })
-    // 保存推理参数为预设（按当前后端存一套）
+    // 保存推理参数为预设（模板后端无关，单套）
     try {
-      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || defaultDevice(), backend: currentBackend.value })
+      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || defaultDevice() })
     } catch (e) {
       // 预设已存在则忽略，用户可在编辑时更新
     }
@@ -581,9 +600,9 @@ async function doCreate() {
 }
 
 async function openEdit(row) {
-  // 拉取当前后端的预设列表，找当前模型的预设（SYCL/Vulkan 各一套）
+  // 拉取预设列表（模板后端无关，单套），找当前模型的预设
   try {
-    _allPresets.value = await listPresets(currentBackend.value)
+    _allPresets.value = await listPresets()
   } catch (e) {
     _allPresets.value = []
   }
@@ -632,7 +651,6 @@ async function doSaveEdit() {
     // 2. 保存推理参数到 model_presets 表（upsert，按当前后端）
     const p = editForm.value.preset
     const payload = {
-      backend: currentBackend.value,
       ctx_size: p.ctx_size, temp: p.temp, threads: p.threads,
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,

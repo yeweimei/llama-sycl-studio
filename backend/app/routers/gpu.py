@@ -317,10 +317,12 @@ def _query_inference_metrics() -> dict:
 
 @router.get("/selectable")
 def selectable_gpus():
-    """返回可选 GPU 设备列表（解析 llama-server --list-devices，回退 /dev/dri 扫描）"""
+    """返回可选 GPU 设备列表（解析 llama-server --list-devices，按当前引擎过滤，回退 /dev/dri 扫描）"""
     import os
     import re
     import glob
+
+    from app.instance_mgr import _current_backend
 
     # 尝试调用 llama-server --list-devices
     llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
@@ -337,8 +339,11 @@ def selectable_gpus():
             pattern = re.compile(
                 r"(SYCL|Vulkan)(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)"
             )
+            prefix = "Vulkan" if _current_backend() == "vulkan" else "SYCL"
             gpus = []
             for m in pattern.finditer(output):
+                if m.group(1) != prefix:
+                    continue
                 backend = m.group(1)
                 idx = int(m.group(2))
                 raw_name = m.group(3).strip()
@@ -379,83 +384,168 @@ def selectable_gpus():
     return gpus
 
 
+def _list_devices_backend() -> list[dict]:
+    """后端无关设备列表（主数据源）：解析 llama-server --list-devices
+    返回 [{id, backend, name, is_discrete, memory_total_mib, memory_free_mib, memory_used_mib}]
+    构建可能同时含 SYCL+Vulkan 后端，这里按当前引擎过滤（SYCL 引擎只显示 SYCLx，Vulkan 引擎只显示 Vulkanx）。
+    """
+    from app.instance_mgr import _current_backend
+    llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
+    devices = []
+    if os.path.isfile(llama_bin):
+        try:
+            r = subprocess.run([llama_bin, "--list-devices"], capture_output=True, text=True, timeout=15)
+            output = (r.stdout or "") + (r.stderr or "")
+            pattern = re.compile(r"(SYCL|Vulkan)(\d+):\s*(.+?)\s*\((\d+)\s*MiB,\s*(\d+)\s*MiB\s*free\)")
+            prefix = "Vulkan" if _current_backend() == "vulkan" else "SYCL"
+            for m in pattern.finditer(output):
+                if m.group(1) != prefix:
+                    continue
+                raw_name = m.group(3).strip()
+                total_mib = int(m.group(4))
+                free_mib = int(m.group(5))
+                devices.append({
+                    "id": f"{m.group(1)}{m.group(2)}",
+                    "backend": m.group(1).lower(),
+                    "name": raw_name,
+                    "is_discrete": "Arc" in raw_name,
+                    "memory_total_mib": total_mib,
+                    "memory_free_mib": free_mib,
+                    "memory_used_mib": max(total_mib - free_mib, 0),
+                })
+        except Exception:
+            pass
+    return devices
+
+
+def _model_memory_by_backend_device() -> dict[str, int]:
+    """进程真实内存占用（RSS MiB）按 --device 设备名归集（后端无关：SYCLx/Vulkanx）"""
+    result: dict[str, int] = {}
+    try:
+        ps_out = _run(["ps", "-eo", "pid,rss,args"], timeout=5)
+        for line in ps_out.strip().splitlines()[1:]:
+            if "llama-server" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                rss_kb = int(parts[1])
+            except ValueError:
+                continue
+            args = " ".join(parts[2:])
+            m = re.search(r"--device\s+((?:SYCL|Vulkan)\d+)", args)
+            if m:
+                dev = m.group(1)
+                result[dev] = result.get(dev, 0) + int(rss_kb // 1024)
+    except Exception:
+        pass
+    return result
+
+
+def _xpu_smi_sensors() -> dict[str, dict]:
+    """xpu-smi 传感器（功耗/能耗），按设备名（Arc=独显 / Iris=核显）关联到角色
+    返回 {role: {pci_bdf, name, power_draw_w, power_limit_w, energy_consumed_j}}
+    """
+    sensors: dict[str, dict] = {}
+    if not shutil.which("xpu-smi"):
+        return sensors
+    table = _parse_xpu_smi_table()  # 物理 gpu_id → {name, pci_bdf}
+    for gpu_id in (0, 1):
+        out = _run([
+            "xpu-smi", "--query-gpu=memory.used,memory.total,power.draw,power.limit,energy.consumed",
+            "--format=csv,noheader", f"--id={gpu_id}"
+        ], timeout=10)
+        if not out.strip():
+            continue
+        parts = [p.strip() for p in out.strip().split(",")]
+        if len(parts) < 5:
+            continue
+
+        def _f(v):
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return None
+
+        t = table.get(gpu_id, {})
+        name = t.get("name") or ("Arc" if gpu_id == 1 else "Iris")
+        role = "discrete" if "Arc" in name else "integrated"
+        pd = _f(parts[2])
+        pl = _f(parts[3])
+        ej = _f(parts[4])
+        sensors[role] = {
+            "pci_bdf": t.get("pci_bdf") or None,
+            "name": name,
+            "power_draw_w": round(pd, 1) if pd is not None else None,
+            "power_limit_w": round(pl, 1) if pl is not None else None,
+            "energy_consumed_j": int(round(ej)) if ej is not None else None,
+        }
+    return sensors
+
+
 @router.get("")
 def gpu_status():
-    """GPU 状态：结构化输出（xpu-smi）"""
-    try:
-        if not shutil.which("xpu-smi"):
-            return {
-                "source": "unavailable",
-                "devices": [],
-                "processes": [],
-                "inference": {},
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-                "error": "xpu-smi not found",
-            }
-
-        devices = _parse_xpu_smi_query()
-        if not devices:
-            return {
-                "source": "unavailable",
-                "devices": [],
-                "processes": [],
-                "inference": {},
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-                "error": "xpu-smi query returned no data",
-            }
-
-        processes = _parse_xpu_smi_processes()
-        inference = _query_inference_metrics()
-
-        # 按 GPU 汇总进程真实显存占用（核显共享内存统计不可信，用进程占用替代）
-        # 独显：xpu-smi 进程表准确；核显：xpu-smi 进程表不显示核显进程，
-        # 用 ps 按 --device SYCL 参数匹配 RSS（SYCL1+=核显）
-        mem_by_dev: dict[int, int] = {}
-        for p in processes:
-            gid = p.get("gpu_id", -1)
-            if gid < 0:
-                continue
-            mem_by_dev[gid] = mem_by_dev.get(gid, 0) + p.get("memory_mib", 0)
-        # 核显补充：ps 匹配 --device SYCL1+（xpu-smi 进程表不含核显进程）
-        i_gpu_id = None
-        for dev in devices:
-            if "00:02.0" in (dev.get("pci_bdf") or "") or any(k in (dev.get("name") or "") for k in ("Iris", "Xe", "UHD")):
-                i_gpu_id = dev["id"]
-                break
-        if i_gpu_id is not None:
-            igpu_mib = _model_memory_by_device_sycl1()
-            if igpu_mib:
-                mem_by_dev[i_gpu_id] = mem_by_dev.get(i_gpu_id, 0) + igpu_mib
-
-        # 附加设备真实模型内存占用 + 集显标记
-        for dev in devices:
-            # 核显（PCI 00:02.0 / 设备名含 Iris/Xe/UHD）共享系统内存，显存统计不可信
-            dev["is_integrated"] = "00:02.0" in (dev.get("pci_bdf") or "") or \
-                any(k in (dev.get("name") or "") for k in ("Iris", "Xe", "UHD", "HD Graphics"))
-            dev["model_memory_mib"] = mem_by_dev.get(dev["id"], 0)
-            if dev["is_integrated"]:
-                # 核显：用进程真实占用覆盖 xpu-smi 假数字（含系统缓存）
-                dev["memory_used_mib"] = dev["model_memory_mib"]
-                dev["memory_util_pct"] = 0
-        total_model_mib = sum(mem_by_dev.values())
-
-        return {
-            "source": "xpu-smi",
-            "devices": devices,
-            "processes": processes,
-            "inference": inference,
-            "total_model_memory_mib": total_model_mib,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-    except Exception as e:
+    """GPU 状态（后端无关）：设备列表来自 llama-server --list-devices（当前后端），
+    进程占用按 --device 参数归集，功耗/能耗来自 xpu-smi 按设备角色关联。"""
+    devices = _list_devices_backend()
+    if not devices:
         return {
             "source": "unavailable",
             "devices": [],
             "processes": [],
             "inference": {},
             "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "error": str(e),
+            "error": "llama-server --list-devices 无输出",
         }
+    proc_mem = _model_memory_by_backend_device()
+    sensors = _xpu_smi_sensors()
+    # 进程明细（后端无关：按 --device 参数识别设备）
+    processes = []
+    try:
+        ps_out = _run(["ps", "-eo", "pid,rss,args"], timeout=5)
+        for line in ps_out.strip().splitlines()[1:]:
+            if "llama-server" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                rss_kb = int(parts[1])
+            except ValueError:
+                continue
+            m = re.search(r"--device\s+((?:SYCL|Vulkan)\d+)", " ".join(parts[2:]))
+            processes.append({
+                "gpu_id": m.group(1) if m else -1,
+                "pid": int(parts[0]),
+                "name": "llama-server",
+                "memory_mib": int(rss_kb // 1024),
+                "type": "C",
+            })
+    except Exception:
+        pass
+    for dev in devices:
+        dev_id = dev["id"]
+        dev["model_memory_mib"] = proc_mem.get(dev_id, 0)
+        role = "discrete" if dev["is_discrete"] else "integrated"
+        s = sensors.get(role, {})
+        dev["pci_bdf"] = s.get("pci_bdf")
+        dev["power_draw_w"] = s.get("power_draw_w")
+        dev["power_limit_w"] = s.get("power_limit_w")
+        dev["energy_consumed_j"] = s.get("energy_consumed_j")
+        dev["frequency_mhz"] = None
+        dev["temperature_c"] = None
+        dev["is_integrated"] = not dev["is_discrete"]
+        dev["memory_util_pct"] = round(dev["memory_used_mib"] / dev["memory_total_mib"] * 100) if dev["memory_total_mib"] > 0 else 0
+    inference = _query_inference_metrics()
+    return {
+        "source": "list-devices+xpu-smi",
+        "devices": devices,
+        "processes": processes,
+        "inference": inference,
+        "total_model_memory_mib": sum(proc_mem.values()),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 @router.get("/system")

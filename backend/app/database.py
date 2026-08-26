@@ -83,7 +83,7 @@ def init_db():
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
-                device TEXT DEFAULT '0',
+                device TEXT DEFAULT 'auto',
                 cpu_moe INTEGER DEFAULT 0,
                 mtp INTEGER DEFAULT 0,
                 mtp_model TEXT DEFAULT '',
@@ -221,14 +221,14 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning TEXT DEFAULT ''")
         if "reasoning_budget" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_budget INTEGER")
-        # 多后端 preset 模板（2026-08-26：SYCL/Vulkan 各一套推理参数）
-        # 重建表：UNIQUE(model_name) → UNIQUE(model_name, backend)，旧数据归入 sycl-fp16
-        if "backend" not in preset_cols:
-            conn.execute("ALTER TABLE model_presets RENAME TO model_presets_old")
+        # 模板单套化（2026-08-26 晚：device 语义化后模板后端无关，去掉 backend 分套）
+        # 旧库（UNIQUE(model_name, backend) 双后端分套）→ 重建为 UNIQUE(model_name) 单套，
+        # 每模型保留 updated_at 最新的一套（其余参数由该套统一承载）
+        if "backend" in preset_cols:
+            conn.execute("ALTER TABLE model_presets RENAME TO model_presets_multi")
             conn.execute("""CREATE TABLE model_presets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_name TEXT NOT NULL,
-                backend TEXT DEFAULT 'sycl-fp16',
+                model_name TEXT UNIQUE NOT NULL,
                 ctx_size INTEGER DEFAULT 8192,
                 temp REAL DEFAULT 0.7,
                 threads INTEGER DEFAULT 8,
@@ -241,7 +241,7 @@ def init_db():
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
-                device TEXT DEFAULT '0',
+                device TEXT DEFAULT 'auto',
                 cpu_moe INTEGER DEFAULT 0,
                 mtp INTEGER DEFAULT 0,
                 mtp_model TEXT DEFAULT '',
@@ -255,18 +255,23 @@ def init_db():
                 reasoning_budget INTEGER,
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
-                updated_at INTEGER,
-                UNIQUE(model_name, backend)
+                updated_at INTEGER
             )""")
-            old_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets_old)").fetchall()]
-            col_list = ", ".join(old_cols)
-            conn.execute(
-                f"INSERT INTO model_presets ({col_list}, backend) SELECT {col_list}, 'sycl-fp16' FROM model_presets_old"
-            )
-            conn.execute("DROP TABLE model_presets_old")
+            multi_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets_multi)").fetchall()]
+            # 去掉 backend 列，其余列全部搬入（含 id，保持引用稳定）
+            col_list = ", ".join(c for c in multi_cols if c != "backend")
+            # 每 model_name 保留 updated_at 最新（平局取 id 最大）的一套
+            conn.execute(f"""
+                INSERT INTO model_presets ({col_list})
+                SELECT {col_list} FROM model_presets_multi m
+                WHERE m.id = (
+                    SELECT m2.id FROM model_presets_multi m2
+                    WHERE m2.model_name = m.model_name
+                    ORDER BY m2.updated_at DESC, m2.id DESC LIMIT 1
+                )
+            """)
+            conn.execute("DROP TABLE model_presets_multi")
             # 重建后刷新列列表（新表含全部列，避免后续 ADD COLUMN 冲突）
-            preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
-        else:
             preset_cols = [r[1] for r in conn.execute("PRAGMA table_info(model_presets)").fetchall()]
         # 补齐此前遗漏的列（presets.py INSERT 已引用但从未加迁移/建表，导致新库建预设报错）
         if "cpu_moe" not in preset_cols:
@@ -281,11 +286,11 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN spec_draft_type_k TEXT DEFAULT ''")
         if "spec_draft_type_v" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN spec_draft_type_v TEXT DEFAULT ''")
-        # 迁移旧 device 值: "0"->"SYCL0", "1"->"SYCL1"
-        for old, new in [("0", "SYCL0"), ("1", "SYCL1")]:
-            conn.execute("UPDATE model_presets SET device=? WHERE device=?", (new, old))
-        # 也处理空值和 NULL
-        conn.execute("UPDATE model_presets SET device='SYCL0' WHERE device IS NULL OR device=''")
+        # device 语义化（后端无关）：SYCL0/Vulkan1→discrete，SYCL1/Vulkan0→integrated，旧数字 0/1 同理
+        conn.execute("UPDATE model_presets SET device='discrete' WHERE device IN ('SYCL0','Vulkan1','0')")
+        conn.execute("UPDATE model_presets SET device='integrated' WHERE device IN ('SYCL1','Vulkan0','1')")
+        # 其余未知/空值 → auto
+        conn.execute("UPDATE model_presets SET device='auto' WHERE device IS NULL OR device='' OR device NOT IN ('auto','discrete','integrated')")
         svc_cols = [r[1] for r in conn.execute("PRAGMA table_info(services)").fetchall()]
         if "gpu_id" not in svc_cols:
             conn.execute("ALTER TABLE services ADD COLUMN gpu_id TEXT DEFAULT ''")

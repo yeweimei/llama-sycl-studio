@@ -9,17 +9,24 @@ router = APIRouter()
 
 
 def _normalize_device(v) -> str:
-    """归一化设备名。
-    旧值(0/1)映射为 SYCL0/SYCL1；已含 SYCL / Vulkan 前缀的原样保留（Vulkan 后端设备名是 Vulkan0/Vulkan1）。
+    """设备角色归一化（后端无关语义值）。
+    语义值 auto/discrete/integrated 原样保留；具体设备名或旧值映射为语义值：
+      SYCL0/Vulkan1 → discrete（独显），SYCL1/Vulkan0 → integrated（核显），旧数字 0→discrete / 1→integrated。
+    启动时由 instance_mgr 按当前后端动态解析成具体设备名（SYCL0/Vulkan1）。
     """
     if not v:
-        return "SYCL0"
-    s = str(v)
-    if s.startswith("SYCL") or s.startswith("Vulkan"):
-        return s
+        return "auto"
+    s = str(v).strip()
+    low = s.lower()
+    if low in ("auto", "discrete", "integrated"):
+        return low
+    if s.startswith("SYCL"):
+        return "integrated" if s == "SYCL1" else "discrete"
+    if s.startswith("Vulkan"):
+        return "integrated" if s == "Vulkan0" else "discrete"
     if s.isdigit():
-        return f"SYCL{s}"
-    return "SYCL0"
+        return "discrete" if s == "0" else "integrated"
+    return "auto"
 
 
 def _find_mmproj(model_name: str) -> str:
@@ -94,6 +101,14 @@ def _write_config_ini() -> dict:
             lines.append("no-mmap = on")
         lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
         dev = _normalize_device(d.get("device"))
+        # 语义值 → 具体设备名（后端无关；解析失败则写回语义值兜底）
+        try:
+            from app.instance_mgr import _resolve_device
+            dev_resolved = _resolve_device(dev)
+            if dev_resolved:
+                dev = dev_resolved
+        except Exception:
+            pass
         lines.append(f"device = {dev}")
         # RoPE/YaRN 长上下文缩放（Qwen 社区建议 >32K 必须启用）
         rs = d.get("rope_scaling")
@@ -142,7 +157,7 @@ def _write_config_ini() -> dict:
 
 class PresetCreate(BaseModel):
     model_name: str
-    backend: str = "sycl-fp16"  # sycl-fp16 | vulkan：同一模型各后端一套参数
+    backend: str = "sycl-fp16"  # 兼容字段（已忽略：模板后端无关，不再按 backend 分套）
     ctx_size: int = 8192
     temp: float = 0.7
     threads: int = 8
@@ -245,19 +260,14 @@ class PresetUpdate(BaseModel):
 
 
 @router.get("")
-def list_presets(backend: str | None = None):
-    """列出所有模型预设（可选按 backend 过滤）"""
+def list_presets():
+    """列出所有模型预设（模板后端无关，单套）"""
     with get_conn() as conn:
-        if backend:
-            rows = conn.execute(
-                "SELECT * FROM model_presets WHERE backend=? ORDER BY model_name", (backend,)
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM model_presets ORDER BY model_name, backend").fetchall()
+        rows = conn.execute("SELECT * FROM model_presets ORDER BY model_name").fetchall()
     out = []
     for r in rows:
         d = dict(r)
-        d["backend"] = d.get("backend", "sycl-fp16")
+        d["backend"] = "universal"
         d["flash_attn"] = bool(d["flash_attn"])
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
@@ -280,20 +290,19 @@ def list_presets(backend: str | None = None):
 
 @router.post("")
 def create_preset(body: PresetCreate):
-    """创建模型预设（同一模型可按 backend 各存一套）"""
-    backend = body.backend or "sycl-fp16"
+    """创建模型预设（单套，后端无关）"""
     with get_conn() as conn:
         dup = conn.execute(
-            "SELECT id FROM model_presets WHERE model_name=? AND backend=?",
-            (body.model_name, backend),
+            "SELECT id FROM model_presets WHERE model_name=?",
+            (body.model_name,),
         ).fetchone()
         if dup:
-            raise HTTPException(400, f"模型 {body.model_name} 的 {backend} 预设已存在")
+            raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
-            "INSERT INTO model_presets (model_name, backend, ctx_size, temp, threads, batch_size, ubatch_size, "
+            "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
             "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (body.model_name, backend, body.ctx_size, body.temp, body.threads, body.batch_size,
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
@@ -304,7 +313,7 @@ def create_preset(body: PresetCreate):
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
-    return {"ok": True, "model_name": body.model_name, "backend": backend}
+    return {"ok": True, "model_name": body.model_name, "backend": "universal"}
 
 
 @router.put("/{pid}")

@@ -477,9 +477,19 @@ def _preset_params(model_name: str) -> dict:
         params["jinja"] = "on"
     if not d.get("mmap", 1):
         params["no-mmap"] = "on"
-    dev = d.get("device") or ""
-    if dev and dev != "0":
-        params["device"] = dev if dev.startswith(("SYCL", "Vulkan", "CPU")) else f"SYCL{dev}"
+    dev = d.get("device") or "auto"
+    if dev:
+        # 语义角色（auto/discrete/integrated）→ 具体设备名；具体设备名原样透传
+        if dev.lower() in ("auto", "discrete", "integrated"):
+            try:
+                from app.instance_mgr import _resolve_device
+                resolved = _resolve_device(dev)
+                if resolved:
+                    params["device"] = resolved
+            except Exception:
+                params["device"] = dev
+        else:
+            params["device"] = dev
     try:
         extra = json.loads(d.get("extra_args") or "{}")
     except Exception:
