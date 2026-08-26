@@ -284,6 +284,8 @@ const autoNameHint = ref('')
 const modelList = ref([])
 const gpuList = ref([])
 const currentBackend = ref('sycl-fp16')
+// 设备兜底：按当前引擎后端（SYCL0 独显 / Vulkan1 独显）
+const defaultDevice = () => (currentBackend.value === 'vulkan' ? 'Vulkan1' : 'SYCL0')
 const gpuTotalGiB = ref(0)
 
 // 空闲自动卸载选项（分钟）
@@ -564,7 +566,7 @@ async function doCreate() {
     await createService({ name: form.value.name || null, model_path: form.value.model_path, gpu_id: form.value.gpu_id || null, idle_unload_min: form.value.idle_unload_min || 0 })
     // 保存推理参数为预设（按当前后端存一套）
     try {
-      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || 'SYCL0', backend: currentBackend.value })
+      await createPreset({ model_name: form.value.name, ...form.value.preset, device: form.value.gpu_id || defaultDevice(), backend: currentBackend.value })
     } catch (e) {
       // 预设已存在则忽略，用户可在编辑时更新
     }
@@ -590,7 +592,7 @@ async function openEdit(row) {
     id: row.id,
     name: row.name,
     model_path: row.model_path,
-    gpu_id: row.gpu_id || found?.device || 'SYCL0',
+    gpu_id: row.gpu_id || found?.device || defaultDevice(),
     presetId: found?.id || null,
     preset: found ? { ...found } : { ...DEFAULT_PRESET },
     custom_tags: [],
@@ -635,7 +637,7 @@ async function doSaveEdit() {
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
       flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
-      mmap: p.mmap, device: editForm.value.gpu_id || 'SYCL0',
+      mmap: p.mmap, device: editForm.value.gpu_id || defaultDevice(),
       cpu_moe: p.cpu_moe, mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
       spec_draft_type_k: p.spec_draft_type_k || '', spec_draft_type_v: p.spec_draft_type_v || '',
       rope_scaling: p.rope_scaling || '', rope_scale: (p.rope_scale === '' || p.rope_scale === null || p.rope_scale === undefined) ? null : Number(p.rope_scale), yarn_orig_ctx: (p.yarn_orig_ctx === '' || p.yarn_orig_ctx === null || p.yarn_orig_ctx === undefined) ? null : Number(p.yarn_orig_ctx),
