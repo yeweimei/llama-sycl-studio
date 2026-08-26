@@ -9,11 +9,13 @@ router = APIRouter()
 
 
 def _normalize_device(v) -> str:
-    """将旧值(0/1)映射为 SYCL0/SYCL1，已含 SYCL 前缀的原样保留"""
+    """归一化设备名。
+    旧值(0/1)映射为 SYCL0/SYCL1；已含 SYCL / Vulkan 前缀的原样保留（Vulkan 后端设备名是 Vulkan0/Vulkan1）。
+    """
     if not v:
         return "SYCL0"
     s = str(v)
-    if s.startswith("SYCL"):
+    if s.startswith("SYCL") or s.startswith("Vulkan"):
         return s
     if s.isdigit():
         return f"SYCL{s}"
