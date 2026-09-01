@@ -154,7 +154,7 @@ def _supports_chat(model_name: str, loaded_detail: dict) -> bool:
     所有子进程都会继承该参数）
     """
     nl = (model_name or "").lower()
-    if any(k in nl for k in ("embedding", "embed-", "rerank", "bge-", "bge_")):
+    if any(k in nl for k in ("embedding", "embed-", "rerank", "bge-", "bge_", "paddleocr", "ocr")):
         return False
     return True
 

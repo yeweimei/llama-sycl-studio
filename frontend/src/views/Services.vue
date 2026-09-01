@@ -156,7 +156,7 @@
           <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存</div>
         </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
-        <ParamForm v-model="form.preset" :model-path="form.model_path" :mmproj-path="form.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" />
+        <ParamForm v-model="form.preset" :model-path="form.model_path" :mmproj-path="form.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" :supports-chat="supportsChatFor(form.model_path)" />
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -205,7 +205,7 @@
           <div class="form-tip">模型无调用超过设定时间后自动卸载释放显存；选"一直保持"则常驻</div>
         </el-form-item>
         <el-divider content-position="left">推理参数</el-divider>
-        <ParamForm v-model="editForm.preset" :model-path="editForm.model_path" :mmproj-path="editForm.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" />
+        <ParamForm v-model="editForm.preset" :model-path="editForm.model_path" :mmproj-path="editForm.mmproj_path || ''" :gpu-total-gi-b="gpuTotalGiB" :supports-chat="supportsChatFor(editForm.model_path)" />
         <div class="form-tip" style="margin-top:4px">推理参数通过模型预设(config.ini)生效，保存后需重启容器加载。</div>
       </el-form>
       <template #footer>
@@ -273,6 +273,15 @@ let logTimer = null
 // 新建/编辑对话框
 const createVisible = ref(false)
 const creating = ref(false)
+// 判断模型是否支持对话/思考（embedding/rerank/OCR 等专用模型不显示思考区块）
+// 与后端 _supports_chat 对齐，并补充 ocr/paddle 等视觉/专用模型
+function supportsChatFor(modelPath) {
+  if (!modelPath) return true
+  const nl = String(modelPath).toLowerCase()
+  const kw = ['embedding', 'embed-', 'rerank', 'bge-', 'bge_', 'paddleocr', 'ocr']
+  return !kw.some(k => nl.includes(k))
+}
+
 const DEFAULT_PRESET = {
   ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',

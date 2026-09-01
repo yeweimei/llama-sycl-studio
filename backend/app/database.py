@@ -95,6 +95,7 @@ def init_db():
                 yarn_orig_ctx INTEGER,
                 reasoning TEXT DEFAULT '',
                 reasoning_budget INTEGER,
+                reasoning_effort TEXT DEFAULT '',
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER
@@ -221,6 +222,8 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning TEXT DEFAULT ''")
         if "reasoning_budget" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_budget INTEGER")
+        if "reasoning_effort" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_effort TEXT DEFAULT ''")
         # 模板单套化（2026-08-26 晚：device 语义化后模板后端无关，去掉 backend 分套）
         # 旧库（UNIQUE(model_name, backend) 双后端分套）→ 重建为 UNIQUE(model_name) 单套，
         # 每模型保留 updated_at 最新的一套（其余参数由该套统一承载）
@@ -253,6 +256,7 @@ def init_db():
                 yarn_orig_ctx INTEGER,
                 reasoning TEXT DEFAULT '',
                 reasoning_budget INTEGER,
+                reasoning_effort TEXT DEFAULT '',
                 extra_args TEXT DEFAULT '{}',
                 created_at INTEGER,
                 updated_at INTEGER

@@ -123,12 +123,14 @@ def _write_config_ini() -> dict:
             lines.append(f"spec-draft-type-k = {d['spec_draft_type_k']}")
         if d.get("spec_draft_type_v"):
             lines.append(f"spec-draft-type-v = {d['spec_draft_type_v']}")
-        # 思考（Reasoning）：--reasoning on/off/auto + --reasoning-budget N
+        # 思考（Reasoning）：--reasoning on/off/auto + --reasoning-budget N + --reasoning-effort
         reasoning = d.get("reasoning")
         if reasoning:
             lines.append(f"reasoning = {reasoning}")
             if d.get("reasoning_budget") is not None:
                 lines.append(f"reasoning-budget = {d['reasoning_budget']}")
+            if d.get("reasoning_effort"):
+                lines.append(f"reasoning-effort = {d['reasoning_effort']}")
         # 自动检测 mmproj 并写入（多模态投影文件）
         mmproj = _find_mmproj(d["model_name"])
         if mmproj:
@@ -182,6 +184,7 @@ class PresetCreate(BaseModel):
     yarn_orig_ctx: int | None = None
     reasoning: str = ""
     reasoning_budget: int | None = None
+    reasoning_effort: str = ""
     extra_args: dict = {}
 
     @field_validator(
@@ -195,7 +198,7 @@ class PresetCreate(BaseModel):
             return None
         return v
 
-    @field_validator("rope_scaling", "reasoning", mode="before")
+    @field_validator("rope_scaling", "reasoning", "reasoning_effort", mode="before")
     @classmethod
     def _enum_string_normalize(cls, v):
         # 字符串枚举字段：可能收到布尔值（el-switch 误绑）或空串；'' 是有效关闭值不能归 None
@@ -233,6 +236,7 @@ class PresetUpdate(BaseModel):
     yarn_orig_ctx: int | None = None
     reasoning: str | None = None
     reasoning_budget: int | None = None
+    reasoning_effort: str | None = None
     extra_args: dict | None = None
 
     @field_validator(
@@ -246,7 +250,7 @@ class PresetUpdate(BaseModel):
             return None
         return v
 
-    @field_validator("rope_scaling", "reasoning", mode="before")
+    @field_validator("rope_scaling", "reasoning", "reasoning_effort", mode="before")
     @classmethod
     def _enum_string_normalize(cls, v):
         # 字符串枚举字段：可能收到布尔值或空串；'' 是有效关闭值不能归 None
@@ -282,6 +286,7 @@ def list_presets():
         d["yarn_orig_ctx"] = d.get("yarn_orig_ctx")
         d["reasoning"] = d.get("reasoning", "")
         d["reasoning_budget"] = d.get("reasoning_budget")
+        d["reasoning_effort"] = d.get("reasoning_effort", "")
         d["device"] = _normalize_device(d.get("device"))
         d["extra_args"] = json.loads(d["extra_args"] or "{}")
         out.append(d)
@@ -300,8 +305,8 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
@@ -309,7 +314,7 @@ def create_preset(body: PresetCreate):
              body.mtp_n_max or 3, body.spec_draft_type_k or "", body.spec_draft_type_v or "",
              _normalize_device(body.device), body.rope_scaling or "",
              body.rope_scale, body.yarn_orig_ctx, body.reasoning or "", body.reasoning_budget,
-             json.dumps(body.extra_args), now(), now()),
+             body.reasoning_effort or "", json.dumps(body.extra_args), now(), now()),
         )
     # 同步生成 config.ini（router 重启后生效）
     _write_config_ini()
@@ -371,12 +376,20 @@ def update_preset(pid: int, body: PresetUpdate):
         if body.reasoning is not None:
             updates["reasoning"] = body.reasoning
             if body.reasoning == "":
-                # 关闭思考时联动清空 budget
+                # 关闭思考时联动清空 budget 与 effort
                 updates["reasoning_budget"] = None
-            elif body.reasoning_budget is not None:
+                updates["reasoning_effort"] = ""
+            else:
+                if body.reasoning_budget is not None:
+                    updates["reasoning_budget"] = body.reasoning_budget
+                # 思考强度：空串也是有效值（''=用模板默认），区分 None（不修改）与 ''（清空）
+                if body.reasoning_effort is not None:
+                    updates["reasoning_effort"] = body.reasoning_effort
+        else:
+            if body.reasoning_budget is not None:
                 updates["reasoning_budget"] = body.reasoning_budget
-        elif body.reasoning_budget is not None:
-            updates["reasoning_budget"] = body.reasoning_budget
+            if body.reasoning_effort is not None:
+                updates["reasoning_effort"] = body.reasoning_effort
         if body.extra_args is not None:
             updates["extra_args"] = json.dumps(body.extra_args)
 

@@ -164,6 +164,7 @@
     </div>
 
     <!-- 思考（Reasoning） -->
+    <div v-if="supportsChat">
     <el-divider content-position="left">
       <span style="cursor:pointer;user-select:none" @click="reasoningOpen = !reasoningOpen">
         {{ reasoningOpen ? '▾' : '▸' }} 思考（Reasoning）
@@ -186,6 +187,14 @@
             </el-select>
           </el-form-item>
         </el-col>
+        <el-col :span="12" v-if="model.reasoning_enabled && model.reasoning !== 'off'">
+          <el-form-item label="思考强度">
+            <el-select v-model="model.reasoning_effort" clearable placeholder="默认（default）" style="width:100%">
+              <el-option v-for="lv in reasoningEffortLevels" :key="lv.value" :value="lv.value" :label="lv.label" />
+            </el-select>
+            <div class="form-tip" style="width:100%">思考深度：default=模板默认 / low=浅思考 / medium=中等 / high=深思考（需模型模板支持）</div>
+          </el-form-item>
+        </el-col>
       </el-row>
       <el-row :gutter="16" v-if="model.reasoning_enabled">
         <el-col :span="12">
@@ -195,6 +204,7 @@
           </el-form-item>
         </el-col>
       </el-row>
+    </div>
     </div>
 
     <!-- 高级采样参数（存入 extra_args 透传 llama.cpp） -->
@@ -333,10 +343,20 @@ const props = defineProps({
   modelPath: { type: String, default: '' },
   mmprojPath: { type: String, default: '' },
   gpuTotalGiB: { type: Number, default: 0 },
+  supportsChat: { type: Boolean, default: true },
 })
 const emit = defineEmits(['update:modelValue'])
 
 const kvTypes = ['f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 'f32']
+// 思考强度（Reasoning Effort）等级，透传 llama.cpp --reasoning-effort
+const reasoningEffortLevels = [
+  { value: 'minimal', label: 'minimal（极浅）' },
+  { value: 'low', label: 'low（浅）' },
+  { value: 'medium', label: 'medium（中）' },
+  { value: 'high', label: 'high（深）' },
+  { value: 'xhigh', label: 'xhigh（很深）' },
+  { value: 'max', label: 'max（最深）' },
+]
 const samplingOpen = ref(false)
 const yarnOpen = ref(false)
 const reasoningOpen = ref(false)
@@ -350,11 +370,12 @@ function onYarnSwitch(val) {
   }
 }
 
-// 关闭思考开关时联动清空思考模式/预算
+// 关闭思考开关时联动清空思考模式/预算/强度
 function onReasoningSwitch(val) {
   if (!val) {
     model.value.reasoning = ''
     model.value.reasoning_budget = null
+    model.value.reasoning_effort = ''
   }
 }
 
@@ -462,6 +483,7 @@ const DEFAULT_ARGS = {
   reasoning: '',
   reasoning_enabled: false,
   reasoning_budget: null,
+  reasoning_effort: '',
 }
 
 // 采样参数默认值（与 llama.cpp 默认一致；0/1.0 表示禁用）
@@ -532,6 +554,10 @@ watch(
       out.reasoning = 'auto'
     }
     delete out.reasoning_enabled
+    // reasoning_effort：未启用思考或未选强度时清空（后端只存 '' 或合法 level）
+    if (!v.reasoning || !v.reasoning_effort) {
+      out.reasoning_effort = ''
+    }
     // 把 sampling 打平进 extra_args（后端透传 llama.cpp）
     out.extra_args = { ...(v.extra_args || {}), sampling: { ...v.sampling } }
     emit('update:modelValue', out)
