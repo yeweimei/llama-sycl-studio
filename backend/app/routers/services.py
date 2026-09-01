@@ -1388,18 +1388,11 @@ def delete_history_item(sid: int, history_id: int):
     return {"ok": True}
 
 
-# ---------- PDF 解析 ----------
+# ---------- 文档解析 ----------
 
-@router.post("/{sid}/parse-pdf")
-async def parse_pdf(sid: int, file: UploadFile):
-    """上传 PDF 文件，返回提取的文本"""
-    from fastapi import UploadFile as _UF
+def _extract_pdf(content: bytes) -> str:
+    """用 PyMuPDF 提取 PDF 文本，不可用时回退 pdfplumber"""
     import io
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "空文件")
-
     text = ""
     try:
         import fitz  # PyMuPDF
@@ -1416,10 +1409,64 @@ async def parse_pdf(sid: int, file: UploadFile):
                     text += page.extract_text() or ""
         except ImportError:
             raise HTTPException(500, "PDF 解析库未安装（需要 PyMuPDF 或 pdfplumber）")
+    return text
 
+
+@router.post("/{sid}/parse-pdf")
+async def parse_pdf(sid: int, file: UploadFile):
+    """上传 PDF 文件，返回提取的文本（兼容旧接口）"""
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "空文件")
+
+    text = _extract_pdf(content)
     if not text.strip():
         text = "（PDF 未提取到文本，可能是扫描件）"
+    return {"text": text[:8000]}  # 截断防止超长
 
+
+@router.post("/{sid}/parse-doc")
+async def parse_doc(sid: int, file: UploadFile):
+    """通用文档解析：PDF / Word(.docx) / Excel(.xlsx)，返回提取文本；TXT/MD 前端直接读取无需后端"""
+    import io
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "空文件")
+
+    name = (file.filename or "").lower()
+    suffix = name.rsplit(".", 1)[-1] if "." in name else ""
+    text = ""
+    if suffix == "pdf":
+        text = _extract_pdf(content)
+    elif suffix == "docx":
+        try:
+            from docx import Document
+            doc = Document(io.BytesIO(content))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text)
+        except ImportError:
+            raise HTTPException(500, "Word 解析库未安装（需要 python-docx）")
+    elif suffix == "xlsx":
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            rows = []
+            for ws in wb.worksheets:
+                rows.append(f"[工作表: {ws.title}]")
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                    if cells:
+                        rows.append(" | ".join(cells))
+            wb.close()
+            text = "\n".join(rows)
+        except ImportError:
+            raise HTTPException(500, "Excel 解析库未安装（需要 openpyxl）")
+    elif suffix in ("txt", "md"):
+        text = content.decode("utf-8", errors="replace")
+    else:
+        raise HTTPException(400, f"不支持的文件类型 .{suffix or '?'}")
+
+    if not text.strip():
+        text = "（未从文档中提取到文本）"
     return {"text": text[:8000]}  # 截断防止超长
 
 

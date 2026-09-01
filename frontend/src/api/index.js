@@ -145,6 +145,12 @@ export const parsePdf = (sid, file) => {
   formData.append('file', file)
   return api.post(`/services/${sid}/parse-pdf`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
 }
+// 通用文档解析：支持 .pdf/.docx/.xlsx（.txt/.md 前端直接 text() 即可，无需后端）
+export const parseDoc = (sid, file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post(`/services/${sid}/parse-doc`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
+}
 
 // ---------- 引擎管理 ----------
 export const getEngineVersion = () => api.get('/engine/version').then(r => r.data)

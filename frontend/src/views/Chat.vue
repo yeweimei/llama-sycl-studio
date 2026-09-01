@@ -63,13 +63,29 @@
               <div class="chat-bubble-wrap">
                 <div class="chat-bubble">
                   <div v-if="m.role === 'assistant'" class="chat-content markdown-body" v-html="renderMarkdown(m.content)"></div>
-                  <div v-else class="chat-content" style="white-space:pre-wrap">{{ m.content }}</div>
+                  <div v-else class="chat-content" style="white-space:pre-wrap">
+                    <div v-if="userImages(m).length" class="chat-images">
+                      <img
+                        v-for="(img, j) in userImages(m)"
+                        :key="j"
+                        :src="img"
+                        class="chat-image-thumb"
+                        alt="对话图片"
+                        title="点击查看大图"
+                        @click="openImagePreview(img)"
+                      />
+                    </div>
+                    <template v-if="userText(m)">{{ userText(m) }}</template>
+                  </div>
                   <div v-if="m.thinking" class="chat-thinking">
                     <div class="thinking-header" @click="toggleThinking(i)">
                       <span>🤔 思考过程</span>
                       <el-icon class="thinking-arrow" :class="{ collapsed: !thinkingExpanded[i] }"><ArrowDown /></el-icon>
                     </div>
                     <div v-show="thinkingExpanded[i]" class="thinking-body" :ref="el => setThinkingRef(el, i)">{{ m.thinking }}</div>
+                  </div>
+                  <div v-if="m.role === 'assistant' && m.metrics && (m.metrics.prefill_tps || m.metrics.decode_tps)" class="chat-metrics">
+                    <template v-if="m.metrics.prefill_tps">prefill {{ m.metrics.prefill_tps }} t/s</template><template v-if="m.metrics.prefill_tps && m.metrics.decode_tps"> · </template><template v-if="m.metrics.decode_tps">输出 {{ m.metrics.decode_tps }} t/s</template><template v-if="m.metrics.mtp_accept"> · MTP 接受率 {{ m.metrics.mtp_accept }}%</template>
                   </div>
                 </div>
                 <div class="chat-meta">
@@ -94,7 +110,7 @@
             <el-upload
               :show-file-list="false"
               :before-upload="handleFileUpload"
-              accept=".txt,.md,.pdf"
+              accept=".txt,.md,.pdf,.docx,.xlsx"
               style="margin-left:8px"
             >
               <el-button size="small" :loading="fileParsing">上传文件</el-button>
@@ -131,6 +147,13 @@
     </el-card>
 
     <el-empty v-else description="请选择对话模型" />
+
+    <!-- 图片预览组件 -->
+    <ImagePreview
+      :model-value="!!previewImage"
+      :src="previewImage || ''"
+      @update:model-value="onPreviewClose"
+    />
   </div>
 </template>
 
@@ -138,11 +161,12 @@
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, Edit } from '@element-plus/icons-vue'
+import ImagePreview from '../components/ImagePreview.vue'
 import {
   listServices, startService, stopService, listPresets,
   listSessions, createSession, renameSession, deleteSession,
   getChatHistory, addChatHistory, clearChatHistory, deleteHistoryItem,
-  parsePdf,
+  parseDoc,
 } from '../api'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
@@ -250,6 +274,28 @@ const chatMaxTokens = ref(512)
 const chatView = ref(null)
 const fileParsing = ref(false)
 const pendingImage = ref(null)
+// 图片预览：当前预览的图片地址（null 表示未打开）
+const previewImage = ref(null)
+
+function openImagePreview(src) { previewImage.value = src }
+function onPreviewClose(v) { if (!v) previewImage.value = null }
+// 从用户消息提取纯文本（兼容字符串与 OpenAI content 数组）
+function userText(m) {
+  const c = m.content
+  if (Array.isArray(c)) {
+    return c.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+  }
+  return typeof c === 'string' ? c : ''
+}
+// 从用户消息提取图片列表（发送时存 m.images；历史里可能是 content 数组）
+function userImages(m) {
+  if (m.images && m.images.length) return m.images
+  const c = m.content
+  if (Array.isArray(c)) {
+    return c.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+  }
+  return []
+}
 // 会话
 const sessions = ref([])
 const currentSessionId = ref(0)
@@ -378,7 +424,7 @@ async function sendChat() {
       { type: 'image_url', image_url: { url: pendingImage.value } },
     ]
   }
-  messages.value.push({ role: 'user', content: text })
+  messages.value.push({ role: 'user', content: text, images: pendingImage.value ? [pendingImage.value] : [] })
   try {
     const r = await addChatHistory(currentSid.value, { role: 'user', content: text, session_id: currentSessionId.value })
     if (r.id) messages.value[messages.value.length - 1].history_id = r.id
@@ -438,6 +484,15 @@ async function sendChat() {
         try {
           const chunk = JSON.parse(data)
           const delta = chunk.choices?.[0]?.delta || {}
+          // 捕获末次带 timings 的指标（每个 chunk 可能有，以最后一次为准；失败/中断不清除）
+          const timings = chunk.timings
+          if (timings) {
+            const mm = {}
+            if (timings.prompt_per_second != null) mm.prefill_tps = Number(timings.prompt_per_second).toFixed(1)
+            if (timings.predicted_per_second != null) mm.decode_tps = Number(timings.predicted_per_second).toFixed(1)
+            if (timings.draft_acceptance != null) mm.mtp_accept = (Number(timings.draft_acceptance) * 100).toFixed(1)
+            aiMsg.metrics = mm
+          }
           if (delta.reasoning_content) {
             const firstThinking = !aiMsg.thinking
             aiMsg.thinking += delta.reasoning_content
@@ -600,8 +655,11 @@ function highlightCode() {
 async function handleFileUpload(file) {
   fileParsing.value = true
   try {
-    if (file.name.endsWith('.pdf')) {
-      const resp = await parsePdf(currentSid.value, file)
+    const name = file.name || ''
+    const suffix = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+    // .pdf/.docx/.xlsx 走后端解析；.txt/.md 前端直接读取文本
+    if (['pdf', 'docx', 'xlsx'].includes(suffix)) {
+      const resp = await parseDoc(currentSid.value, file)
       chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + resp.text
     } else {
       const text = await file.text()
@@ -636,7 +694,22 @@ async function loadHistory() {
         const key = `${h.role}:${content}`
         if (h.role === 'user' && key === lastKey) continue
         lastKey = key
-        cleaned.push({ role: h.role, content: h.content, thinking: h.thinking || '', history_id: h.id, created_at: h.created_at })
+        // 兼容历史里存的 OpenAI content 数组（含 image_url）→ 拆成文本 + 图片列表供当前会话展示
+        let displayContent = h.content
+        let displayImages = []
+        if (typeof h.content === 'string' && /^\s*\[/.test(h.content.trim())) {
+          try {
+            const parsed = JSON.parse(h.content)
+            if (Array.isArray(parsed)) {
+              displayImages = parsed.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+              displayContent = parsed.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+            }
+          } catch (e) { /* 非 JSON，按普通文本处理 */ }
+        } else if (Array.isArray(h.content)) {
+          displayImages = h.content.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+          displayContent = h.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+        }
+        cleaned.push({ role: h.role, content: displayContent, images: displayImages, thinking: h.thinking || '', history_id: h.id, created_at: h.created_at })
       }
       messages.value = cleaned
     }
@@ -707,6 +780,9 @@ onUnmounted(() => {
 .chat-bubble-wrap:hover .chat-actions { display: flex; }
 .chat-actions .el-button { padding: 2px 4px; font-size: 11px; height: auto; }
 .chat-content { font-size: 14px; line-height: 1.6; }
+.chat-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.chat-image-thumb { max-width: 220px; max-height: 220px; border-radius: 8px; cursor: zoom-in; border: 1px solid #e4e7ed; display: block; }
+.chat-metrics { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ebeef5; color: #909399; font-size: 12px; line-height: 1.4; }
 .chat-content.markdown-body :deep(p) { margin: 4px 0; }
 .chat-content.markdown-body :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 10px 14px; border-radius: 6px; overflow-x: auto; font-size: 13px; position: relative; }
 .chat-content.markdown-body :deep(code) { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
