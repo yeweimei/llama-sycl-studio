@@ -669,6 +669,7 @@ async function doSaveEdit() {
       spec_draft_type_k: p.spec_draft_type_k || '', spec_draft_type_v: p.spec_draft_type_v || '',
       rope_scaling: p.rope_scaling || '', rope_scale: (p.rope_scale === '' || p.rope_scale === null || p.rope_scale === undefined) ? null : Number(p.rope_scale), yarn_orig_ctx: (p.yarn_orig_ctx === '' || p.yarn_orig_ctx === null || p.yarn_orig_ctx === undefined) ? null : Number(p.yarn_orig_ctx),
       reasoning: p.reasoning || '', reasoning_budget: (p.reasoning_budget === '' || p.reasoning_budget === null || p.reasoning_budget === undefined) ? null : Number(p.reasoning_budget),
+      reasoning_effort: p.reasoning_effort || '',
       extra_args: p.extra_args || {},
     }
     if (editForm.value.presetId) {
