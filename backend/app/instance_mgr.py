@@ -162,10 +162,15 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
         args += ["--cache-type-v", str(preset["cache_type_v"])]
     if preset.get("flash_attn"):
         args += ["--flash-attn", "on"]
-    # MoE 专家 offload 到 CPU（--cpu-moe：attention 全 GPU，专家跑 CPU）
+    # MoE 专家 offload 到 CPU（attention 全 GPU，专家跑 CPU）
     # 实测（Qwen3.6-35B-A3B）：相比按层 offload，速度 +24%（19.5 t/s）且显存省 2.5GB
+    # cpu_moe_layers：0/空=全部专家层（--cpu-moe）；N>0=仅前 N 层（--n-cpu-moe N，省显存/平衡速度）
     if preset.get("cpu_moe"):
-        args += ["--cpu-moe"]
+        _cmoe_n = preset.get("cpu_moe_layers") or 0
+        if _cmoe_n and _cmoe_n > 0:
+            args += ["--n-cpu-moe", str(_cmoe_n)]
+        else:
+            args += ["--cpu-moe"]
     # MTP 多 token 预测（投机解码加速）：需用户自备 MTP 模型文件
     # --spec-type draft-mtp + --spec-draft-model <path> + --spec-draft-n-max N
     if preset.get("mtp"):

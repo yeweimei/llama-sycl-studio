@@ -18,6 +18,12 @@
           <div class="form-tip" style="width:100%">专家权重放 CPU、attention 全 GPU（MoE 模型提速，实测 +24%）</div>
         </el-form-item>
       </el-col>
+      <el-col :span="12" v-if="model.cpu_moe">
+        <el-form-item label="CPU MoE 层数">
+          <el-input-number v-model="model.cpu_moe_layers" :min="0" :step="1" controls-position="right" style="width:100%" placeholder="全部" />
+          <div class="form-tip" style="width:100%">0/留空=全部专家层放 CPU（--cpu-moe）；N&gt;0=仅前 N 层（--n-cpu-moe N，可省显存/平衡速度）</div>
+        </el-form-item>
+      </el-col>
     </el-row>
     <el-row :gutter="16">
       <el-col :span="12">
@@ -471,6 +477,7 @@ const DEFAULT_ARGS = {
   n_gpu_layers: 99,
   mmap: true,
   cpu_moe: false,
+  cpu_moe_layers: 0,
   mtp: false,
   mtp_model: '',
   mtp_n_max: 3,
@@ -507,6 +514,9 @@ function normalize(v) {
   for (const k of Object.keys(DEFAULT_ARGS)) {
     if (src[k] !== undefined && src[k] !== null) base[k] = src[k]
   }
+  // cpu_moe_layers：空串/非数字 → 0（0=全部专家层，与 --cpu-moe 等价）
+  const cml = base.cpu_moe_layers
+  base.cpu_moe_layers = (cml === '' || cml === null || cml === undefined) ? 0 : Number(cml)
   // sampling 从 extra_args.sampling 读（旧数据没有则用默认）
   const extra = (src.extra_args && typeof src.extra_args === 'object') ? src.extra_args : {}
   base.sampling = { ...DEFAULT_SAMPLING, ...(extra.sampling || {}) }
@@ -558,6 +568,9 @@ watch(
     if (!v.reasoning || !v.reasoning_effort) {
       out.reasoning_effort = ''
     }
+    // cpu_moe_layers：空串/非数字 → 0（0=全部专家层，与 --cpu-moe 等价）
+    const cml = v.cpu_moe_layers
+    out.cpu_moe_layers = (cml === '' || cml === null || cml === undefined) ? 0 : Number(cml)
     // 把 sampling 打平进 extra_args（后端透传 llama.cpp）
     out.extra_args = { ...(v.extra_args || {}), sampling: { ...v.sampling } }
     emit('update:modelValue', out)

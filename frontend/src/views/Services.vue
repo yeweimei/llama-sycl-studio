@@ -285,7 +285,7 @@ function supportsChatFor(modelPath) {
 const DEFAULT_PRESET = {
   ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, mtp: false, mtp_model: '', mtp_n_max: 3,
+  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 const form = ref({ name: '', model_path: '', gpu_id: '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } })
 const useManualPath = ref(false)
@@ -665,7 +665,7 @@ async function doSaveEdit() {
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
       flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
       mmap: p.mmap, device: editForm.value.gpu_id || defaultDevice(),
-      cpu_moe: p.cpu_moe, mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
+      cpu_moe: p.cpu_moe, cpu_moe_layers: (p.cpu_moe_layers === '' || p.cpu_moe_layers === null || p.cpu_moe_layers === undefined) ? 0 : Number(p.cpu_moe_layers), mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
       spec_draft_type_k: p.spec_draft_type_k || '', spec_draft_type_v: p.spec_draft_type_v || '',
       rope_scaling: p.rope_scaling || '', rope_scale: (p.rope_scale === '' || p.rope_scale === null || p.rope_scale === undefined) ? null : Number(p.rope_scale), yarn_orig_ctx: (p.yarn_orig_ctx === '' || p.yarn_orig_ctx === null || p.yarn_orig_ctx === undefined) ? null : Number(p.yarn_orig_ctx),
       reasoning: p.reasoning || '', reasoning_budget: (p.reasoning_budget === '' || p.reasoning_budget === null || p.reasoning_budget === undefined) ? null : Number(p.reasoning_budget),

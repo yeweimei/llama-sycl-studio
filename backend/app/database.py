@@ -85,6 +85,7 @@ def init_db():
                 mmap INTEGER DEFAULT 1,
                 device TEXT DEFAULT 'auto',
                 cpu_moe INTEGER DEFAULT 0,
+                cpu_moe_layers INTEGER DEFAULT 0,
                 mtp INTEGER DEFAULT 0,
                 mtp_model TEXT DEFAULT '',
                 mtp_n_max INTEGER DEFAULT 3,
@@ -246,6 +247,7 @@ def init_db():
                 mmap INTEGER DEFAULT 1,
                 device TEXT DEFAULT 'auto',
                 cpu_moe INTEGER DEFAULT 0,
+                cpu_moe_layers INTEGER DEFAULT 0,
                 mtp INTEGER DEFAULT 0,
                 mtp_model TEXT DEFAULT '',
                 mtp_n_max INTEGER DEFAULT 3,
@@ -280,6 +282,8 @@ def init_db():
         # 补齐此前遗漏的列（presets.py INSERT 已引用但从未加迁移/建表，导致新库建预设报错）
         if "cpu_moe" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN cpu_moe INTEGER DEFAULT 0")
+        if "cpu_moe_layers" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN cpu_moe_layers INTEGER DEFAULT 0")
         if "mtp" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN mtp INTEGER DEFAULT 0")
         if "mtp_model" not in preset_cols:

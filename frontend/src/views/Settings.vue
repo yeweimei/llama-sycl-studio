@@ -322,6 +322,10 @@
           <el-switch v-model="editingPreset.cpu_moe" />
           <span style="margin-left:8px;color:#909399;font-size:12px">专家权重放 CPU（MoE 模型提速）</span>
         </el-form-item>
+        <el-form-item v-if="editingPreset.cpu_moe" label="CPU MoE 层数">
+          <el-input-number v-model="editingPreset.cpu_moe_layers" :min="0" :step="1" style="width:100%" placeholder="全部" />
+          <span style="margin-left:8px;color:#909399;font-size:12px">0=全部专家层；N&gt;0=仅前 N 层（--n-cpu-moe N）</span>
+        </el-form-item>
         <el-form-item label="MTP 投机解码">
           <el-switch v-model="editingPreset.mtp" />
           <span style="margin-left:8px;color:#909399;font-size:12px">多 token 预测加速</span>
@@ -508,7 +512,7 @@ const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
   flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true,
-  cpu_moe: false, mtp: false, mtp_model: '', mtp_n_max: 3,
+  cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 
 async function doChangePassword() {

@@ -99,6 +99,13 @@ def _write_config_ini() -> dict:
             lines.append("jinja = on")
         if not d.get("mmap", 1):
             lines.append("no-mmap = on")
+        # MoE 专家 offload CPU：0/空=全部专家层（cpu-moe = on）；N>0=仅前 N 层（n-cpu-moe = N）
+        if d.get("cpu_moe"):
+            _cmoe_n = d.get("cpu_moe_layers") or 0
+            if _cmoe_n and _cmoe_n > 0:
+                lines.append(f"n-cpu-moe = {_cmoe_n}")
+            else:
+                lines.append("cpu-moe = on")
         lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
         dev = _normalize_device(d.get("device"))
         # 语义值 → 具体设备名（后端无关；解析失败则写回语义值兜底）
@@ -173,6 +180,7 @@ class PresetCreate(BaseModel):
     n_gpu_layers: int = 99
     mmap: bool = True
     cpu_moe: bool = False
+    cpu_moe_layers: int | None = None
     mtp: bool = False
     mtp_model: str = ""
     mtp_n_max: int = 3
@@ -189,7 +197,7 @@ class PresetCreate(BaseModel):
 
     @field_validator(
         "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
-        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", mode="before",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", "cpu_moe_layers", mode="before",
     )
     @classmethod
     def _empty_to_none(cls, v):
@@ -225,6 +233,7 @@ class PresetUpdate(BaseModel):
     n_gpu_layers: int | None = None
     mmap: bool | None = None
     cpu_moe: bool | None = None
+    cpu_moe_layers: int | None = None
     mtp: bool | None = None
     mtp_model: str | None = None
     mtp_n_max: int | None = None
@@ -241,7 +250,7 @@ class PresetUpdate(BaseModel):
 
     @field_validator(
         "ctx_size", "temp", "threads", "batch_size", "ubatch_size", "parallel",
-        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", mode="before",
+        "n_gpu_layers", "mtp_n_max", "rope_scale", "yarn_orig_ctx", "reasoning_budget", "cpu_moe_layers", mode="before",
     )
     @classmethod
     def _empty_to_none(cls, v):
@@ -276,6 +285,7 @@ def list_presets():
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
         d["cpu_moe"] = bool(d.get("cpu_moe", 0))
+        d["cpu_moe_layers"] = d.get("cpu_moe_layers") or 0
         d["mtp"] = bool(d.get("mtp", 0))
         d["mtp_model"] = d.get("mtp_model", "")
         d["mtp_n_max"] = d.get("mtp_n_max", 3)
@@ -305,12 +315,12 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, cpu_moe_layers, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
-             1 if body.mmap else 0, 1 if body.cpu_moe else 0, 1 if body.mtp else 0, body.mtp_model or "",
+             1 if body.mmap else 0, 1 if body.cpu_moe else 0, body.cpu_moe_layers or 0, 1 if body.mtp else 0, body.mtp_model or "",
              body.mtp_n_max or 3, body.spec_draft_type_k or "", body.spec_draft_type_v or "",
              _normalize_device(body.device), body.rope_scaling or "",
              body.rope_scale, body.yarn_orig_ctx, body.reasoning or "", body.reasoning_budget,
@@ -343,6 +353,8 @@ def update_preset(pid: int, body: PresetUpdate):
             updates["mmap"] = 1 if body.mmap else 0
         if body.cpu_moe is not None:
             updates["cpu_moe"] = 1 if body.cpu_moe else 0
+        if body.cpu_moe_layers is not None:
+            updates["cpu_moe_layers"] = body.cpu_moe_layers
         if body.mtp is not None:
             updates["mtp"] = 1 if body.mtp else 0
         if body.mtp_model is not None:
