@@ -169,8 +169,7 @@ import {
   parseDoc,
 } from '../api'
 import { marked } from 'marked'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/github-dark.css'
+import hljs from '../utils/highlight'
 
 // ---------- 模型选择 ----------
 const services = ref([])

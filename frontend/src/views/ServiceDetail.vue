@@ -282,8 +282,7 @@ import {
   getChatLogs, clearChatLogs,
 } from '../api'
 import { marked } from 'marked'
-import hljs from 'highlight.js/lib/common'
-import 'highlight.js/styles/github-dark.css'
+import hljs from '../utils/highlight'
 
 marked.setOptions({ breaks: true, gfm: true })
 

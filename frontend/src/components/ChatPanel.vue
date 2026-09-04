@@ -147,8 +147,7 @@ import { Plus, Delete, Edit, ArrowDown } from '@element-plus/icons-vue'
 import ImagePreview from './ImagePreview.vue'
 import { useChatStore } from '../stores/chat'
 import { marked } from 'marked'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/github-dark.css'
+import hljs from '../utils/highlight'
 
 const props = defineProps({
   // 服务（模型）id
