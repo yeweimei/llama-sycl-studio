@@ -147,6 +147,18 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_created ON api_request_logs(created_at);
             CREATE INDEX IF NOT EXISTS idx_api_request_logs_model ON api_request_logs(model_name);
 
+            -- 实例崩溃诊断（自愈重启前抓日志签名落库，便于复盘 OOM/IGC/device-lost 根因）
+            CREATE TABLE IF NOT EXISTS instance_crashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id INTEGER,
+                model_name TEXT NOT NULL,
+                crash_signature TEXT DEFAULT '',
+                log_tail TEXT DEFAULT '',
+                state TEXT DEFAULT '',
+                created_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_instance_crashes_created ON instance_crashes(created_at);
+
             -- 对话内容日志（chat_proxy 记录的输入/输出/thinking，最近 1000 条）
             CREATE TABLE IF NOT EXISTS chat_api_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

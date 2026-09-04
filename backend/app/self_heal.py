@@ -9,7 +9,9 @@
 """
 import logging
 import time
+from pathlib import Path
 
+from app.config import settings
 from app.database import get_conn, now
 
 logger = logging.getLogger("self-heal")
@@ -98,6 +100,42 @@ def _send_alert(title: str, message: str):
         alert.send_alert(title, message)
     except Exception:
         pass
+
+
+# 崩溃签名关键词（从实例日志识别 OOM / IGC 编译崩溃 / device-lost 等，便于复盘根因）
+_CRASH_SIGS = [
+    "IGC:", "Internal Compiler", "FLASH_ATTN_EXT", "DEVICE_LOST",
+    "UR_RESULT_ERROR", "OUT_OF_MEMORY", "alloc failed", "failed to allocate",
+    "SIGSEGV", "segfault", "abort", "Assertion", "CUDA error", "CL_INVALID",
+]
+
+
+def _capture_crash(sid: int, name: str, state: str) -> str:
+    """实例异常重启前：抓日志尾部崩溃签名 → 落库 instance_crashes → 返回摘要。
+    便于复盘根因（OOM vs IGC 编译崩溃 vs device-lost），并附带进自愈告警。"""
+    sig_hits, tail = [], ""
+    try:
+        log_path = Path(settings.data_dir) / "instances" / f"{name}.log"
+        if log_path.exists():
+            lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            tail = "\n".join(lines[-80:])[-4000:]
+            for ln in reversed(lines[-250:]):
+                for s in _CRASH_SIGS:
+                    if s in ln and s not in sig_hits:
+                        sig_hits.append(s)
+    except Exception:
+        pass
+    signature = ", ".join(sig_hits)
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO instance_crashes (service_id, model_name, crash_signature, log_tail, state, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (sid, name, signature, tail, state, int(time.time())),
+            )
+    except Exception:
+        pass
+    return signature
 
 
 def _heal_once():
@@ -194,11 +232,12 @@ def _heal_once():
 
             # 执行自愈重启
             try:
+                _sig = _capture_crash(sid, name, st.get("state"))
                 result = instance_mgr.start_instance(sid, name, model_path)
                 s["last_heal_at"] = t_now
                 healed.append({"model": name, "state": st.get("state"), "result": result.get("status")})
-                logger.warning("自愈重启 %s（状态 %s，第 %d 次）→ %s", name, st.get("state"), s["consecutive_fails"], result.get("status"))
-                _send_alert(f"模型 {name} 已自愈重启", f"状态 {st.get('state')} → {result.get('status')}（第 {s['consecutive_fails']} 次）")
+                logger.warning("自愈重启 %s（状态 %s，第 %d 次）→ %s%s", name, st.get("state"), s["consecutive_fails"], result.get("status"), (f"（{_sig}）" if _sig else ""))
+                _send_alert(f"模型 {name} 已自愈重启", f"状态 {st.get('state')} → {result.get('status')}（第 {s['consecutive_fails']} 次）{('可能原因：'+_sig) if _sig else ''}")
             except Exception as e:
                 logger.warning("自愈重启 %s 失败: %s", name, e)
     except Exception as e:

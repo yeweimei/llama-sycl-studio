@@ -207,6 +207,69 @@ def _resolve_device(role: str) -> str:
     return discrete[0]["id"] if discrete else (devices[0]["id"] if devices else "")
 
 
+# ===== P1 显存自检 + 自动降级（防 OOM 崩溃）=====
+_vram_alert_at: dict[str, float] = {}
+
+
+def _send_vram_alert(name: str, note: str):
+    """显存自动降级告警（5 分钟节流，避免重启循环刷屏）"""
+    now_ts = time.time()
+    if now_ts - _vram_alert_at.get(name, 0) < 300:
+        return
+    _vram_alert_at[name] = now_ts
+    try:
+        from app import alert
+        alert.send_alert(f"模型 {name} 显存不足已自动降级", note)
+    except Exception:
+        pass
+
+
+def _auto_fit_vram(name: str, model_path: str, preset: dict) -> dict:
+    """启动前显存自检：目标设备自由显存明显不够时才自动降级，防 OOM 崩溃。
+
+    启发式：需求≈gguf 文件大小（按整模全 offload 的最坏情况）+ 少量余量；
+    仅当 自由显存 < 需求×0.85（明显难容，如多模型竞争）才降级：
+    MoE 强制 cpu_moe（专家→CPU 逃生阀）并按比例降 n_gpu_layers，5 分钟节流告警。
+    保守起见不误伤本就装得下/已在跑的模型（如 35B 现配置）。不足则不干预。
+    """
+    try:
+        dev = _resolve_device(preset.get("device") or "auto")
+        if not dev:
+            return preset
+        free_mib = next((d.get("free_mib") for d in _list_devices() if d["id"] == dev), None)
+        if not free_mib or free_mib <= 0:
+            return preset
+        try:
+            model_mib = os.path.getsize(model_path) / (1024 * 1024)
+        except OSError:
+            return preset
+        if model_mib <= 0:
+            return preset
+        need_mib = model_mib + 512  # 权重(最坏全 offload) + 少量余量
+        if free_mib >= need_mib * 0.85:
+            return preset  # 能容下，不干预（避免误伤已在跑的模型）
+        out = dict(preset)
+        changes = []
+        is_moe = bool(preset.get("cpu_moe")) or ("A3B" in name) or ("MoE" in name) or ("moe" in name)
+        if is_moe and not out.get("cpu_moe"):
+            out["cpu_moe"] = 1
+            changes.append("强制 cpu_moe(专家→CPU)")
+        ngl = out.get("n_gpu_layers")
+        if ngl and ngl > 1:
+            new_ngl = max(1, int(ngl * (max(256, free_mib) / need_mib)))
+            if new_ngl < ngl:
+                out["n_gpu_layers"] = new_ngl
+                changes.append(f"n_gpu_layers {ngl}→{new_ngl}")
+        if changes:
+            note = f"free {int(free_mib)}MiB < 需≈{int(need_mib)}MiB：{'；'.join(changes)}"
+            logger.warning("显存自检自动降级 %s：%s", name, note)
+            _send_vram_alert(name, note)
+        return out
+    except Exception as e:
+        logger.warning("显存自检异常 %s: %s", name, e)
+        return preset
+
+
 def _preset_dict(model_name: str) -> dict | None:
     """读取模型预设（含 ctx_size/parallel/device 等）。
     device 为语义角色（auto/discrete/integrated），后端无关，启动时按当前后端解析。"""
@@ -224,6 +287,8 @@ def _preset_dict(model_name: str) -> dict | None:
 def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     """构建 llama-server 单模型实例启动参数（ctx 用预设值，per-model 生效）"""
     preset = _preset_dict(name) or {}
+    # 显存自检 + 自动降级（防 OOM 崩溃）：明显不足时自动降 n_gpu_layers / 强制 cpu_moe
+    preset = _auto_fit_vram(name, model_path, preset) or preset
     llama_bin = os.environ.get("LLAMA_SERVER_BIN", "/app/llama-server")
     args = [
         llama_bin,
