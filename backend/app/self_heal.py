@@ -103,16 +103,17 @@ def _send_alert(title: str, message: str):
 
 
 # 崩溃签名关键词（从实例日志识别 OOM / IGC 编译崩溃 / device-lost 等，便于复盘根因）
+# 只用强签名，避免“abort/Assertion 等弱词”在历史日志里误命中造成噪声
 _CRASH_SIGS = [
     "IGC:", "Internal Compiler", "FLASH_ATTN_EXT", "DEVICE_LOST",
-    "UR_RESULT_ERROR", "OUT_OF_MEMORY", "alloc failed", "failed to allocate",
-    "SIGSEGV", "segfault", "abort", "Assertion", "CUDA error", "CL_INVALID",
+    "UR_RESULT_ERROR", "OUT_OF_MEMORY", "failed to allocate", "allocator out of memory",
+    "SIGSEGV", "segfault", "CUDA error", "CL_INVALID", "level_zero backend failed",
 ]
 
 
 def _capture_crash(sid: int, name: str, state: str) -> str:
-    """实例异常重启前：抓日志尾部崩溃签名 → 落库 instance_crashes → 返回摘要。
-    便于复盘根因（OOM vs IGC 编译崩溃 vs device-lost），并附带进自愈告警。"""
+    """实例异常重启前：抓日志尾部崩溃签名 → 有强签名才落库 instance_crashes → 返回摘要。
+    干净的启动恢复/停止（无强签名）不入库，避免噪声；便于复盘根因并附带进自愈告警。"""
     sig_hits, tail = [], ""
     try:
         log_path = Path(settings.data_dir) / "instances" / f"{name}.log"
@@ -126,6 +127,8 @@ def _capture_crash(sid: int, name: str, state: str) -> str:
     except Exception:
         pass
     signature = ", ".join(sig_hits)
+    if not signature:
+        return ""  # 无强崩溃签名（启动恢复/干净停止）不入库
     try:
         with get_conn() as conn:
             conn.execute(
