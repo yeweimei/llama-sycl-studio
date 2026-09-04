@@ -1022,8 +1022,14 @@ async def chat_proxy(sid: int, body: ChatRequest):
     if ist.get("state") == "degraded":
         lat = ist.get("health_latency_ms")
         raise HTTPException(503, f"模型 {model_name} 实例无响应（健康检查失败{('，延迟 ' + str(lat) + 'ms') if lat is not None else ''}），请重启模型")
-    # M4 优雅停止：draining 期间拒绝新请求
+    # 并发闸：并发请求 = 实例 slot 数（--parallel），Fair 排队；超过 PROXY_SLOT_TIMEOUT
+    # 拿不到 slot 即 503——防止突发请求全量灌给 llama-server 的 server_queue 造成“无响应”
+    _sname = d.get("name") or model_name
+    if not await instance_mgr.acquire_slot(sid, _sname):
+        raise HTTPException(503, f"模型 {_sname} 并发已满（>{instance_mgr.slot_limit(_sname)} 路进行中），请稍后重试")
+    # M4 优雅停止：draining 期间拒绝新请求（先占 slot）
     if not instance_mgr.begin_request(sid):
+        instance_mgr.release_slot(sid)
         raise HTTPException(503, f"模型 {model_name} 正在停止中（draining），请稍后重试")
     url = f"{instance_mgr.url_for(sid)}/v1/chat/completions"
     # 记录调用时间（空闲自动卸载）
@@ -1095,6 +1101,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
                 return data
         finally:
             instance_mgr.end_request(sid)
+            instance_mgr.release_slot(sid)
 
     async def gen():
         import time as _time
@@ -1162,6 +1169,7 @@ async def chat_proxy(sid: int, body: ChatRequest):
                     yield f"data: {{\"error\": \"{e}\"}}\n\n"
         finally:
             instance_mgr.end_request(sid)
+            instance_mgr.release_slot(sid)
         # 流式结束后埋点
         total_ms = int((_time.time() - t0) * 1000)
         prefill_ms = int((first_token_time - t0) * 1000) if first_token_time else total_ms

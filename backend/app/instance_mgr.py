@@ -6,12 +6,14 @@ WebUI 层按模型名反向代理到对应实例端口。
 
 实例端口分配：BASE_PORT + sid（如 8081 起），重启后稳定（端口持久化到 DB）
 """
+import asyncio
 import json
 import logging
 import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -29,6 +31,13 @@ _active_requests: dict[int, int] = {}
 # 每实例 draining 标志（置位后拒绝新请求）
 _draining: set[int] = set()
 _lock = None
+# ===== 每实例并发闸（proxy 透传上限 = 实例 --parallel slot 数）=====
+# 目的：防止突发请求全量灌给 llama-server 的 server_queue，造成“看起来无响应”。
+# 由异步事件循环线程使用（uvicorn 单事件循环），与 _active_requests 正交。
+_slot_guard: dict[int, asyncio.Semaphore] = {}
+_slot_lock = threading.Lock()
+# proxy 并发闸等待上限：并发超过实例 slot 数时，等待该秒数仍拿不到 slot 即 503
+PROXY_SLOT_TIMEOUT = float(os.environ.get("LLAMA_PROXY_SLOT_TIMEOUT", "30"))
 
 
 def _get_lock():
@@ -37,6 +46,50 @@ def _get_lock():
         import threading
         _lock = threading.Lock()
     return _lock
+
+
+def _get_slot_limit(name: str) -> int:
+    """实例的生成并发槽位数 = preset parallel（llama-server 默认 1）"""
+    preset = _preset_dict(name) or {}
+    p = preset.get("parallel")
+    try:
+        return max(1, int(p)) if p not in (None, "") else 1
+    except Exception:
+        return 1
+
+
+def _slot_guard_for(sid: int, name: str) -> asyncio.Semaphore:
+    """取该实例的并发闸（惰性创建，limit = parallel slot 数）"""
+    with _slot_lock:
+        g = _slot_guard.get(sid)
+        if g is None:
+            g = asyncio.Semaphore(_get_slot_limit(name))
+            _slot_guard[sid] = g
+        return g
+
+
+async def acquire_slot(sid: int, name: str, timeout: float | None = None) -> bool:
+    """并发闸获取：timeout 内拿到返回 True；超时返回 False（不抛异常）。
+    timeout=None 时用 PROXY_SLOT_TIMEOUT。"""
+    g = _slot_guard_for(sid, name)
+    t = PROXY_SLOT_TIMEOUT if timeout is None else timeout
+    try:
+        await asyncio.wait_for(g.acquire(), timeout=t)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+def release_slot(sid: int):
+    """释放并发闸（实例已停/闸不存在时静默）"""
+    g = _slot_guard.get(sid)
+    if g is not None:
+        g.release()
+
+
+def slot_limit(name: str) -> int:
+    """对外暴露并发上限（错误提示用）"""
+    return _get_slot_limit(name)
 
 
 def _current_backend() -> str:
@@ -478,6 +531,7 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
             # 实例不在内存态（已停止/孤儿但已清理），无需等待
             _draining.discard(sid)
             _active_requests.pop(sid, None)
+            _slot_guard.pop(sid, None)
             return {"ok": True, "status": "not_running"}
         if graceful:
             mark_draining(sid)
@@ -490,6 +544,7 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
                 logger.warning("优雅停止超时 sid=%s 仍有 %d 个在途请求，强制终止", sid, _active_requests.get(sid, 0))
         clear_draining(sid)
         _active_requests.pop(sid, None)
+        _slot_guard.pop(sid, None)
 
         inst = _instances.pop(sid, None)
         proc = inst.get("proc")
