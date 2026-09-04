@@ -29,28 +29,148 @@
       </div>
     </el-card>
 
-    <!-- 聊天区：共享对话组件（状态存于 pinia chatStore，切页面不中断流式） -->
+    <!-- 聊天区 -->
     <el-card shadow="never" v-if="currentSid">
-      <ChatPanel
-        :key="currentSid"
-        :service-id="currentSid"
-        :model-loaded="!!currentService?.loaded"
-        :is-vision="!!currentService?.has_mmproj"
-        :max-tokens-limit="maxTokensLimit"
-        :service-loaded-at="currentService?.loaded_at || 0"
-        height="calc(100vh - 260px)"
-      />
+      <div class="chat-layout">
+        <!-- 会话侧栏 -->
+        <div class="session-sidebar">
+          <div class="session-header">
+            <span style="font-size:13px;font-weight:600">会话</span>
+            <el-button size="small" link @click="createNewSession"><el-icon><Plus /></el-icon></el-button>
+          </div>
+          <div class="session-list">
+            <div
+              v-for="s in sessions"
+              :key="s.id"
+              class="session-item"
+              :class="{ active: s.id === currentSessionId }"
+              @click="switchSession(s.id)"
+            >
+              <span class="session-title" @dblclick.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
+              <span class="session-meta">{{ s.msg_count || 0 }} 条</span>
+              <el-button v-if="s.id !== 0" size="small" link class="session-rename" @click.stop="startRenameSession(s)"><el-icon><Edit /></el-icon></el-button>
+              <el-button v-if="s.id !== 0" size="small" link class="session-del" @click.stop="removeSession(s)"><el-icon><Delete /></el-icon></el-button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 聊天主区 -->
+        <div class="chat-panel">
+          <div class="chat-messages" ref="chatView">
+            <div v-if="!messages.length" class="chat-empty">输入消息开始对话（需模型已加载）</div>
+            <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
+              <div class="chat-avatar" :class="m.role">{{ m.role === 'user' ? '🧑' : '🤖' }}</div>
+              <div class="chat-bubble-wrap">
+                <div class="chat-bubble">
+                  <div v-if="m.role === 'assistant'" class="chat-content markdown-body" v-html="renderMarkdown(m.content)"></div>
+                  <div v-else class="chat-content" style="white-space:pre-wrap">
+                    <div v-if="userImages(m).length" class="chat-images">
+                      <img
+                        v-for="(img, j) in userImages(m)"
+                        :key="j"
+                        :src="img"
+                        class="chat-image-thumb"
+                        alt="对话图片"
+                        title="点击查看大图"
+                        @click="openImagePreview(img)"
+                      />
+                    </div>
+                    <template v-if="userText(m)">{{ userText(m) }}</template>
+                  </div>
+                  <div v-if="m.thinking" class="chat-thinking">
+                    <div class="thinking-header" @click="toggleThinking(i)">
+                      <span>🤔 思考过程</span>
+                      <el-icon class="thinking-arrow" :class="{ collapsed: !thinkingExpanded[i] }"><ArrowDown /></el-icon>
+                    </div>
+                    <div v-show="thinkingExpanded[i]" class="thinking-body" :ref="el => setThinkingRef(el, i)">{{ m.thinking }}</div>
+                  </div>
+                  <div v-if="m.role === 'assistant' && m.metrics && (m.metrics.prefill_tps || m.metrics.decode_tps)" class="chat-metrics">
+                    <template v-if="m.metrics.prefill_tps">prefill {{ m.metrics.prefill_tps }} t/s</template><template v-if="m.metrics.prefill_tps && m.metrics.decode_tps"> · </template><template v-if="m.metrics.decode_tps">输出 {{ m.metrics.decode_tps }} t/s</template><template v-if="m.metrics.mtp_accept"> · MTP 接受率 {{ m.metrics.mtp_accept }}%</template>
+                  </div>
+                </div>
+                <div class="chat-meta">
+                  <span class="chat-time">{{ fmtTime(m.created_at) }}</span>
+                  <div class="chat-actions" v-if="!chatLoading">
+                    <el-button link size="small" @click="copyMessage(m)">复制</el-button>
+                    <el-button v-if="m.role === 'assistant'" link size="small" @click="regenerate(i)">重新生成</el-button>
+                    <el-button link size="small" style="color:#f56c6c" @click="deleteMessage(i)">删除</el-button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="chatLoading" class="chat-msg assistant">
+              <div class="chat-avatar assistant">🤖</div>
+              <div class="chat-bubble-wrap"><div class="chat-bubble"><div class="chat-streaming">▋</div></div></div>
+            </div>
+          </div>
+          <div class="chat-controls">
+            <el-checkbox v-model="chatThinking">思考模式</el-checkbox>
+            <span style="margin-left:12px;font-size:13px;color:#909399">max_tokens</span>
+            <el-input-number v-model="chatMaxTokens" :min="32" :max="maxTokensLimit" :step="64" size="small" style="width:130px" />
+            <el-upload
+              :show-file-list="false"
+              :before-upload="handleFileUpload"
+              accept=".txt,.md,.pdf,.docx,.xlsx"
+              style="margin-left:8px"
+            >
+              <el-button size="small" :loading="fileParsing">上传文件</el-button>
+            </el-upload>
+            <el-upload
+              v-if="isVisionModel"
+              :show-file-list="false"
+              :before-upload="handleImageUpload"
+              accept="image/png,image/jpeg"
+              style="margin-left:4px"
+            >
+              <el-button size="small">图片</el-button>
+            </el-upload>
+            <el-button v-if="!chatLoading" size="small" type="primary" style="margin-left:auto" :disabled="!canChat" @click="sendChat">发送</el-button>
+            <el-button v-else size="small" type="danger" style="margin-left:auto" @click="stopChat">⏹ 停止</el-button>
+            <el-button size="small" @click="clearChat">清空</el-button>
+          </div>
+          <div v-if="pendingImage" style="margin-bottom:4px">
+            <el-tag closable @close="pendingImage = null">📷 图片已附加</el-tag>
+          </div>
+          <div class="chat-input-area">
+            <el-input
+              v-model="chatInput"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
+              @keydown.enter.exact.prevent="sendChat"
+              maxlength="4096"
+              show-word-limit
+            />
+          </div>
+        </div>
+      </div>
     </el-card>
 
     <el-empty v-else description="请选择对话模型" />
+
+    <!-- 图片预览组件 -->
+    <ImagePreview
+      :model-value="!!previewImage"
+      :src="previewImage || ''"
+      @update:model-value="onPreviewClose"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import ChatPanel from '../components/ChatPanel.vue'
-import { listServices, startService, stopService, listPresets } from '../api'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Delete, Edit } from '@element-plus/icons-vue'
+import ImagePreview from '../components/ImagePreview.vue'
+import {
+  listServices, startService, stopService, listPresets,
+  listSessions, createSession, renameSession, deleteSession,
+  getChatHistory, addChatHistory, clearChatHistory, deleteHistoryItem,
+  parseDoc,
+} from '../api'
+import { marked } from 'marked'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github-dark.css'
 
 // ---------- 模型选择 ----------
 const services = ref([])
@@ -101,8 +221,19 @@ async function refreshServices() {
   } catch (e) { /* ignore */ }
 }
 
-// 切换模型：ChatPanel 以 :key=currentSid 重新挂载，按 sid 从 store 恢复/初始化对话
-function onModelChange() { /* 状态隔离由 chatStore 按 sid 管理 */ }
+function onModelChange() {
+  // 切换模型：重置会话与历史
+  currentSessionId.value = 0
+  messages.value = []
+  thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
+  // max_tokens 超过新模型上下文时自动收敛
+  if (chatMaxTokens.value > maxTokensLimit.value) {
+    chatMaxTokens.value = maxTokensLimit.value
+  }
+  loadSessions().then(() => loadHistory())
+}
 
 async function loadCurrentModel() {
   if (!currentSid.value) return
@@ -132,9 +263,563 @@ async function unloadCurrentModel() {
   }
 }
 
+// ---------- 聊天 ----------
+const messages = ref([])
+const chatInput = ref('')
+const chatLoading = ref(false)
+// 聊天设置持久化（按模型分开存）
+const CHAT_SET_KEY = computed(() => `chat-settings-${currentSid.value}`)
+const chatThinking = ref(false)
+const chatMaxTokens = ref(512)
+const chatView = ref(null)
+const fileParsing = ref(false)
+const pendingImage = ref(null)
+// 图片预览：当前预览的图片地址（null 表示未打开）
+const previewImage = ref(null)
+
+function openImagePreview(src) { previewImage.value = src }
+function onPreviewClose(v) { if (!v) previewImage.value = null }
+// 从用户消息提取纯文本（兼容字符串与 OpenAI content 数组）
+function userText(m) {
+  const c = m.content
+  if (Array.isArray(c)) {
+    return c.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+  }
+  return typeof c === 'string' ? c : ''
+}
+// 从用户消息提取图片列表（发送时存 m.images；历史里可能是 content 数组）
+function userImages(m) {
+  if (m.images && m.images.length) return m.images
+  const c = m.content
+  if (Array.isArray(c)) {
+    return c.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+  }
+  return []
+}
+// 会话
+const sessions = ref([])
+const currentSessionId = ref(0)
+
+// 加载设置（切模型时恢复该模型的设置）
+function loadChatSettings() {
+  const saved = localStorage.getItem(CHAT_SET_KEY.value)
+  const parsed = saved ? JSON.parse(saved) : {}
+  chatThinking.value = parsed.thinking ?? false
+  chatMaxTokens.value = parsed.maxTokens ?? 512
+}
+watch(CHAT_SET_KEY, loadChatSettings)
+
+watch([chatThinking, chatMaxTokens], () => {
+  localStorage.setItem(CHAT_SET_KEY.value, JSON.stringify({ thinking: chatThinking.value, maxTokens: chatMaxTokens.value }))
+})
+
+async function loadSessions() {
+  try {
+    sessions.value = await listSessions(currentSid.value)
+  } catch (e) { /* ignore */ }
+}
+
+async function createNewSession() {
+  try {
+    const s = await createSession(currentSid.value, { title: `新会话 ${sessions.value.length}` })
+    sessions.value.unshift(s)
+    await switchSession(s.id)
+  } catch (e) { ElMessage.error('创建会话失败') }
+}
+
+async function switchSession(sessionId) {
+  currentSessionId.value = sessionId
+  messages.value = []
+  thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
+  await loadHistory()
+}
+
+let renamingSession = false
+
+async function startRenameSession(s) {
+  if (s.id === 0) return
+  if (renamingSession) return  // 防重复打开叠加
+  renamingSession = true
+  try {
+    const { value } = await ElMessageBox.prompt('会话标题', '重命名会话', {
+      inputValue: s.title, confirmButtonText: '保存', cancelButtonText: '取消',
+    })
+    if (value && value.trim()) {
+      await renameSession(currentSid.value, s.id, { title: value.trim() })
+      s.title = value.trim()
+    }
+  } catch (e) { /* cancel */ } finally {
+    renamingSession = false
+  }
+}
+
+async function removeSession(s) {
+  try {
+    await ElMessageBox.confirm(`确认删除会话「${s.title}」及其历史记录？`, '删除确认', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    })
+    await deleteSession(currentSid.value, s.id)
+    sessions.value = sessions.value.filter(x => x.id !== s.id)
+    if (currentSessionId.value === s.id) await switchSession(0)
+  } catch (e) { /* cancel */ }
+}
+
+// 打断控制器
+let chatAbort = null
+
+function stopChat() {
+  if (chatAbort) chatAbort.abort()
+}
+
+const canChat = computed(() => currentService.value?.loaded)
+const isVisionModel = computed(() => !!currentService.value?.has_mmproj)
+
+function stripThink(text) {
+  if (!text) return text
+  return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
+}
+
+// thinking 折叠状态
+const thinkingExpanded = ref({})
+const thinkingUserToggled = ref({})
+const thinkingRefs = ref({})
+
+function setThinkingRef(el, index) {
+  if (el) thinkingRefs.value[index] = el
+}
+
+function scrollThinking(index) {
+  const el = thinkingRefs.value[index]
+  if (!el) return
+  nextTick(() => { el.scrollTop = el.scrollHeight })
+}
+
+function toggleThinking(index) {
+  thinkingExpanded.value[index] = !thinkingExpanded.value[index]
+  thinkingUserToggled.value[index] = true
+  if (thinkingExpanded.value[index]) {
+    setTimeout(() => scrollThinking(index), 50)
+  }
+}
+
+async function sendChat() {
+  const text = chatInput.value.trim()
+  if (!text || chatLoading.value) return
+  if (!currentSid.value) { ElMessage.warning('请先选择模型'); return }
+  // 首次推理预热提示：模型刚启动（加载完成 <5min）且本会话未发过请求 → 提示
+  // 实测：容器重建后首次推理需预热 ~90-100s（flash-attn 内核首次执行/图编译），
+  // 之后恢复 1s 级响应，属正常现象非故障。
+  const svc = services.value.find(s => s.id === currentSid.value)
+  if (svc && !svc._warned && svc.loaded_at && (Date.now() / 1000 - svc.loaded_at) < 300) {
+    svc._warned = true
+    ElMessage.info('模型刚启动，首次推理需预热约 1-2 分钟，请耐心等待（仅首次）')
+  }
+  chatLoading.value = true
+  let userContent = text
+  if (pendingImage.value) {
+    userContent = [
+      { type: 'text', text },
+      { type: 'image_url', image_url: { url: pendingImage.value } },
+    ]
+  }
+  messages.value.push({ role: 'user', content: text, images: pendingImage.value ? [pendingImage.value] : [] })
+  try {
+    const r = await addChatHistory(currentSid.value, { role: 'user', content: text, session_id: currentSessionId.value })
+    if (r.id) messages.value[messages.value.length - 1].history_id = r.id
+  } catch (e) { /* ignore */ }
+  chatInput.value = ''
+  pendingImage.value = null
+  messages.value.push({ role: 'assistant', content: '', thinking: '' })
+  const aiMsg = messages.value[messages.value.length - 1]
+  scrollChat()
+  const controller = new AbortController()
+  chatAbort = controller
+  try {
+    const payload = {
+      messages: messages.value
+        .filter(m => m.role !== 'thinking')
+        .filter((m, i, arr) => !(m.role === 'assistant' && !m.content.trim() && i === arr.length - 1))
+        .map((m, idx, arr) => {
+          if (m.role === 'user' && idx === arr.length - 1 && Array.isArray(userContent)) {
+            return { role: 'user', content: userContent }
+          }
+          return { role: m.role, content: m.role === 'assistant' ? stripThink(m.content) : m.content }
+        }),
+      max_tokens: chatMaxTokens.value,
+      temperature: 0.7,
+      stream: true,
+    }
+    if (chatThinking.value) payload.chat_template_kwargs = { enable_thinking: true }
+    else payload.chat_template_kwargs = { enable_thinking: false }
+
+    const resp = await fetch(`/api/services/${currentSid.value}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const data = trimmed.slice(5).trim()
+        if (data === '[DONE]') continue
+        try {
+          const chunk = JSON.parse(data)
+          const delta = chunk.choices?.[0]?.delta || {}
+          // 捕获末次带 timings 的指标（每个 chunk 可能有，以最后一次为准；失败/中断不清除）
+          const timings = chunk.timings
+          if (timings) {
+            const mm = {}
+            if (timings.prompt_per_second != null) mm.prefill_tps = Number(timings.prompt_per_second).toFixed(1)
+            if (timings.predicted_per_second != null) mm.decode_tps = Number(timings.predicted_per_second).toFixed(1)
+            if (timings.draft_acceptance != null) mm.mtp_accept = (Number(timings.draft_acceptance) * 100).toFixed(1)
+            aiMsg.metrics = mm
+          }
+          if (delta.reasoning_content) {
+            const firstThinking = !aiMsg.thinking
+            aiMsg.thinking += delta.reasoning_content
+            const idx = messages.value.indexOf(aiMsg)
+            if (idx >= 0 && firstThinking && !thinkingUserToggled.value[idx]) {
+              thinkingExpanded.value[idx] = true
+            }
+            if (idx >= 0) scrollThinking(idx)
+          }
+          if (delta.content) {
+            aiMsg.content += delta.content
+            if (aiMsg.content.includes('<think')) {
+              const m = aiMsg.content.match(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/i)
+              if (m) {
+                if (!aiMsg.thinking) aiMsg.thinking = m[1] || ''
+                aiMsg.content = aiMsg.content.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/i, '').trim()
+              }
+            }
+          }
+          scrollChat()
+          highlightCode()
+        } catch (e) { /* ignore */ }
+      }
+    }
+    if (!aiMsg.content && !aiMsg.thinking) {
+      aiMsg.content = '（模型未返回内容：可能是思考模式未产出正式回答，或 max_tokens 在思考阶段被截断。可尝试关闭思考模式或调大 max_tokens）'
+      aiMsg.isError = true
+    } else if (!aiMsg.content && aiMsg.thinking) {
+      aiMsg.content = '（模型仅返回了思考内容，未生成正式回答）'
+    } else {
+      const idx = messages.value.indexOf(aiMsg)
+      if (idx >= 0 && aiMsg.thinking && !thinkingUserToggled.value[idx]) {
+        thinkingExpanded.value[idx] = false
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      if (!aiMsg.content && aiMsg.thinking) aiMsg.content = '（已停止：仅输出了思考内容）'
+    } else {
+      aiMsg.content = `❌ 调用失败: ${e.message || e}`
+    }
+  } finally {
+    chatLoading.value = false
+    chatAbort = null
+    scrollChat()
+    highlightCode()
+    const hasReal = aiMsg.content && !aiMsg.content.startsWith('（') && !aiMsg.content.startsWith('❌')
+    if (hasReal) {
+      try {
+        const r = await addChatHistory(currentSid.value, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '', session_id: currentSessionId.value })
+        if (r.id) aiMsg.history_id = r.id
+      } catch (e) { /* ignore */ }
+    }
+    try { await loadSessions() } catch (e) { /* ignore */ }
+  }
+}
+
+async function clearChat() {
+  messages.value = []
+  thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
+  try { await clearChatHistory(currentSid.value, currentSessionId.value) } catch (e) { /* ignore */ }
+  try { await loadSessions() } catch (e) { /* ignore */ }
+}
+
+function scrollChat() {
+  nextTick(() => {
+    const el = chatView.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+// ---------- 消息操作 ----------
+async function copyMessage(m) {
+  const text = m.content || m.thinking || ''
+  if (await copyText(text)) ElMessage.success('已复制')
+  else ElMessage.error('复制失败')
+}
+
+async function copyText(text) {
+  if (!text) return false
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch (e) { /* 降级 */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch (e) {
+    return false
+  }
+}
+
+async function deleteMessage(i) {
+  const m = messages.value[i]
+  if (!m) return
+  if (m.history_id) {
+    try { await deleteHistoryItem(currentSid.value, m.history_id) } catch (e) { /* ignore */ }
+  }
+  messages.value.splice(i, 1)
+  try { await loadSessions() } catch (e) { /* ignore */ }
+}
+
+async function regenerate(i) {
+  const m = messages.value[i]
+  if (!m) return
+  // 删除本条 assistant + 前一条 user，重新生成
+  messages.value.splice(i, 1)
+  if (messages.value[i - 1]?.role === 'user') messages.value.splice(i - 1, 1)
+  await sendChat()
+}
+
+// ---------- Markdown / 高亮 ----------
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    return marked.parse(text)
+  } catch (e) {
+    return text
+  }
+}
+
+function highlightCode() {
+  nextTick(() => {
+    document.querySelectorAll('.chat-content pre code').forEach(block => {
+      if (!block.dataset.highlighted) {
+        try { hljs.highlightElement(block) } catch (e) { /* ignore */ }
+        block.dataset.highlighted = '1'
+        const pre = block.parentElement
+        if (pre && !pre.querySelector('.code-copy-btn')) {
+          const btn = document.createElement('button')
+          btn.className = 'code-copy-btn'
+          btn.textContent = '复制'
+          btn.onclick = async () => {
+            const ok = await copyText(block.textContent)
+            btn.textContent = ok ? '✓' : '✗'
+            setTimeout(() => { btn.textContent = '复制' }, 1500)
+          }
+          pre.style.position = 'relative'
+          pre.appendChild(btn)
+        }
+      }
+    })
+  })
+}
+
+// ---------- 文件上传 ----------
+async function handleFileUpload(file) {
+  fileParsing.value = true
+  try {
+    const name = file.name || ''
+    const suffix = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+    // .pdf/.docx/.xlsx 走后端解析；.txt/.md 前端直接读取文本
+    if (['pdf', 'docx', 'xlsx'].includes(suffix)) {
+      const resp = await parseDoc(currentSid.value, file)
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + resp.text
+    } else {
+      const text = await file.text()
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + text.slice(0, 8000)
+    }
+  } catch (e) {
+    ElMessage.error('文件解析失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    fileParsing.value = false
+  }
+  return false
+}
+
+async function handleImageUpload(file) {
+  const reader = new FileReader()
+  reader.onload = () => { pendingImage.value = reader.result }
+  reader.readAsDataURL(file)
+  return false
+}
+
+// ---------- 历史 ----------
+async function loadHistory() {
+  try {
+    const list = await getChatHistory(currentSid.value, currentSessionId.value)
+    if (list.length) {
+      const cleaned = []
+      let lastKey = null
+      for (const h of list) {
+        const content = (h.content || '').trim()
+        if (!content) continue
+        if (content.startsWith('（') || content.startsWith('❌')) continue
+        const key = `${h.role}:${content}`
+        if (h.role === 'user' && key === lastKey) continue
+        lastKey = key
+        // 兼容历史里存的 OpenAI content 数组（含 image_url）→ 拆成文本 + 图片列表供当前会话展示
+        let displayContent = h.content
+        let displayImages = []
+        if (typeof h.content === 'string' && /^\s*\[/.test(h.content.trim())) {
+          try {
+            const parsed = JSON.parse(h.content)
+            if (Array.isArray(parsed)) {
+              displayImages = parsed.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+              displayContent = parsed.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+            }
+          } catch (e) { /* 非 JSON，按普通文本处理 */ }
+        } else if (Array.isArray(h.content)) {
+          displayImages = h.content.filter(p => p.type === 'image_url' && p.image_url?.url).map(p => p.image_url.url)
+          displayContent = h.content.filter(p => p.type === 'text').map(p => p.text || '').join('\n')
+        }
+        cleaned.push({ role: h.role, content: displayContent, images: displayImages, thinking: h.thinking || '', history_id: h.id, created_at: h.created_at })
+      }
+      messages.value = cleaned
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// ---------- 工具 ----------
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const now = new Date()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}`
+}
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   await refreshPresets()
   await refreshServices()
+  if (currentSid.value) {
+    loadChatSettings()
+    loadSessions().then(() => loadHistory())
+  }
+})
+
+onUnmounted(() => {
+  if (chatAbort) chatAbort.abort()
 })
 </script>
+
+<style scoped>
+.chat-layout { display: flex; gap: 12px; height: calc(100vh - 260px); min-height: 420px; }
+.session-sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid #ebeef5; display: flex; flex-direction: column; }
+.session-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; border-bottom: 1px solid #f0f0f0; }
+.session-list { flex: 1; overflow-y: auto; }
+.session-item { display: flex; align-items: center; gap: 4px; padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+.session-item:hover { background: #f5f7fa; }
+.session-item.active { background: #ecf5ff; color: #409eff; }
+.session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.session-meta { font-size: 11px; color: #c0c4cc; flex-shrink: 0; }
+.session-rename { opacity: 0; flex-shrink: 0; }
+.session-del { opacity: 0; flex-shrink: 0; }
+.session-item:hover .session-rename,
+.session-item:hover .session-del { opacity: 1; }
+.chat-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chat-messages {
+  flex: 1; overflow-y: auto; background: #fafafa; border-radius: 8px;
+  padding: 16px; border: 1px solid #ebeef5;
+}
+.chat-empty { color: #c0c4cc; text-align: center; margin-top: 120px; font-size: 14px; }
+.chat-msg { margin-bottom: 16px; display: flex; gap: 8px; }
+.chat-msg.user { flex-direction: row-reverse; }
+.chat-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.chat-avatar.user { background: #ecf5ff; }
+.chat-avatar.assistant { background: #f0f0f0; }
+.chat-bubble-wrap { max-width: 75%; display: flex; flex-direction: column; }
+.chat-msg.user .chat-bubble-wrap { align-items: flex-end; }
+.chat-bubble {
+  padding: 10px 14px; border-radius: 12px;
+  background: #fff; border: 1px solid #e4e7ed; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.chat-msg.user .chat-bubble { background: #ecf5ff; border-color: #d9ecff; }
+.chat-meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.chat-time { font-size: 11px; color: #c0c4cc; }
+.chat-actions { display: none; gap: 2px; }
+.chat-bubble-wrap:hover .chat-actions { display: flex; }
+.chat-actions .el-button { padding: 2px 4px; font-size: 11px; height: auto; }
+.chat-content { font-size: 14px; line-height: 1.6; }
+.chat-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.chat-image-thumb { max-width: 220px; max-height: 220px; border-radius: 8px; cursor: zoom-in; border: 1px solid #e4e7ed; display: block; }
+.chat-metrics { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ebeef5; color: #909399; font-size: 12px; line-height: 1.4; }
+.chat-content.markdown-body :deep(p) { margin: 4px 0; }
+.chat-content.markdown-body :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 10px 14px; border-radius: 6px; overflow-x: auto; font-size: 13px; position: relative; }
+.chat-content.markdown-body :deep(code) { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+.chat-content.markdown-body :deep(pre code) { background: none; padding: 0; }
+.chat-content.markdown-body :deep(ul), .chat-content.markdown-body :deep(ol) { padding-left: 20px; margin: 4px 0; }
+.chat-content.markdown-body :deep(table) { border-collapse: collapse; }
+.chat-content.markdown-body :deep(th), .chat-content.markdown-body :deep(td) { border: 1px solid #ddd; padding: 4px 8px; }
+:deep(.code-copy-btn) { position: absolute; top: 4px; right: 4px; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #444; background: #333; color: #ccc; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
+:deep(pre:hover .code-copy-btn) { opacity: 1; }
+.chat-thinking {
+  margin-top: 6px; font-size: 12px; color: #b88230;
+  background: #fdf6ec; border-radius: 6px;
+  border: 1px dashed #e6a23c; overflow: hidden;
+}
+.thinking-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px; cursor: pointer; user-select: none;
+  font-weight: 600; font-size: 12px;
+}
+.thinking-header:hover { background: #faecd8; }
+.thinking-arrow { transition: transform 0.2s; font-size: 12px; }
+.thinking-arrow.collapsed { transform: rotate(-90deg); }
+.thinking-body {
+  padding: 6px 8px; max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; border-top: 1px dashed #e6a23c;
+}
+.chat-streaming { color: #409eff; font-size: 18px; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.2; } }
+.chat-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-input-area { flex-shrink: 0; }
+.chat-input-area :deep(.el-textarea__inner) { resize: none; }
+
+@media (max-width: 767px) {
+  .chat-layout { flex-direction: column; height: auto; }
+  .session-sidebar { width: 100%; border-right: none; border-bottom: 1px solid #ebeef5; max-height: 120px; }
+  .chat-messages { height: 320px; padding: 10px; }
+  .chat-bubble-wrap { max-width: 90%; }
+  .chat-actions { display: flex !important; }
+}
+</style>

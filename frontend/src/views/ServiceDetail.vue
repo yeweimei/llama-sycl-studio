@@ -137,17 +137,104 @@
         </el-dialog>
       </el-tab-pane>
 
-      <!-- ================= 聊天测试台（共享 ChatPanel，状态在 pinia chatStore） ================= -->
+      <!-- ================= 聊天测试台 ================= -->
       <el-tab-pane v-if="service?.supports_chat !== false" label="💬 聊天测试台" name="chat">
-        <ChatPanel
-          :service-id="sid"
-          :model-loaded="!!service?.loaded"
-          :is-vision="!!service?.has_mmproj"
-          :max-tokens-limit="maxTokensLimit"
-          :service-loaded-at="service?.loaded_at || 0"
-          empty-text="输入消息开始测试（需模型已加载）"
-          height="540px"
-        />
+        <div class="chat-layout">
+          <!-- 会话侧栏 -->
+          <div class="session-sidebar">
+            <div class="session-header">
+              <span style="font-size:13px;font-weight:600">会话</span>
+              <el-button size="small" link @click="createNewSession"><el-icon><Plus /></el-icon></el-button>
+            </div>
+            <div class="session-list">
+              <div
+                v-for="s in sessions"
+                :key="s.id"
+                class="session-item"
+                :class="{ active: s.id === currentSessionId }"
+                @click="switchSession(s.id)"
+              >
+                <span class="session-title" @dblclick.stop="startRenameSession(s)" :title="s.title">{{ s.title }}</span>
+                <span class="session-meta">{{ s.msg_count || 0 }} 条</span>
+                <el-button v-if="s.id !== 0" size="small" link class="session-rename" @click.stop="startRenameSession(s)"><el-icon><Edit /></el-icon></el-button>
+                <el-button v-if="s.id !== 0" size="small" link class="session-del" @click.stop="removeSession(s)"><el-icon><Delete /></el-icon></el-button>
+              </div>
+            </div>
+          </div>
+          <!-- 聊天主区 -->
+          <div class="chat-panel">
+          <div class="chat-messages" ref="chatView">
+            <div v-if="!messages.length" class="chat-empty">输入消息开始测试（需模型已加载）</div>
+            <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
+              <div class="chat-avatar" :class="m.role">{{ m.role === 'user' ? '🧑' : '🤖' }}</div>
+              <div class="chat-bubble-wrap">
+                <div class="chat-bubble">
+                  <div v-if="m.role === 'assistant'" class="chat-content markdown-body" v-html="renderMarkdown(m.content)"></div>
+                  <div v-else class="chat-content" style="white-space:pre-wrap">{{ m.content }}</div>
+                  <div v-if="m.thinking" class="chat-thinking">
+                    <div class="thinking-header" @click="toggleThinking(i)">
+                      <span>🤔 思考过程</span>
+                      <el-icon class="thinking-arrow" :class="{ collapsed: !thinkingExpanded[i] }"><ArrowDown /></el-icon>
+                    </div>
+                    <div v-show="thinkingExpanded[i]" class="thinking-body" :ref="el => setThinkingRef(el, i)">{{ m.thinking }}</div>
+                  </div>
+                </div>
+                <div class="chat-meta">
+                  <span class="chat-time">{{ fmtTime(m.created_at) }}</span>
+                  <div class="chat-actions" v-if="!chatLoading">
+                    <el-button link size="small" @click="copyMessage(m)">复制</el-button>
+                    <el-button v-if="m.role === 'assistant'" link size="small" @click="regenerate(i)">重新生成</el-button>
+                    <el-button link size="small" style="color:#f56c6c" @click="deleteMessage(i)">删除</el-button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="chatLoading" class="chat-msg assistant">
+              <div class="chat-avatar assistant">🤖</div>
+              <div class="chat-bubble-wrap"><div class="chat-bubble"><div class="chat-streaming">▋</div></div></div>
+            </div>
+          </div>
+          <div class="chat-controls">
+            <el-checkbox v-model="chatThinking">思考模式</el-checkbox>
+            <span style="margin-left:12px;font-size:13px;color:#909399">max_tokens</span>
+            <el-input-number v-model="chatMaxTokens" :min="32" :max="maxTokensLimit" :step="64" size="small" style="width:130px" />
+            <el-upload
+              :show-file-list="false"
+              :before-upload="handleFileUpload"
+              accept=".txt,.md,.pdf"
+              style="margin-left:8px"
+            >
+              <el-button size="small" :loading="fileParsing">上传文件</el-button>
+            </el-upload>
+            <el-upload
+              v-if="isVisionModel"
+              :show-file-list="false"
+              :before-upload="handleImageUpload"
+              accept="image/png,image/jpeg"
+              style="margin-left:4px"
+            >
+              <el-button size="small">图片</el-button>
+            </el-upload>
+            <el-button v-if="!chatLoading" size="small" type="primary" style="margin-left:auto" :disabled="!canChat" @click="sendChat">发送</el-button>
+            <el-button v-else size="small" type="danger" style="margin-left:auto" @click="stopChat">⏹ 停止</el-button>
+            <el-button size="small" @click="clearChat">清空</el-button>
+          </div>
+          <div v-if="pendingImage" style="margin-bottom:4px">
+            <el-tag closable @close="pendingImage = null">📷 图片已附加</el-tag>
+          </div>
+          <div class="chat-input-area">
+            <el-input
+              v-model="chatInput"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 6 }"
+              placeholder="输入消息，Enter 发送 / Shift+Enter 换行"
+              @keydown.enter.exact.prevent="sendChat"
+              maxlength="4096"
+              show-word-limit
+            />
+          </div>
+        </div>
+        </div>
       </el-tab-pane>
 
       <!-- ================= 接入配置 ================= -->
@@ -182,18 +269,80 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CaretRight, CaretBottom } from '@element-plus/icons-vue'
-import ChatPanel from '../components/ChatPanel.vue'
+import { ArrowDown, Plus, Delete, Edit, ArrowUp, CaretRight, CaretBottom } from '@element-plus/icons-vue'
 import {
   getService, startService, stopService, getServiceLogs,
-  clientConfig, listPresets,
+  chatProxy, clientConfig, listPresets,
+  getChatHistory, addChatHistory, clearChatHistory, parsePdf,
+  listSessions, createSession, renameSession, deleteSession,
+  deleteHistoryItem,
   getChatLogs, clearChatLogs,
 } from '../api'
+import { marked } from 'marked'
+import hljs from 'highlight.js/lib/common'
+import 'highlight.js/styles/github-dark.css'
 
-// 通用复制：优先 Clipboard API，非 HTTPS 环境降级 textarea+execCommand（接入配置 tab 用）
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    const html = marked.parse(text)
+    return html
+  } catch { return text }
+}
+
+// 代码高亮 + 复制按钮：在 DOM 更新后 post-process
+function highlightCode() {
+  nextTick(() => {
+    const el = chatView.value
+    if (!el) return
+    el.querySelectorAll('pre code').forEach(block => {
+      if (!block.dataset.highlighted) {
+        try { hljs.highlightElement(block) } catch (e) { /* ignore */ }
+        block.dataset.highlighted = '1'
+        // 添加复制按钮
+        const pre = block.parentElement
+        if (pre && !pre.querySelector('.code-copy-btn')) {
+          const btn = document.createElement('button')
+          btn.className = 'code-copy-btn'
+          btn.textContent = '复制'
+          btn.onclick = async () => {
+            const ok = await copyText(block.textContent)
+            btn.textContent = ok ? '✓' : '✗'
+            setTimeout(() => { btn.textContent = '复制' }, 1500)
+          }
+          pre.style.position = 'relative'
+          pre.appendChild(btn)
+        }
+      }
+    })
+  })
+}
+
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const now = new Date()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}`
+}
+
+async function copyMessage(m) {
+  const text = m.content || m.thinking || ''
+  if (await copyText(text)) {
+    ElMessage.success('已复制')
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+
+// 通用复制：优先 Clipboard API，非 HTTPS 环境降级 textarea+execCommand
 async function copyText(text) {
   if (!text) return false
   try {
@@ -215,6 +364,41 @@ async function copyText(text) {
   } catch (e) {
     return false
   }
+}
+
+async function deleteMessage(i) {
+  const m = messages.value[i]
+  if (!m) return
+  if (m.history_id) {
+    try { await deleteHistoryItem(sid, m.history_id) } catch (e) { /* ignore */ }
+  }
+  messages.value.splice(i, 1)
+  try { await loadSessions() } catch (e) { /* ignore */ }
+}
+
+async function regenerate(i) {
+  // 找到 assistant 消息之前的最后一条 user 消息
+  if (chatLoading.value) return
+  // 删除该 assistant 消息（含历史）
+  const m = messages.value[i]
+  if (m?.history_id) {
+    try { await deleteHistoryItem(sid, m.history_id) } catch (e) { /* ignore */ }
+  }
+  messages.value.splice(i, 1)
+  // 找到最后一条 user 消息
+  let lastUserIdx = -1
+  for (let j = messages.value.length - 1; j >= 0; j--) {
+    if (messages.value[j].role === 'user') { lastUserIdx = j; break }
+  }
+  if (lastUserIdx < 0) return
+  // 恢复输入并重新发送
+  chatInput.value = messages.value[lastUserIdx].content
+  // 删除该 user 消息（避免重复）
+  if (messages.value[lastUserIdx]?.history_id) {
+    try { await deleteHistoryItem(sid, messages.value[lastUserIdx].history_id) } catch (e) { /* ignore */ }
+  }
+  messages.value.splice(lastUserIdx, 1)
+  await sendChat()
 }
 
 const route = useRoute()
@@ -403,6 +587,90 @@ watch(activeTab, v => {
   else stopChatLogPolling()
 })
 
+// ---------- 聊天 ----------
+const messages = ref([])
+const chatInput = ref('')
+const chatLoading = ref(false)
+// 聊天设置持久化（按服务分开存）
+const CHAT_SET_KEY = `chat-settings-${sid}`
+const chatThinking = ref(localStorage.getItem(CHAT_SET_KEY) ? JSON.parse(localStorage.getItem(CHAT_SET_KEY)).thinking ?? false : false)
+const chatMaxTokens = ref(localStorage.getItem(CHAT_SET_KEY) ? JSON.parse(localStorage.getItem(CHAT_SET_KEY)).maxTokens ?? 512 : 512)
+const chatView = ref(null)
+const fileParsing = ref(false)
+const pendingImage = ref(null) // base64 data URL
+
+// ---------- 会话管理 ----------
+const sessions = ref([])
+const currentSessionId = ref(0)
+
+async function loadSessions() {
+  try {
+    sessions.value = await listSessions(sid)
+  } catch (e) { /* ignore */ }
+}
+
+async function createNewSession() {
+  try {
+    const s = await createSession(sid, { title: `新会话 ${sessions.value.length}` })
+    sessions.value.unshift(s)
+    await switchSession(s.id)
+  } catch (e) { ElMessage.error('创建会话失败') }
+}
+
+async function switchSession(sessionId) {
+  currentSessionId.value = sessionId
+  messages.value = []
+  thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
+  await loadHistory()
+}
+
+let renamingSession = false
+
+async function startRenameSession(s) {
+  if (s.id === 0) return // 默认会话不可重命名
+  if (renamingSession) return  // 防重复打开叠加
+  renamingSession = true
+  try {
+    const { value } = await ElMessageBox.prompt('会话标题', '重命名会话', {
+      inputValue: s.title,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    if (value && value.trim()) {
+      await renameSession(sid, s.id, { title: value.trim() })
+      s.title = value.trim()
+    }
+  } catch (e) { /* cancel */ } finally {
+    renamingSession = false
+  }
+}
+
+async function removeSession(s) {
+  try {
+    await ElMessageBox.confirm(`确认删除会话「${s.title}」及其历史记录？`, '删除确认', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    })
+    await deleteSession(sid, s.id)
+    sessions.value = sessions.value.filter(x => x.id !== s.id)
+    if (currentSessionId.value === s.id) {
+      await switchSession(0)
+    }
+  } catch (e) { /* cancel */ }
+}
+// 打断控制器
+let chatAbort = null
+
+watch([chatThinking, chatMaxTokens], () => {
+  localStorage.setItem(CHAT_SET_KEY, JSON.stringify({ thinking: chatThinking.value, maxTokens: chatMaxTokens.value }))
+})
+
+function stopChat() {
+  if (chatAbort) chatAbort.abort()
+}
+
+const canChat = computed(() => service.value?.loaded)
 // 当前模型可用上下文（决定 max_tokens 上限）
 // llama.cpp 机制：总 ctx(--ctx-size) 按 parallel(slot) 均分，meta.n_ctx 即每 slot 上下文；
 // max_tokens 上限 = 每 slot 上下文 × 0.75（预留 25% 给对话历史 prompt）
@@ -426,6 +694,249 @@ const maxTokensLimit = computed(() => {
   }
   return Math.max(512, Math.floor(perSlot * 0.75))
 })
+// 图片上传能力：以后端实际检测为准（模型目录有 mmproj 才显示）
+const isVisionModel = computed(() => !!service.value?.has_mmproj)
+
+function stripThink(text) {
+  if (!text) return text
+  return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '').trim()
+}
+
+// thinking 折叠状态
+const thinkingExpanded = ref({})
+// 用户手动折叠/展开过的消息索引（流式过程中尊重用户操作，不再强制展开）
+const thinkingUserToggled = ref({})
+// thinking 滚动容器 refs
+const thinkingRefs = ref({})
+
+function setThinkingRef(el, index) {
+  if (el) thinkingRefs.value[index] = el
+}
+
+// 思考框滚动到底部（内容增长时跟随最新思考）
+function scrollThinking(index) {
+  const el = thinkingRefs.value[index]
+  if (!el) return
+  // Vue DOM 更新异步：等渲染完成再滚动，避免 scrollHeight 读到旧值
+  nextTick(() => {
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+function toggleThinking(index) {
+  thinkingExpanded.value[index] = !thinkingExpanded.value[index]
+  thinkingUserToggled.value[index] = true
+  // 展开后滚动到底部
+  if (thinkingExpanded.value[index]) {
+    setTimeout(() => scrollThinking(index), 50)
+  }
+}
+
+async function sendChat() {
+  const text = chatInput.value.trim()
+  if (!text || chatLoading.value) return
+  // 同步置位防重入（必须在任何 await 之前，否则双击/连按会重复发送）
+  chatLoading.value = true
+  // 构建消息内容（多模态图片）
+  let userContent = text
+  if (pendingImage.value) {
+    userContent = [
+      { type: 'text', text },
+      { type: 'image_url', image_url: { url: pendingImage.value } },
+    ]
+  }
+  messages.value.push({ role: 'user', content: text })
+  // 持久化用户消息（仅一次）
+  try { const r = await addChatHistory(sid, { role: 'user', content: text, session_id: currentSessionId.value }); if (r.id) messages.value[messages.value.length - 1].history_id = r.id } catch (e) { /* ignore */ }
+  chatInput.value = ''
+  pendingImage.value = null
+  messages.value.push({ role: 'assistant', content: '', thinking: '' })
+  const aiMsg = messages.value[messages.value.length - 1]
+  scrollChat()
+  const controller = new AbortController()
+  chatAbort = controller
+  try {
+    const payload = {
+      messages: messages.value
+        .filter(m => m.role !== 'thinking')
+        // 剔除末尾空 assistant 占位（仅前端显示用，不发模型，避免末尾连续 assistant 校验失败）
+        .filter((m, i, arr) => !(m.role === 'assistant' && !m.content.trim() && i === arr.length - 1))
+        .map((m, idx, arr) => {
+          // 最后一条用户消息用多模态内容
+          if (m.role === 'user' && idx === arr.length - 1 && Array.isArray(userContent)) {
+            return { role: 'user', content: userContent }
+          }
+          return {
+            role: m.role,
+            content: m.role === 'assistant' ? stripThink(m.content) : m.content,
+          }
+        }),
+      max_tokens: chatMaxTokens.value,
+      temperature: 0.7,
+      stream: true,
+    }
+    if (chatThinking.value) payload.chat_template_kwargs = { enable_thinking: true }
+    else payload.chat_template_kwargs = { enable_thinking: false }
+
+    const resp = await fetch(`/api/services/${sid}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const data = trimmed.slice(5).trim()
+        if (data === '[DONE]') continue
+        try {
+          const chunk = JSON.parse(data)
+          const delta = chunk.choices?.[0]?.delta || {}
+          if (delta.reasoning_content) {
+            const firstThinking = !aiMsg.thinking
+            aiMsg.thinking += delta.reasoning_content
+            // 首次出现思考内容时自动展开；之后尊重用户手动折叠状态
+            const idx = messages.value.indexOf(aiMsg)
+            if (idx >= 0 && firstThinking && !thinkingUserToggled.value[idx]) {
+              thinkingExpanded.value[idx] = true
+            }
+            // 思考内容增长时滚动到底部（跟随最新思考）
+            if (idx >= 0) scrollThinking(idx)
+          }
+          if (delta.content) {
+            aiMsg.content += delta.content
+            // 如果 content 里含 <think> 标签（某些模型兼容），解析出来
+            if (aiMsg.content.includes('<think')) {
+              const m = aiMsg.content.match(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/i)
+              if (m) {
+                if (!aiMsg.thinking) aiMsg.thinking = m[1] || ''
+                aiMsg.content = aiMsg.content.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/i, '').trim()
+              }
+            }
+          }
+          scrollChat()
+          highlightCode()
+        } catch (e) { /* 忽略解析错误 */ }
+      }
+    }
+    if (!aiMsg.content && !aiMsg.thinking) {
+      aiMsg.content = '（模型未返回内容：可能是思考模式未产出正式回答，或 max_tokens 在思考阶段被截断。可尝试关闭思考模式或调大 max_tokens）'
+      aiMsg.isError = true
+    } else if (!aiMsg.content && aiMsg.thinking) {
+      aiMsg.content = '（模型仅返回了思考内容，未生成正式回答）'
+    } else {
+      // 流式结束后默认折叠思考内容（用户手动操作过的保持原状）
+      const idx = messages.value.indexOf(aiMsg)
+      if (idx >= 0 && aiMsg.thinking && !thinkingUserToggled.value[idx]) {
+        thinkingExpanded.value[idx] = false
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      // 用户主动停止：保留已生成内容
+      if (!aiMsg.content && aiMsg.thinking) aiMsg.content = '（已停止：仅输出了思考内容）'
+    } else {
+      aiMsg.content = `❌ 调用失败: ${e.message || e}`
+    }
+  } finally {
+    chatLoading.value = false
+    chatAbort = null
+    scrollChat()
+    highlightCode()
+    // 持久化助手回复（跳过占位提示/错误/空回复；仅思考无正式回答也不存）
+    const hasReal = aiMsg.content && !aiMsg.content.startsWith('（') && !aiMsg.content.startsWith('❌')
+    if (hasReal) {
+      try { const r = await addChatHistory(sid, { role: 'assistant', content: aiMsg.content, thinking: aiMsg.thinking || '', session_id: currentSessionId.value }); if (r.id) aiMsg.history_id = r.id } catch (e) { /* ignore */ }
+    }
+    // 刷新会话列表（消息数实时更新）
+    try { await loadSessions() } catch (e) { /* ignore */ }
+  }
+}
+
+async function clearChat() {
+  messages.value = []
+  thinkingExpanded.value = {}
+  thinkingUserToggled.value = {}
+  thinkingRefs.value = {}
+  try { await clearChatHistory(sid, currentSessionId.value) } catch (e) { /* ignore */ }
+  try { await loadSessions() } catch (e) { /* ignore */ }
+}
+
+function scrollChat() {
+  nextTick(() => {
+    const el = chatView.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+// ---------- 文件上传 ----------
+async function handleFileUpload(file) {
+  fileParsing.value = true
+  try {
+    if (file.name.endsWith('.pdf')) {
+      const resp = await parsePdf(sid, file)
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + resp.text
+    } else {
+      // txt/md 直接读文本
+      const text = await file.text()
+      chatInput.value = (chatInput.value ? chatInput.value + '\n' : '') + text.slice(0, 8000)
+    }
+  } catch (e) {
+    ElMessage.error('文件解析失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    fileParsing.value = false
+  }
+  return false // 阻止 el-upload 默认上传
+}
+
+async function handleImageUpload(file) {
+  // 转 base64 data URL
+  const reader = new FileReader()
+  reader.onload = () => {
+    pendingImage.value = reader.result
+  }
+  reader.readAsDataURL(file)
+  return false
+}
+
+// ---------- 加载历史 ----------
+async function loadHistory() {
+  try {
+    const list = await getChatHistory(sid, currentSessionId.value)
+    if (list.length) {
+      // 过滤占位提示/错误消息，并去重连续重复的 user 消息
+      const cleaned = []
+      let lastKey = null
+      for (const h of list) {
+        const content = (h.content || '').trim()
+        if (!content) continue
+        if (content.startsWith('（') || content.startsWith('❌')) continue
+        const key = `${h.role}:${content}`
+        if (h.role === 'user' && key === lastKey) continue // 去重
+        lastKey = key
+        cleaned.push({ role: h.role, content: h.content, thinking: h.thinking || '', history_id: h.id, created_at: h.created_at })
+      }
+      messages.value = cleaned
+      highlightCode()
+    }
+  } catch (e) { /* ignore */ }
+}
 
 // ---------- 接入配置 ----------
 const configTab = ref('curl')
@@ -506,12 +1017,21 @@ async function load() {
 onMounted(() => {
   load()
   loadPresets()
-  // 聊天测试台由 <ChatPanel> 自管理（pinia chatStore，离开页面不中断流式）
+  loadSessions().then(() => loadHistory())
+  window.addEventListener('keydown', onGlobalKey)
 })
 onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKey)
   stopLogPolling()
   stopChatLogPolling()
 })
+
+function onGlobalKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey && activeTab.value === 'chat' && document.activeElement?.tagName === 'TEXTAREA') {
+    e.preventDefault()
+    if (!chatLoading.value) sendChat()
+  }
+}
 </script>
 
 <style scoped>
@@ -571,12 +1091,86 @@ onUnmounted(() => {
 @keyframes pulse { 0%,100% {opacity:1} 50% {opacity:.4} }
 .form-tip { font-size: 12px; color: #909399; margin-top: 6px; }
 
-/* 聊天测试台样式已抽到 ChatPanel.vue（scoped） */
+.chat-layout { display: flex; gap: 12px; height: 540px; }
+.session-sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid #ebeef5; display: flex; flex-direction: column; }
+.session-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; border-bottom: 1px solid #f0f0f0; }
+.session-list { flex: 1; overflow-y: auto; }
+.session-item { display: flex; align-items: center; gap: 4px; padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+.session-item:hover { background: #f5f7fa; }
+.session-item.active { background: #ecf5ff; color: #409eff; }
+.session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.session-meta { font-size: 11px; color: #c0c4cc; flex-shrink: 0; }
+.session-rename { opacity: 0; flex-shrink: 0; }
+.session-del { opacity: 0; flex-shrink: 0; }
+.session-item:hover .session-rename,
+.session-item:hover .session-del { opacity: 1; }
+.chat-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chat-messages {
+  flex: 1; overflow-y: auto; background: #fafafa; border-radius: 8px;
+  padding: 16px; border: 1px solid #ebeef5;
+}
+.chat-empty { color: #c0c4cc; text-align: center; margin-top: 180px; font-size: 14px; }
+.chat-msg { margin-bottom: 16px; display: flex; gap: 8px; }
+.chat-msg.user { flex-direction: row-reverse; }
+.chat-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.chat-avatar.user { background: #ecf5ff; }
+.chat-avatar.assistant { background: #f0f0f0; }
+.chat-bubble-wrap { max-width: 75%; display: flex; flex-direction: column; }
+.chat-msg.user .chat-bubble-wrap { align-items: flex-end; }
+.chat-bubble {
+  padding: 10px 14px; border-radius: 12px;
+  background: #fff; border: 1px solid #e4e7ed; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.chat-msg.user .chat-bubble { background: #ecf5ff; border-color: #d9ecff; }
+.chat-meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.chat-time { font-size: 11px; color: #c0c4cc; }
+.chat-actions { display: none; gap: 2px; }
+.chat-bubble-wrap:hover .chat-actions { display: flex; }
+.chat-actions .el-button { padding: 2px 4px; font-size: 11px; height: auto; }
+.chat-content { font-size: 14px; line-height: 1.6; }
+.chat-content.markdown-body :deep(p) { margin: 4px 0; }
+.chat-content.markdown-body :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 10px 14px; border-radius: 6px; overflow-x: auto; font-size: 13px; position: relative; }
+.chat-content.markdown-body :deep(code) { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+.chat-content.markdown-body :deep(pre code) { background: none; padding: 0; }
+.chat-content.markdown-body :deep(ul), .chat-content.markdown-body :deep(ol) { padding-left: 20px; margin: 4px 0; }
+.chat-content.markdown-body :deep(table) { border-collapse: collapse; }
+.chat-content.markdown-body :deep(th), .chat-content.markdown-body :deep(td) { border: 1px solid #ddd; padding: 4px 8px; }
+:deep(.code-copy-btn) { position: absolute; top: 4px; right: 4px; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid #444; background: #333; color: #ccc; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
+:deep(pre:hover .code-copy-btn) { opacity: 1; }
+.chat-thinking {
+  margin-top: 6px; font-size: 12px; color: #b88230;
+  background: #fdf6ec; border-radius: 6px;
+  border: 1px dashed #e6a23c; overflow: hidden;
+}
+.thinking-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px; cursor: pointer; user-select: none;
+  font-weight: 600; font-size: 12px;
+}
+.thinking-header:hover { background: #faecd8; }
+.thinking-arrow { transition: transform 0.2s; font-size: 12px; }
+.thinking-arrow.collapsed { transform: rotate(-90deg); }
+.thinking-body {
+  padding: 6px 8px; max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; border-top: 1px dashed #e6a23c;
+}
+.chat-streaming {
+  color: #409eff; font-size: 18px; animation: blink 1s infinite;
+}
+@keyframes blink { 50% { opacity: 0.2; } }
+.chat-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-input-area { flex-shrink: 0; }
+.chat-input-area :deep(.el-textarea__inner) { resize: none; }
 
 /* 移动端适配 */
 @media (max-width: 767px) {
   .log-toolbar > * { margin-bottom: 4px; }
   .log-toolbar :deep(.el-date-editor) { width: 100% !important; }
+  .chat-messages { height: 320px; padding: 10px; }
+  .chat-bubble-wrap { max-width: 90%; }
+  .chat-layout { flex-direction: column; height: auto; }
+  .session-sidebar { width: 100%; border-right: none; border-bottom: 1px solid #ebeef5; max-height: 120px; }
+  .chat-actions { display: flex !important; }
   .el-col + .el-col { margin-top: 12px; }
 }
 </style>
