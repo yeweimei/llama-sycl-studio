@@ -1022,6 +1022,10 @@ async def chat_proxy(sid: int, body: ChatRequest):
     if ist.get("state") == "degraded":
         lat = ist.get("health_latency_ms")
         raise HTTPException(503, f"模型 {model_name} 实例无响应（健康检查失败{('，延迟 ' + str(lat) + 'ms') if lat is not None else ''}），请重启模型")
+    # 启动预热：flash-attn 内核 JIT 编译前移到启动期；预热中拒绝请求，
+    # 让 IGC 崩溃发生在预热而非首个真实请求（避免服务中途无响应/崩溃）
+    if instance_mgr.is_warming(sid):
+        raise HTTPException(503, f"模型 {model_name} 正在预热（编译内核），请稍后重试")
     # 并发闸：并发请求 = 实例 slot 数（--parallel），Fair 排队；超过 PROXY_SLOT_TIMEOUT
     # 拿不到 slot 即 503——防止突发请求全量灌给 llama-server 的 server_queue 造成“无响应”
     _sname = d.get("name") or model_name

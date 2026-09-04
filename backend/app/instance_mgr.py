@@ -92,6 +92,65 @@ def slot_limit(name: str) -> int:
     return _get_slot_limit(name)
 
 
+# ===== 实例启动预热（②：把 flash-attn 内核 JIT 编译前移到启动期）=====
+# IGC 编译 SYCL flash-attention 内核时崩溃（Internal Compiler Error / DEVICE_LOST）
+# 是模型"无响应/崩溃"根因之一。预热在实例对外服务前用一次微推理把 flash/attention
+# 内核编进持久 JIT 缓存（llama-studio-cache 卷），让 IGC 崩溃发生在启动预热阶段
+# （由 self_heal 退避自愈收敛），而不是首个真实请求中途炸。嵌入模型不做生成注意力，跳过。
+WARM_TIMEOUT = float(os.environ.get("LLAMA_INSTANCE_WARM_TIMEOUT", "180"))
+WARM_PROBE_MAX_TOKENS = 2
+# sid -> {"status": waiting|warming|ok|failed, "started": float, "done": float|None}
+_warm: dict[int, dict] = {}
+
+
+def _is_embedding_model(name: str) -> bool:
+    n = (name or "").lower()
+    return "embedding" in n or "embed" in n
+
+
+def _warm_probe(sid: int, name: str, port: int):
+    """后台预热线程：等 /health 就绪后跑一次微推理，强制 flash/attention 内核入 JIT 缓存"""
+    import httpx
+    started = time.time()
+    _warm[sid] = {"status": "warming", "started": started, "done": None}
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if _health_ok(port):
+                break
+            time.sleep(1)
+        url = f"http://127.0.0.1:{port}/v1/chat/completions"
+        payload = {
+            "model": name,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": WARM_PROBE_MAX_TOKENS,
+            "stream": False,
+        }
+        with httpx.Client(timeout=WARM_TIMEOUT) as c:
+            r = c.post(url, json=payload)
+        if r.status_code == 200:
+            _warm[sid] = {"status": "ok", "started": started, "done": time.time()}
+            logger.info("实例 %s 预热完成：flash/attention 内核已入 JIT 缓存（%.1fs）", name, time.time() - started)
+        else:
+            _warm[sid] = {"status": "failed", "started": started, "done": time.time()}
+            logger.warning("实例 %s 预热探测返回 %s，跳过预热（不影响使用）", name, r.status_code)
+    except httpx.TimeoutException:
+        _warm[sid] = {"status": "failed", "started": started, "done": time.time()}
+        logger.warning("实例 %s 预热超时（%.0fs），跳过预热", name, WARM_TIMEOUT)
+    except Exception as e:
+        _warm[sid] = {"status": "failed", "started": started, "done": time.time()}
+        logger.warning("实例 %s 预热失败（进程可能崩/未就绪）: %s", name, e)
+
+
+def warm_status(sid: int) -> dict | None:
+    return _warm.get(sid)
+
+
+def is_warming(sid: int) -> bool:
+    w = _warm.get(sid)
+    return bool(w and w.get("status") == "warming")
+
+
 def _current_backend() -> str:
     """当前激活引擎后端：读卷内 active_version（vulkan-b10622 → vulkan；b10622 → sycl-fp16）"""
     try:
@@ -516,6 +575,9 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
         )
         _instances[sid] = {"proc": proc, "port": port, "started_at": int(time.time()), "log_path": str(log_path)}
         logger.info("实例启动 sid=%s name=%s port=%d pid=%d", sid, name, port, proc.pid)
+        # 生成模型启动预热：后台线程编译 flash/attention 内核入 JIT 缓存
+        if not _is_embedding_model(name):
+            threading.Thread(target=_warm_probe, args=(sid, name, port), name=f"warm-{sid}", daemon=True).start()
         return {"ok": True, "status": "starting", "port": port, "pid": proc.pid, "log": str(log_path)}
 
 
@@ -532,6 +594,7 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
             _draining.discard(sid)
             _active_requests.pop(sid, None)
             _slot_guard.pop(sid, None)
+            _warm.pop(sid, None)
             return {"ok": True, "status": "not_running"}
         if graceful:
             mark_draining(sid)
@@ -545,6 +608,7 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
         clear_draining(sid)
         _active_requests.pop(sid, None)
         _slot_guard.pop(sid, None)
+        _warm.pop(sid, None)
 
         inst = _instances.pop(sid, None)
         proc = inst.get("proc")
