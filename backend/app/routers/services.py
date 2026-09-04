@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -13,6 +15,19 @@ from app.config import settings
 from app.routers.stats import _record_stats
 
 router = APIRouter()
+
+# ── 共享 HTTP 连接池（P0：消除每请求 TCP 建连；超时按请求单独覆盖）──
+_shared_client: httpx.AsyncClient | None = None
+
+
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=128, max_keepalive_connections=32),
+            timeout=httpx.Timeout(600.0, connect=10.0),
+        )
+    return _shared_client
 
 
 # ── 对话内容日志（chat_api_logs，最近 1000 条）──
@@ -1064,45 +1079,45 @@ async def chat_proxy(sid: int, body: ChatRequest):
         import time as _time
         t0 = _time.time()
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                try:
-                    r = await client.post(url, json=payload, headers=headers)
-                except httpx.HTTPError as e:
-                    # 记录失败明细
-                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=502,
-                                  total_ms=int((_time.time() - t0) * 1000), error=str(e))
-                    _chat_log_finish(log_id, ok=False, status_code=502, total_ms=int((_time.time() - t0) * 1000), error=str(e))
-                    raise HTTPException(502, f"转发失败: {e}")
-                if r.status_code != 200:
-                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=r.status_code,
-                                  total_ms=int((_time.time() - t0) * 1000),
-                                  error=r.text[:300])
-                    _chat_log_finish(log_id, ok=False, status_code=r.status_code,
-                                     total_ms=int((_time.time() - t0) * 1000), error=r.text[:500])
-                    raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
-                data = r.json()
-                # 埋点统计
-                elapsed_ms = int((_time.time() - t0) * 1000)
-                usage = data.get("usage", {})
-                _record_stats(model_name, endpoint="/v1/chat/completions",
-                              prompt_tokens=usage.get("prompt_tokens", 0),
-                              completion_tokens=usage.get("completion_tokens", 0),
-                              prefill_ms=elapsed_ms, stream=False, ok=True,
-                              status_code=200, total_ms=elapsed_ms)
-                # 对话内容日志：非流式直接拿完整内容
-                try:
-                    choice = data.get("choices", [{}])[0]
-                    msg = choice.get("message", {})
-                    resp_text = msg.get("content", "") or ""
-                    think_text = msg.get("reasoning_content", "") or ""
-                    _chat_log_append(log_id, resp_text[:20000], think_text[:20000])
-                except Exception:
-                    pass
-                _chat_log_finish(log_id, ok=True, status_code=200,
-                                 prompt_tokens=usage.get("prompt_tokens", 0),
-                                 completion_tokens=usage.get("completion_tokens", 0),
-                                 total_ms=elapsed_ms)
-                return data
+            client = _get_shared_client()
+            try:
+                r = await client.post(url, json=payload, headers=headers, timeout=timeout)
+            except httpx.HTTPError as e:
+                # 记录失败明细
+                _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=502,
+                              total_ms=int((_time.time() - t0) * 1000), error=str(e))
+                _chat_log_finish(log_id, ok=False, status_code=502, total_ms=int((_time.time() - t0) * 1000), error=str(e))
+                raise HTTPException(502, f"转发失败: {e}")
+            if r.status_code != 200:
+                _record_stats(model_name, endpoint="/v1/chat/completions", stream=False, ok=False, status_code=r.status_code,
+                              total_ms=int((_time.time() - t0) * 1000),
+                              error=r.text[:300])
+                _chat_log_finish(log_id, ok=False, status_code=r.status_code,
+                                 total_ms=int((_time.time() - t0) * 1000), error=r.text[:500])
+                raise HTTPException(r.status_code, f"上游返回 {r.status_code}: {r.text[:500]}")
+            data = r.json()
+            # 埋点统计
+            elapsed_ms = int((_time.time() - t0) * 1000)
+            usage = data.get("usage", {})
+            _record_stats(model_name, endpoint="/v1/chat/completions",
+                          prompt_tokens=usage.get("prompt_tokens", 0),
+                          completion_tokens=usage.get("completion_tokens", 0),
+                          prefill_ms=elapsed_ms, stream=False, ok=True,
+                          status_code=200, total_ms=elapsed_ms)
+            # 对话内容日志：非流式直接拿完整内容
+            try:
+                choice = data.get("choices", [{}])[0]
+                msg = choice.get("message", {})
+                resp_text = msg.get("content", "") or ""
+                think_text = msg.get("reasoning_content", "") or ""
+                _chat_log_append(log_id, resp_text[:20000], think_text[:20000])
+            except Exception:
+                pass
+            _chat_log_finish(log_id, ok=True, status_code=200,
+                             prompt_tokens=usage.get("prompt_tokens", 0),
+                             completion_tokens=usage.get("completion_tokens", 0),
+                             total_ms=elapsed_ms)
+            return data
         finally:
             instance_mgr.end_request(sid)
             instance_mgr.release_slot(sid)
@@ -1127,50 +1142,50 @@ async def chat_proxy(sid: int, body: ChatRequest):
             _last_flush = now_t
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                try:
-                    async with client.stream("POST", url, json=payload, headers=headers) as r:
-                        async for line in r.aiter_lines():
-                            if line:
-                                # 捕获首 token 时间
-                                if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
-                                    first_token_time = _time.time()
-                                # 解析 usage（流式最后 chunk 可能有；llama.cpp 用 timings 字段）
-                                if line.startswith("data:") and "[DONE]" not in line:
-                                    try:
-                                        chunk = json.loads(line[5:].strip())
-                                        # 累积输出内容 + thinking
-                                        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-                                        c = delta.get("content")
-                                        t = delta.get("reasoning_content")
-                                        if isinstance(c, str) and c:
-                                            _resp_buf.append(c)
-                                        if isinstance(t, str) and t:
-                                            _think_buf.append(t)
-                                        u = chunk.get("usage")
-                                        if u:
-                                            prompt_tokens = u.get("prompt_tokens", 0)
-                                            completion_tokens = u.get("completion_tokens", 0)
-                                        else:
-                                            tt = chunk.get("timings")
-                                            if tt:
-                                                prompt_tokens = tt.get("prompt_n", 0)
-                                                completion_tokens = tt.get("predicted_n", 0)
-                                    except Exception:
-                                        pass
-                                    # 定期落库（每 1.5s 或 buffer 达 4KB）
-                                    if _resp_buf or _think_buf:
-                                        if _time.time() - _last_flush >= 1.5 or len("".join(_resp_buf)) >= 4096:
-                                            _flush_chat(_resp_buf, _think_buf)
-                                yield line + "\n"
-                except httpx.HTTPError as e:
-                    # 流式转发失败：记录失败明细（流式无法返回 HTTP 错误码，置 502）
-                    total_ms = int((_time.time() - t0) * 1000)
-                    _record_stats(model_name, endpoint="/v1/chat/completions", stream=True, ok=False, status_code=502,
-                                  total_ms=total_ms, error=str(e))
-                    _flush_chat(_resp_buf, _think_buf)
-                    _chat_log_finish(log_id, ok=False, status_code=502, total_ms=total_ms, error=str(e))
-                    yield f"data: {{\"error\": \"{e}\"}}\n\n"
+            client = _get_shared_client()
+            try:
+                async with client.stream("POST", url, json=payload, headers=headers, timeout=timeout) as r:
+                    async for line in r.aiter_lines():
+                        if line:
+                            # 捕获首 token 时间
+                            if first_token_time is None and line.startswith("data:") and "[DONE]" not in line:
+                                first_token_time = _time.time()
+                            # 解析 usage（流式最后 chunk 可能有；llama.cpp 用 timings 字段）
+                            if line.startswith("data:") and "[DONE]" not in line:
+                                try:
+                                    chunk = json.loads(line[5:].strip())
+                                    # 累积输出内容 + thinking
+                                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                                    c = delta.get("content")
+                                    t = delta.get("reasoning_content")
+                                    if isinstance(c, str) and c:
+                                        _resp_buf.append(c)
+                                    if isinstance(t, str) and t:
+                                        _think_buf.append(t)
+                                    u = chunk.get("usage")
+                                    if u:
+                                        prompt_tokens = u.get("prompt_tokens", 0)
+                                        completion_tokens = u.get("completion_tokens", 0)
+                                    else:
+                                        tt = chunk.get("timings")
+                                        if tt:
+                                            prompt_tokens = tt.get("prompt_n", 0)
+                                            completion_tokens = tt.get("predicted_n", 0)
+                                except Exception:
+                                    pass
+                                # 定期落库（每 1.5s 或 buffer 达 4KB）
+                                if _resp_buf or _think_buf:
+                                    if _time.time() - _last_flush >= 1.5 or len("".join(_resp_buf)) >= 4096:
+                                        _flush_chat(_resp_buf, _think_buf)
+                            yield line + "\n"
+            except httpx.HTTPError as e:
+                # 流式转发失败：记录失败明细（流式无法返回 HTTP 错误码，置 502）
+                total_ms = int((_time.time() - t0) * 1000)
+                _record_stats(model_name, endpoint="/v1/chat/completions", stream=True, ok=False, status_code=502,
+                              total_ms=total_ms, error=str(e))
+                _flush_chat(_resp_buf, _think_buf)
+                _chat_log_finish(log_id, ok=False, status_code=502, total_ms=total_ms, error=str(e))
+                yield f"data: {{\"error\": \"{e}\"}}\n\n"
         finally:
             instance_mgr.end_request(sid)
             instance_mgr.release_slot(sid)
