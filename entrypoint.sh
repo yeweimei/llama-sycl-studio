@@ -19,6 +19,9 @@ export GGML_SYCL_ENABLE_FLASH_ATTN="${GGML_SYCL_ENABLE_FLASH_ATTN:-1}"
 # 默认关闭 host pinned memory（llama.cpp #26789）：iGPU 上触发 memcpy OOM
 # （UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY），核显/独显双 GPU 实测需置 0
 export GGML_SYCL_ENABLE_HOST_PINNED_MEM="${GGML_SYCL_ENABLE_HOST_PINNED_MEM:-0}"
+# 双 GPU(核显+Arc)多设备时 dev2dev 走 host-forward，避免跨设备 P2P 查询
+# 在 OpenCL adapter 上触发 urUsmP2PPeerAccessGetInfoExp 崩溃（Spark2_5 引擎 2025.3）
+export GGML_SYCL_DEV2DEV_MEMCPY="${GGML_SYCL_DEV2DEV_MEMCPY:-2}"
 # 动态收集 Intel oneAPI lib 路径（镜像版本升级后路径可能变化，运行时收集最可靠）
 ONEAPI_LIBS=$(find /opt/intel/oneapi -type d \( -name lib -o -name lib64 \) 2>/dev/null | paste -sd: || true)
 export LD_LIBRARY_PATH="${ONEAPI_LIBS:+${ONEAPI_LIBS}:}/app"
