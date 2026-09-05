@@ -664,6 +664,7 @@ async function doSaveEdit() {
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
       flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
+      fit_target_mib: (p.fit_target_mib === '' || p.fit_target_mib === null || p.fit_target_mib === undefined) ? 1024 : Number(p.fit_target_mib),
       mmap: p.mmap, device: editForm.value.gpu_id || defaultDevice(),
       cpu_moe: p.cpu_moe, cpu_moe_layers: (p.cpu_moe_layers === '' || p.cpu_moe_layers === null || p.cpu_moe_layers === undefined) ? 0 : Number(p.cpu_moe_layers), mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,
       spec_draft_type_k: p.spec_draft_type_k || '', spec_draft_type_v: p.spec_draft_type_v || '',

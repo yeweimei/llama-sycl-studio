@@ -10,7 +10,8 @@
       <el-col :span="12">
         <el-form-item label="GPU 层数">
           <div style="display:flex;gap:8px;align-items:center;width:100%" class="ngl-row" data-testid="ngl-auto">
-            <el-input-number v-model="model.n_gpu_layers" :min="0" :max="999" :disabled="nglAuto" controls-position="right" style="flex:1" />
+            <el-input-number v-if="!nglAuto" v-model="model.n_gpu_layers" :min="0" :max="999" controls-position="right" style="flex:1" />
+            <span v-else style="flex:1;font-size:13px;color:#909399">auto（按显存自动）</span>
             <el-switch v-model="nglAuto" @change="nglAutoChange" />
             <span style="font-size:12px;color:#909399;white-space:nowrap">{{ nglAuto ? '自动' : '手动' }}</span>
           </div>
