@@ -372,8 +372,12 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
     ngl = preset.get("n_gpu_layers")
     if ngl is not None:
         if ngl < 0:
-            # -1 = 引擎自动适配：按空闲显存算层数（--fit 默认预留 1GB 余量），避免显存贴边
+            # -1 = 引擎自动适配：按空闲显存算层数（--fit 预留余量），避免显存贴边
             args += ["--n-gpu-layers", "auto"]
+            # 显存余量 --fit-target（MiB/每设备，=1024 即 llama.cpp 默认；前端可调留更多/更少）
+            ft = preset.get("fit_target_mib")
+            if ft and int(ft) > 0 and int(ft) != 1024:
+                args += ["--fit-target", str(int(ft))]
         else:
             args += ["--n-gpu-layers", str(ngl)]
     if preset.get("mmap") == 0:

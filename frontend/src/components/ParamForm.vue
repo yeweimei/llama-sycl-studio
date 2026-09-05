@@ -14,7 +14,12 @@
             <el-switch v-model="nglAuto" @change="nglAutoChange" />
             <span style="font-size:12px;color:#909399;white-space:nowrap">{{ nglAuto ? '自动' : '手动' }}</span>
           </div>
-          <div class="form-tip" style="width:100%">自动=按空闲显存自动分配层数（--ngl auto，--fit 预留 1GB 余量）；关掉可手动指定层数</div>
+          <div v-if="nglAuto" style="display:flex;gap:8px;align-items:center;width:100%;margin-top:6px" class="ngl-fit-target">
+            <span style="font-size:12px;color:#909399;white-space:nowrap">显存余量</span>
+            <el-input-number v-model="model.fit_target_mib" :min="0" :max="8192" :step="256" controls-position="right" style="flex:1" />
+            <span style="font-size:12px;color:#909399;white-space:nowrap">MiB</span>
+          </div>
+          <div class="form-tip" style="width:100%">自动=按空闲显存分配层数（--ngl auto）；显存余量=给 --fit 留的余量（默认 1GB，越大越稳但可塞的层越少）</div>
         </el-form-item>
       </el-col>
       <el-col :span="12">
@@ -480,6 +485,7 @@ const DEFAULT_ARGS = {
   flash_attn: true,
   jinja: true,
   n_gpu_layers: 99,
+  fit_target_mib: 1024,
   mmap: true,
   cpu_moe: false,
   cpu_moe_layers: 0,

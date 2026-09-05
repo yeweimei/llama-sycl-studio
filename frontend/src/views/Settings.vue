@@ -276,6 +276,11 @@
                 <el-switch v-model="nglAuto" @change="nglAutoChange" />
                 <span style="font-size:12px;color:#909399;white-space:nowrap">{{ nglAuto ? '自动' : '手动' }}</span>
               </div>
+              <div v-if="nglAuto" style="display:flex;gap:8px;align-items:center;width:100%;margin-top:6px">
+                <span style="font-size:12px;color:#909399;white-space:nowrap">显存余量</span>
+                <el-input-number v-model="editingPreset.fit_target_mib" :min="0" :max="8192" :step="256" style="flex:1" />
+                <span style="font-size:12px;color:#909399;white-space:nowrap">MiB</span>
+              </div>
             </el-form-item>
           </el-col>
           <el-col :xs="24" :sm="12">
@@ -526,7 +531,7 @@ async function doCleanupOld() {
 const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true,
+  flash_attn: true, jinja: true, n_gpu_layers: 99, fit_target_mib: 1024, mmap: true,
   cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 

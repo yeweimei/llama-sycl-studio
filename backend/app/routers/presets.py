@@ -179,6 +179,7 @@ class PresetCreate(BaseModel):
     flash_attn: bool = True
     jinja: bool = True
     n_gpu_layers: int = 99
+    fit_target_mib: int = 1024
     mmap: bool = True
     cpu_moe: bool = False
     cpu_moe_layers: int | None = None
@@ -232,6 +233,7 @@ class PresetUpdate(BaseModel):
     flash_attn: bool | None = None
     jinja: bool | None = None
     n_gpu_layers: int | None = None
+    fit_target_mib: int | None = None
     mmap: bool | None = None
     cpu_moe: bool | None = None
     cpu_moe_layers: int | None = None
@@ -316,11 +318,12 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, mmap, cpu_moe, cpu_moe_layers, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, fit_target_mib, mmap, cpu_moe, cpu_moe_layers, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
              1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
+             body.fit_target_mib or 1024,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, body.cpu_moe_layers or 0, 1 if body.mtp else 0, body.mtp_model or "",
              body.mtp_n_max or 3, body.spec_draft_type_k or "", body.spec_draft_type_v or "",
              _normalize_device(body.device), body.rope_scaling or "",
@@ -356,6 +359,8 @@ def update_preset(pid: int, body: PresetUpdate):
             updates["cpu_moe"] = 1 if body.cpu_moe else 0
         if body.cpu_moe_layers is not None:
             updates["cpu_moe_layers"] = body.cpu_moe_layers
+        if body.fit_target_mib is not None:
+            updates["fit_target_mib"] = body.fit_target_mib
         if body.mtp is not None:
             updates["mtp"] = 1 if body.mtp else 0
         if body.mtp_model is not None:
