@@ -106,7 +106,8 @@ def _write_config_ini() -> dict:
                 lines.append(f"n-cpu-moe = {_cmoe_n}")
             else:
                 lines.append("cpu-moe = on")
-        lines.append(f"n-gpu-layers = {d['n_gpu_layers']}")
+        _ngl = d['n_gpu_layers']
+        lines.append(f"n-gpu-layers = {('auto' if _ngl is not None and _ngl < 0 else _ngl)}")
         dev = _normalize_device(d.get("device"))
         # 语义值 → 具体设备名（后端无关；解析失败则写回语义值兜底）
         try:

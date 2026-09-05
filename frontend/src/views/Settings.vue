@@ -271,7 +271,11 @@
           </el-col>
           <el-col :xs="24" :sm="12">
             <el-form-item label="GPU 层数">
-              <el-input-number v-model="editingPreset.n_gpu_layers" :min="0" :max="999" style="width:100%" />
+              <div style="display:flex;gap:8px;align-items:center;width:100%">
+                <el-input-number v-model="editingPreset.n_gpu_layers" :min="0" :max="999" :disabled="nglAuto" style="flex:1" />
+                <el-switch v-model="nglAuto" @change="nglAutoChange" />
+                <span style="font-size:12px;color:#909399;white-space:nowrap">{{ nglAuto ? '自动' : '手动' }}</span>
+              </div>
             </el-form-item>
           </el-col>
           <el-col :xs="24" :sm="12">
@@ -379,6 +383,17 @@ const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
 const changingPwd = ref(false)
 const presetDialog = ref(false)
 const editingPreset = ref({})
+// GPU 层数：-1 = 引擎自动适配（--ngl auto + --fit 预留 1GB）
+const nglAuto = ref(false)
+const nglAutoBackup = ref(99)
+function nglAutoChange(v) {
+  if (v) {
+    nglAutoBackup.value = editingPreset.value.n_gpu_layers >= 0 ? editingPreset.value.n_gpu_layers : 99
+    editingPreset.value.n_gpu_layers = -1
+  } else {
+    editingPreset.value.n_gpu_layers = nglAutoBackup.value
+  }
+}
 
 // ---------- 引擎管理 ----------
 const engineBackends = ref(null)
@@ -619,11 +634,13 @@ async function removeTemplate(row) { await deleteTemplate(row.id); loadTemplates
 // ---------- 预设 ----------
 function openPresetDialog() {
   editingPreset.value = { ...defaultPreset }
+  nglAuto.value = (editingPreset.value.n_gpu_layers ?? 99) < 0
   presetDialog.value = true
 }
 
 function editPreset(row) {
   editingPreset.value = { ...row }
+  nglAuto.value = (editingPreset.value.n_gpu_layers ?? 99) < 0
   presetDialog.value = true
 }
 

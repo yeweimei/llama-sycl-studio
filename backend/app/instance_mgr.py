@@ -369,8 +369,13 @@ def _build_args(sid: int, name: str, model_path: str) -> list[str]:
             args += ["--spec-draft-type-v", str(preset["spec_draft_type_v"])]
     if preset.get("jinja"):
         args += ["--jinja"]
-    if preset.get("n_gpu_layers") is not None:
-        args += ["--n-gpu-layers", str(preset["n_gpu_layers"])]
+    ngl = preset.get("n_gpu_layers")
+    if ngl is not None:
+        if ngl < 0:
+            # -1 = 引擎自动适配：按空闲显存算层数（--fit 默认预留 1GB 余量），避免显存贴边
+            args += ["--n-gpu-layers", "auto"]
+        else:
+            args += ["--n-gpu-layers", str(ngl)]
     if preset.get("mmap") == 0:
         args += ["--no-mmap"]
     # 设备：语义角色（auto/discrete/integrated）→ 按当前后端动态解析具体设备名（SYCL0/Vulkan1）

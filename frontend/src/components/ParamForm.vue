@@ -9,7 +9,12 @@
       </el-col>
       <el-col :span="12">
         <el-form-item label="GPU 层数">
-          <el-input-number v-model="model.n_gpu_layers" :min="0" :max="999" controls-position="right" style="width:100%" />
+          <div style="display:flex;gap:8px;align-items:center;width:100%" class="ngl-row" data-testid="ngl-auto">
+            <el-input-number v-model="model.n_gpu_layers" :min="0" :max="999" :disabled="nglAuto" controls-position="right" style="flex:1" />
+            <el-switch v-model="nglAuto" @change="nglAutoChange" />
+            <span style="font-size:12px;color:#909399;white-space:nowrap">{{ nglAuto ? '自动' : '手动' }}</span>
+          </div>
+          <div class="form-tip" style="width:100%">自动=按空闲显存自动分配层数（--ngl auto，--fit 预留 1GB 余量）；关掉可手动指定层数</div>
         </el-form-item>
       </el-col>
       <el-col :span="12">
@@ -535,6 +540,17 @@ function normalize(v) {
 }
 
 const model = ref(normalize(props.modelValue))
+// GPU 层数：-1 = 引擎自动适配（--ngl auto + --fit 预留 1GB），面板开关控制
+const nglAuto = ref(model.value.n_gpu_layers < 0)
+const nglAutoBackup = ref(model.value.n_gpu_layers >= 0 ? model.value.n_gpu_layers : 99)
+function nglAutoChange(v) {
+  if (v) {
+    nglAutoBackup.value = model.value.n_gpu_layers >= 0 ? model.value.n_gpu_layers : 99
+    model.value.n_gpu_layers = -1
+  } else {
+    model.value.n_gpu_layers = nglAutoBackup.value
+  }
+}
 
 watch(
   () => props.modelValue,
@@ -611,7 +627,7 @@ async function estimateMem() {
       parallel: model.value.parallel || 4,
       cache_type_k: model.value.cache_type_k || 'q8_0',
       cache_type_v: model.value.cache_type_v || 'q8_0',
-      n_gpu_layers: model.value.n_gpu_layers ?? 99,
+      n_gpu_layers: model.value.n_gpu_layers < 0 ? 99 : (model.value.n_gpu_layers ?? 99),
       flash_attn: !!model.value.flash_attn,
       mmproj: props.mmprojPath || '',
     }
