@@ -29,6 +29,8 @@ RUN chmod +x /app/studio/entrypoint.sh
 
 # 日志轮转配置（防止实例日志无限累积撑爆磁盘）
 COPY logrotate-llama-studio.conf /etc/logrotate.d/llama-studio
+# logrotate 安全检查要求配置文件不可组/其他可写，COPY 默认权限可能为 664 → 显式改 644
+RUN chmod 644 /etc/logrotate.d/llama-studio
 
 # 安装 Python 依赖（用清华镜像源，NUC12 直连 pypi 不稳定）
 RUN pip3 install --no-cache-dir --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple \
