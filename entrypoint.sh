@@ -94,6 +94,16 @@ else
     echo "⬢ per-model 实例模式（模型由 WebUI 按需启动，ctx 各自独立）"
 fi
 
+# ========== 日志轮转（容器内无 cron，用轻量后台循环兜底） ==========
+# 防止 instances/*.log 无限累积；size 50M/rotate5/压缩由 logrotate 配置控制
+if command -v logrotate >/dev/null 2>&1 && [ -f /etc/logrotate.d/llama-studio ]; then
+    ( while true; do \
+        logrotate -s /tmp/.llama_studio_lr.state /etc/logrotate.d/llama-studio >/dev/null 2>&1; \
+        sleep 300; \
+      done ) &
+    echo "  logrotate: 实例日志每5分钟轮转（上限 50M×5 份压缩）"
+fi
+
 # ========== 启动 WebUI ==========
 echo "⬢ 启动 WebUI..."
 cd "${STUDIO_DIR}/backend"

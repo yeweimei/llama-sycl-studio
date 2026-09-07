@@ -6,7 +6,7 @@ FROM ghcr.io/ggml-org/llama.cpp:server-intel
 # tini：PID 1 init，reap 所有孤儿进程（WebUI 崩溃后 llama-server
 # 变僵尸无法被 WebUI reap 时，由 tini 兜底回收）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip python3-venv curl ca-certificates xpu-smi tini \
+    python3-pip python3-venv curl ca-certificates xpu-smi tini logrotate \
     && rm -rf /var/lib/apt/lists/*
 
 # 注：Intel GPU 驱动保持镜像默认（26.18）。
@@ -26,6 +26,9 @@ COPY frontend/dist/ /app/studio/frontend/dist/
 # 拷贝入口脚本
 COPY entrypoint.sh /app/studio/entrypoint.sh
 RUN chmod +x /app/studio/entrypoint.sh
+
+# 日志轮转配置（防止实例日志无限累积撑爆磁盘）
+COPY logrotate-llama-studio.conf /etc/logrotate.d/llama-studio
 
 # 安装 Python 依赖（用清华镜像源，NUC12 直连 pypi 不稳定）
 RUN pip3 install --no-cache-dir --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple \
