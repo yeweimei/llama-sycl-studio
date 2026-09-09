@@ -5,6 +5,7 @@ LLM 推理服务管理台 - FastAPI 后端入口
 """
 import os
 import sys
+import json
 from pathlib import Path
 
 import httpx
@@ -50,6 +51,18 @@ self_heal.start_self_heal_loop()
 # 启动僵尸收割线程（防 llama-server 僵尸占端口导致脏实例复用）
 from app import instance_mgr as _im
 _im.start_zombie_harvester()
+
+
+# 并发闸泄漏自愈：app 起来后在事件循环里确保 slot reaper 运行
+# （_ensure_reaper 惰性，但长期无请求时不会触发；这里显式确保）
+@app.on_event("startup")
+async def _ensure_slot_reaper_on_startup():
+    try:
+        from app import instance_mgr as _im
+        _im._ensure_reaper()
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger("instance-mgr").error("slot-lease-reaper 启动失败: %s", _e)
 
 # ---------- 认证中间件 ----------
 # 不需要认证的路径
@@ -290,22 +303,36 @@ async def v1_proxy(path: str, request: Request):
         if slot_held:
             instance_mgr.release_slot(sid)
 
-    # 转发头（去 host/content-length）
-    headers = dict(request.headers)
-    headers.pop("host", None)
-    headers.pop("content-length", None)
-
-    # 工具 schema 清洗（llama.cpp pattern 需 ^...$ 锚定）+ 对话内容日志
+    # 转发头 + 工具 schema 清洗 + 对话内容日志（在 acquire 之后执行；
+    # 任一步抛异常都必须先 _cleanup() 归还 permit，否则 permit 永久泄漏 →
+    # 假性"并发已满"503。2026-09-09 修复：此处整体包 try/except。）
     chat_log_id = 0
-    if is_chat and payload is not None:
-        if _sanitize_tools(payload):
-            body = _json.dumps(payload).encode("utf-8")
+    try:
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        if is_chat and payload is not None:
+            if _sanitize_tools(payload):
+                body = _json.dumps(payload).encode("utf-8")
+            try:
+                msgs = payload.get("messages") or []
+                chat_user_msg = services._last_user_message(msgs)
+                chat_log_id = services._chat_log_create(
+                    model_name, 1 if payload.get("stream") else 0, chat_user_msg)
+            except Exception:
+                chat_log_id = 0
+    except Exception as _pre_err:
+        # 预处理异常：先归还 permit（防泄漏），再返回 500。
+        _cleanup()
+        _err_txt = str(_pre_err)[:300]
         try:
-            msgs = payload.get("messages") or []
-            chat_user_msg = services._last_user_message(msgs)
-            chat_log_id = services._chat_log_create(model_name, 1 if payload.get("stream") else 0, chat_user_msg)
+            stats._record_stats(model_name, endpoint=f"/v1/{path}", stream=False,
+                                ok=False, status_code=500, total_ms=0, error=_err_txt,
+                                method=request.method)
         except Exception:
-            chat_log_id = 0
+            pass
+        return _openai_error(500, f"请求预处理失败: {_err_txt}",
+                             "server_error", code="server_error")
 
     is_stream = bool(payload and payload.get("stream"))
     target_url = f"{target_base}/v1/{path}"

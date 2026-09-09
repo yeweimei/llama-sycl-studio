@@ -39,6 +39,17 @@ _slot_lock = threading.Lock()
 # proxy 并发闸等待上限：并发超过实例 slot 数时，等待该秒数仍拿不到 slot 即 503
 PROXY_SLOT_TIMEOUT = float(os.environ.get("LLAMA_PROXY_SLOT_TIMEOUT", "30"))
 
+# ===== 并发闸泄漏自愈（slot lease watchdog）=====
+# 背景：客户端中途断连 / 异常路径可能让 acquire 的 permit 永不归还，
+# 实例会假性"并发已满"直到重启。这里记录每个 sid 最近一次 acquire 的
+# 时间戳，由 asyncio reaper 周期扫描，持有超过 SLOT_MAX_HOLD_SEC 的
+# permit 强制归还并告警（正常请求远不会这么久，误杀概率≈0）。
+_slot_held_since: dict[int, float] = {}     # sid -> 最近 acquire 的单调时钟
+_slot_held_lock = threading.Lock()
+SLOT_MAX_HOLD_SEC = float(os.environ.get("LLAMA_SLOT_MAX_HOLD_SEC", "900"))  # 默认 15 分钟
+_reaper_task = None
+_reaper_lock = threading.Lock()
+
 
 def _get_lock():
     global _lock
@@ -70,14 +81,48 @@ def _slot_guard_for(sid: int, name: str) -> asyncio.Semaphore:
 
 async def acquire_slot(sid: int, name: str, timeout: float | None = None) -> bool:
     """并发闸获取：timeout 内拿到返回 True；超时返回 False（不抛异常）。
-    timeout=None 时用 PROXY_SLOT_TIMEOUT。"""
+    timeout=None 时用 PROXY_SLOT_TIMEOUT。
+
+    注意：不能直接 asyncio.wait_for(g.acquire(), timeout=t)——超时与 acquire
+    成功同时发生时，wait_for 取消内部协程会吞掉已扣减的 permit（经典竞态），
+    造成永久泄漏且 _slot_held_since 无记录、reaper 无从回收（表现为假性
+    “并发已满”503）。这里 shield 住 acquire，超时后不取消它，改由后台任务等
+    acquire 完成后归还 permit，保证计数守恒。
+    """
     g = _slot_guard_for(sid, name)
     t = PROXY_SLOT_TIMEOUT if timeout is None else timeout
+    fut = asyncio.ensure_future(g.acquire())
     try:
-        await asyncio.wait_for(g.acquire(), timeout=t)
-        return True
+        await asyncio.wait_for(asyncio.shield(fut), timeout=t)
     except asyncio.TimeoutError:
+        # shield 保证 fut 未被 wait_for 取消：acquire 仍会（在拿到 permit 时）
+        # 完成。安排后台任务在其完成后立即归还 permit——计数不丢。
+        _reclaim_permit_after(fut, g)
         return False
+    with _slot_held_lock:
+        _slot_held_since[sid] = time.monotonic()
+    _ensure_reaper()
+    return True
+
+
+def _reclaim_permit_after(fut: "asyncio.Future", g: asyncio.Semaphore) -> None:
+    """acquire 超时后的 permit 兜底回收：等 fut（不被取消）拿到 permit 后立即
+    release。若 acquire 仍在排队 → 拿到后归还；已成功 → 立即归还。
+    绝不让 wait_for 竞态把 permit 永久吞掉。"""
+    async def _wait_and_release():
+        try:
+            await fut
+        except asyncio.CancelledError:
+            return  # 仅 loop 关闭等外部取消，无需归还
+        try:
+            g.release()
+        except Exception:
+            pass
+
+    try:
+        asyncio.get_running_loop().create_task(_wait_and_release())
+    except RuntimeError:
+        pass
 
 
 def release_slot(sid: int):
@@ -85,11 +130,81 @@ def release_slot(sid: int):
     g = _slot_guard.get(sid)
     if g is not None:
         g.release()
+    with _slot_held_lock:
+        _slot_held_since.pop(sid, None)
 
 
 def slot_limit(name: str) -> int:
     """对外暴露并发上限（错误提示用）"""
     return _get_slot_limit(name)
+
+
+def stale_slot_sids(max_hold_sec: float | None = None) -> list[int]:
+    """返回持有超时的 sid 列表（供 reaper / 诊断用）"""
+    limit = SLOT_MAX_HOLD_SEC if max_hold_sec is None else max_hold_sec
+    now_t = time.monotonic()
+    with _slot_held_lock:
+        return [sid for sid, t0 in _slot_held_since.items() if now_t - t0 > limit]
+
+
+def force_release_stale_slots(max_hold_sec: float | None = None) -> list[int]:
+    """强制归还持有超时的 permit（幂等：只处理仍在持有表中的 sid）。
+    返回被回收的 sid 列表。"""
+    limit = SLOT_MAX_HOLD_SEC if max_hold_sec is None else max_hold_sec
+    now_t = time.monotonic()
+    stale = []
+    with _slot_held_lock:
+        for sid, t0 in list(_slot_held_since.items()):
+            if now_t - t0 > limit:
+                stale.append(sid)
+    for sid in stale:
+        g = _slot_guard.get(sid)
+        if g is not None:
+            try:
+                g.release()
+                logger.error("slot-lease-reaper: 强制归还 sid=%s 的并发 permit（持有超上限）——疑似泄漏", sid)
+            except Exception as e:
+                logger.error("slot-lease-reaper: sid=%s 强制归还失败: %s", sid, e)
+        with _slot_held_lock:
+            _slot_held_since.pop(sid, None)
+    if stale:
+        try:
+            from app.alert import send_alert as _send
+            _send("并发闸泄漏已自愈", f"强制归还 {len(stale)} 个超时 permit: sid={stale}")
+        except Exception:
+            pass
+    return stale
+
+
+def _ensure_reaper():
+    """启动 asyncio 周期回收任务。可在事件循环内任意时刻调用（幂等）。"""
+    global _reaper_task
+    if _reaper_task is not None and not _reaper_task.done():
+        return
+    with _reaper_lock:
+        if _reaper_task is not None and not _reaper_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            _reaper_task = loop.create_task(_slot_reaper_loop())
+            logger.warning("slot-lease-reaper: 已启动（周期 30s，上限 %.0fs）", SLOT_MAX_HOLD_SEC)
+        except RuntimeError:
+            # 不在事件循环（纯线程/启动早期）→ 记录待启动，下次 acquire 再试
+            logger.warning("slot-lease-reaper: 当前无运行中事件循环，推迟到首次请求时启动")
+        except Exception as e:
+            logger.error("slot-lease-reaper: 启动失败: %s", e)
+
+
+async def _slot_reaper_loop():
+    """周期扫描持有超时的 permit（asyncio 任务，30s 周期）"""
+    while True:
+        try:
+            await asyncio.sleep(30)
+            force_release_stale_slots()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("slot-lease-reaper: 扫描异常: %s", e)
 
 
 # ===== 实例启动预热（②：把 flash-attn 内核 JIT 编译前移到启动期）=====
