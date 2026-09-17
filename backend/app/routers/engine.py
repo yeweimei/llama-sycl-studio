@@ -75,6 +75,54 @@ def _sanitize_version(ver) -> str:
     return cleaned
 
 
+def _restart_loaded_instances_after_engine_change() -> dict:
+    """升级/切换/回滚成功后，优雅重启所有已加载(loaded)实例，使其以新二进制生效。
+
+    关键背景：容器内 WebUI(FastAPI/Python 进程) 不链接 libggml，只有 llama-server
+    子进程需要新二进制。因此升级 llama.cpp 后无需整个容器重启，只需优雅重启
+    loaded 实例（停旧二进制进程 → 用新二进制拉起），即可让新版本生效，且不会
+    瞬间杀掉所有实例（旧做法=整容器重启，无 drain、无探活、无按序，实例全部硬断）。
+
+    编排：
+      1) 收集 status='loaded' 的服务；
+      2) 逐个优雅停止（instance_mgr.stop_instance：draining → TERM → KILL + 端口兜底释放）；
+      3) 逐个启动（instance_mgr.start_instance：新二进制 + 后台预热线程）；
+      4) 返回逐实例结果（不阻塞等就绪，前端/自愈继续轮询，与 restart_service 异步语义一致）。
+
+    注意：不误杀未加载实例、不改变 loaded 状态（自愈据此继续接管异常恢复）。
+    返回 {"stopped":[], "started":[], "skipped":[], "error": str | None}。
+    """
+    from app import instance_mgr
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, name, model_path FROM services WHERE status='loaded'"
+            ).fetchall()
+    except Exception as e:
+        # 兜底：编排失败不应导致已成功的升级/回滚被误判失败
+        return {"stopped": [], "started": [], "skipped": [], "error": f"实例重启编排异常: {e}"}
+    if not rows:
+        return {"stopped": [], "started": [], "skipped": [{"reason": "no_loaded"}]}
+    stopped, started = [], []
+    # 先全部优雅停止（避免重启期间资源争抢 / GPU 脏态并发启动）
+    for sid, name, _mp in rows:
+        try:
+            instance_mgr.stop_instance(sid)
+            stopped.append(name)
+        except Exception:
+            pass
+    # 停完后留短暂端口释放/进程回收间隙
+    time.sleep(2)
+    # 再逐个启动（用新二进制；不阻塞等就绪）
+    for sid, name, model_path in rows:
+        try:
+            instance_mgr.start_instance(sid, name, model_path or "")
+            started.append({"id": sid, "name": name, "ok": True})
+        except Exception as e:
+            started.append({"id": sid, "name": name, "ok": False, "error": str(e)})
+    return {"stopped": stopped, "started": started, "skipped": []}
+
+
 def _copy_entry(src: Path, dst: Path):
     """复制条目：符号链接重建链接本身，普通文件 copy2（不穿透链接）"""
     if src.is_symlink():
@@ -500,8 +548,12 @@ def engine_upgrade(body: UpgradeRequest):
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
             _upsert_setting(conn, "engine_last_upgrade", str(now()))
+        # 升级后生命周期管理：优雅重启已加载实例，让新二进制生效（无需整容器重启）
+        restart_res = _restart_loaded_instances_after_engine_change()
         return {"ok": True, "version": version, "flavor": flavor, "previous": current_ver,
-                "switched": True, "message": f"已切换到 {FLAVOR_LABELS.get(flavor, flavor)} {version}（本地备份，免下载），需重启容器生效"}
+                "switched": True,
+                "instances": restart_res,
+                "message": f"已切换到 {FLAVOR_LABELS.get(flavor, flavor)} {version}（本地备份，免下载），已触发 {len(restart_res.get('started', []))} 个已加载实例优雅重启生效"}
 
     # 查找下载 URL
     try:
@@ -565,8 +617,12 @@ def engine_upgrade(body: UpgradeRequest):
             _upsert_setting(conn, "engine_version", version)
             _upsert_setting(conn, "engine_last_upgrade", str(now()))
 
+        # 升级后生命周期管理：优雅重启已加载实例，让新二进制生效（无需整容器重启）
+        restart_res = _restart_loaded_instances_after_engine_change()
         return {"ok": True, "version": version, "flavor": flavor, "previous": current_ver,
-                "switched": False, "message": f"已安装 {FLAVOR_LABELS.get(flavor, flavor)} {version}，需重启容器生效"}
+                "switched": False,
+                "instances": restart_res,
+                "message": f"已安装 {FLAVOR_LABELS.get(flavor, flavor)} {version}，已触发 {len(restart_res.get('started', []))} 个已加载实例优雅重启生效"}
 
     except Exception as e:
         # 自动回滚（恢复完整集 + 清理新版本残留）
@@ -602,8 +658,11 @@ def engine_rollback(body: RollbackRequest):
         _write_active_version(version)
         with get_conn() as conn:
             _upsert_setting(conn, "engine_version", version)
+        # 升级后生命周期管理：优雅重启已加载实例，让回滚版本生效（无需整容器重启）
+        restart_res = _restart_loaded_instances_after_engine_change()
         return {"ok": True, "version": version, "previous": current_ver,
-                "message": f"已回滚到 {version}，需重启容器生效"}
+                "instances": restart_res,
+                "message": f"已回滚到 {version}，已触发 {len(restart_res.get('started', []))} 个已加载实例优雅重启生效"}
     except Exception as e:
         # 恢复原版本
         try:
