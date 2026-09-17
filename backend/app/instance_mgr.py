@@ -30,6 +30,18 @@ _instances: dict[int, dict] = {}
 _active_requests: dict[int, int] = {}
 # 每实例 draining 标志（置位后拒绝新请求）
 _draining: set[int] = set()
+# ===== 推理活性探活（stalled 检测，防“health 通但推理卡死”的僵死实例）=====
+# 背景：llama-server 进程活着、/health 200，但推理线程卡死时（slot 被占/
+# SYCL 设备 hang），旧逻辑把实例判为 running 且永不触发自愈 —— 这就是 PaddleOCR
+# 7 天僵死的根因（health/models 通，一切推理请求 90s 挂起）。
+# 方案 A：记录“最近请求开始”与“最近成功完成”；判 stalled = 近期有请求流量
+# （说明它在被使用、不是空闲）但长时间无成功完成（= 卡死），交给自愈重启，
+# 而不误杀空闲模型（空闲无请求流量，由 idle_unload 处理）。
+_last_request_at: dict[int, float] = {}   # sid -> monotonic：最近一次 begin_request
+_last_success_at: dict[int, float] = {}   # sid -> monotonic：最近一次成功完成
+# 判定阈值（环境变量可调）
+STALL_TRAFFIC_WINDOW = float(os.environ.get("LLAMA_STALL_TRAFFIC_WINDOW", "120"))   # 近 N 秒内有请求=有流量
+STALL_NO_SUCCESS_SEC = float(os.environ.get("LLAMA_STALL_NO_SUCCESS_SEC", "600"))    # 有流量但 N 秒无成功=卡死
 _lock = None
 # ===== 每实例并发闸（proxy 透传上限 = 实例 --parallel slot 数）=====
 # 目的：防止突发请求全量灌给 llama-server 的 server_queue，造成“看起来无响应”。
@@ -551,12 +563,52 @@ def begin_request(sid: int) -> bool:
     if sid in _draining:
         return False
     _active_requests[sid] = _active_requests.get(sid, 0) + 1
+    _last_request_at[sid] = time.monotonic()
     return True
 
 
 def end_request(sid: int):
     """标记请求结束"""
     _active_requests[sid] = max(0, _active_requests.get(sid, 0) - 1)
+
+
+def mark_success(sid: int):
+    """标记该实例最近一次推理成功完成（推理活性探活用）。
+    由 /v1 代理与 chat_proxy 在上游返回成功后调用，用于区分
+    “进程活但推理卡死”的僵死实例。"""
+    _last_success_at[sid] = time.monotonic()
+
+
+def stalled_sids() -> list[int]:
+    """返回处于“推理卡死”状态的 sid 列表（推理活性探活，防僵死实例）。
+
+    判据：近期有请求流量（近 STALL_TRAFFIC_WINDOW 秒内有 begin_request）
+    但长时间（> STALL_NO_SUCCESS_SEC）没有任何成功完成 —— 说明请求进来但
+    永远完不成，即推理线程卡死。
+
+    注意不会误杀空闲模型：空闲模型没有近期请求流量（不会进 stalled），
+    由 idle_unload 负责卸载；stalled 只针对“正在被调用却不出结果”。
+    """
+    now_t = time.monotonic()
+    out = []
+    for sid, req_t in list(_last_request_at.items()):
+        if now_t - req_t > STALL_TRAFFIC_WINDOW:
+            continue  # 近期无请求流量 → 不是已卡死（空闲或刚停）
+        last_ok = _last_success_at.get(sid, 0)
+        if now_t - last_ok > STALL_NO_SUCCESS_SEC:
+            out.append(sid)
+    return out
+
+
+def stall_info(sid: int) -> dict:
+    """诊断用：单实例的推理活性快照（无则返回空描述）"""
+    now_t = time.monotonic()
+    req_t = _last_request_at.get(sid)
+    ok_t = _last_success_at.get(sid)
+    return {
+        "last_request_ago_s": round(now_t - req_t, 1) if req_t else None,
+        "last_success_ago_s": round(now_t - ok_t, 1) if ok_t else None,
+    }
 
 
 def active_requests(sid: int) -> int:
@@ -784,6 +836,8 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
             _active_requests.pop(sid, None)
             _slot_guard.pop(sid, None)
             _warm.pop(sid, None)
+            _last_request_at.pop(sid, None)
+            _last_success_at.pop(sid, None)
             return {"ok": True, "status": "not_running"}
         if graceful:
             mark_draining(sid)
@@ -798,6 +852,8 @@ def stop_instance(sid: int, graceful: bool = True, drain_timeout: float = 30.0) 
         _active_requests.pop(sid, None)
         _slot_guard.pop(sid, None)
         _warm.pop(sid, None)
+        _last_request_at.pop(sid, None)
+        _last_success_at.pop(sid, None)
 
         inst = _instances.pop(sid, None)
         proc = inst.get("proc")

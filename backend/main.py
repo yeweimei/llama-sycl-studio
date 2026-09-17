@@ -407,6 +407,12 @@ async def v1_proxy(path: str, request: Request):
                                         endpoint=f"/v1/{path}", method=request.method)
                 except Exception:
                     pass
+                # 推理活性探活：流式成功收尾（200<..<400）→ 标记成功完成
+                if 200 <= (_up_status or 200) < 400:
+                    try:
+                        instance_mgr.mark_success(sid)
+                    except Exception:
+                        pass
                 _cleanup()
 
         return StreamingResponse(gen(), media_type="text/event-stream")
@@ -479,6 +485,13 @@ async def v1_proxy(path: str, request: Request):
         )
     except Exception:
         pass
+
+    # 推理活性探活：非流式成功（<400）→ 标记成功完成（防“health 通但推理卡死”僵死误判）
+    if r.status_code < 400:
+        try:
+            instance_mgr.mark_success(sid)
+        except Exception:
+            pass
 
     # 透传响应
     resp_headers = {k: v for k, v in r.headers.items()

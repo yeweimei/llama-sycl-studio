@@ -154,6 +154,8 @@ def _heal_once():
             ).fetchall()
 
         t_now = int(time.time())
+        # 推理活性探活：进程活 + /health 通 但长时间无成功推理（推理卡死）的 sid 集合
+        stalled_set = set(instance_mgr.stalled_sids())
         for r in rows:
             d = dict(r)
             sid, name, model_path = d["id"], d["name"], d["model_path"]
@@ -175,8 +177,15 @@ def _heal_once():
 
             st = instance_mgr.instance_status(sid)
             if st.get("state") == "running":
-                _state.pop(sid, None)
-                continue
+                # 推理活性探活：进程活 + /health 通 但推理卡死（近期有流量却无成功完成）
+                if sid in stalled_set:
+                    st = dict(st)
+                    st["state"] = "stalled"  # 标记为故障，走下方自愈分支
+                else:
+                    _state.pop(sid, None)
+                    continue
+            else:
+                stalled_set.discard(sid)
 
             s = _state.setdefault(sid, {"consecutive_fails": 0, "last_seen_bad": 0, "last_heal_at": 0})
             if st.get("state") == "stopped":
@@ -194,6 +203,19 @@ def _heal_once():
                 s["last_seen_bad"] = t_now
                 if s.get("_degraded_count", 0) < HEALTH_FAIL_THRESHOLD:
                     s["_degraded_count"] = s.get("_degraded_count", 0) + 1
+                    continue
+                s["consecutive_fails"] += 1
+            elif st.get("state") == "stalled":
+                # 推理活性探活：进程活 + /health 通 但长时间无成功推理（= 推理线程卡死，
+                # 如 PaddleOCR 7 天僵死：health/models 通、一切推理请求挂起）。
+                # 与 degraded 同一条自愈路径，连续观察 HEALTH_FAIL_THRESHOLD 次才重启（防抖动）。
+                started_at = st.get("started_at") or 0
+                if started_at and (t_now - started_at) < STARTUP_GRACE_SECONDS:
+                    s["_stalled_count"] = 0  # 启动窗口内不判 stalled（预热/首推编译中）
+                    continue
+                s["last_seen_bad"] = t_now
+                if s.get("_stalled_count", 0) < HEALTH_FAIL_THRESHOLD:
+                    s["_stalled_count"] = s.get("_stalled_count", 0) + 1
                     continue
                 s["consecutive_fails"] += 1
             else:

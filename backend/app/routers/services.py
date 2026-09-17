@@ -1104,6 +1104,11 @@ async def chat_proxy(sid: int, body: ChatRequest):
                           completion_tokens=usage.get("completion_tokens", 0),
                           prefill_ms=elapsed_ms, stream=False, ok=True,
                           status_code=200, total_ms=elapsed_ms)
+            # 推理活性探活：非流式成功 → 标记成功完成
+            try:
+                instance_mgr.mark_success(sid)
+            except Exception:
+                pass
             # 对话内容日志：非流式直接拿完整内容
             try:
                 choice = data.get("choices", [{}])[0]
@@ -1197,6 +1202,11 @@ async def chat_proxy(sid: int, body: ChatRequest):
                       completion_tokens=completion_tokens,
                       prefill_ms=prefill_ms, decode_ms=decode_ms,
                       stream=True, ok=True, status_code=200, total_ms=total_ms)
+        # 推理活性探活：流式正常结束 → 标记成功完成
+        try:
+            instance_mgr.mark_success(sid)
+        except Exception:
+            pass
         # 对话内容日志：收尾落库 + 完成
         _flush_chat(_resp_buf, _think_buf)
         _chat_log_finish(log_id, ok=True, status_code=200,
