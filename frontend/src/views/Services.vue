@@ -285,7 +285,7 @@ function supportsChatFor(modelPath) {
 const DEFAULT_PRESET = {
   ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
+  flash_attn: true, mkl_fa: true, jinja: true, n_gpu_layers: 99, mmap: true, cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 const form = ref({ name: '', model_path: '', gpu_id: '', idle_unload_min: 0, preset: { ...DEFAULT_PRESET } })
 const useManualPath = ref(false)
@@ -663,7 +663,7 @@ async function doSaveEdit() {
       ctx_size: p.ctx_size, temp: p.temp, threads: p.threads,
       batch_size: p.batch_size, ubatch_size: p.ubatch_size, parallel: p.parallel,
       cache_type_k: p.cache_type_k, cache_type_v: p.cache_type_v,
-      flash_attn: p.flash_attn, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
+      flash_attn: p.flash_attn, mkl_fa: p.mkl_fa, jinja: p.jinja, n_gpu_layers: p.n_gpu_layers,
       fit_target_mib: (p.fit_target_mib === '' || p.fit_target_mib === null || p.fit_target_mib === undefined) ? 1024 : Number(p.fit_target_mib),
       mmap: p.mmap, device: editForm.value.gpu_id || defaultDevice(),
       cpu_moe: p.cpu_moe, cpu_moe_layers: (p.cpu_moe_layers === '' || p.cpu_moe_layers === null || p.cpu_moe_layers === undefined) ? 0 : Number(p.cpu_moe_layers), mtp: p.mtp, mtp_model: p.mtp_model, mtp_n_max: p.mtp_n_max,

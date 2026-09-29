@@ -177,6 +177,7 @@ class PresetCreate(BaseModel):
     cache_type_k: str = "q8_0"
     cache_type_v: str = "q8_0"
     flash_attn: bool = True
+    mkl_fa: bool = True
     jinja: bool = True
     n_gpu_layers: int = 99
     fit_target_mib: int = 1024
@@ -231,6 +232,7 @@ class PresetUpdate(BaseModel):
     cache_type_k: str | None = None
     cache_type_v: str | None = None
     flash_attn: bool | None = None
+    mkl_fa: bool | None = None
     jinja: bool | None = None
     n_gpu_layers: int | None = None
     fit_target_mib: int | None = None
@@ -285,6 +287,7 @@ def list_presets():
         d = dict(r)
         d["backend"] = "universal"
         d["flash_attn"] = bool(d["flash_attn"])
+        d["mkl_fa"] = bool(d.get("mkl_fa", 1))
         d["jinja"] = bool(d["jinja"])
         d["mmap"] = bool(d.get("mmap", 1))
         d["cpu_moe"] = bool(d.get("cpu_moe", 0))
@@ -318,11 +321,11 @@ def create_preset(body: PresetCreate):
             raise HTTPException(400, f"模型 {body.model_name} 的预设已存在")
         conn.execute(
             "INSERT INTO model_presets (model_name, ctx_size, temp, threads, batch_size, ubatch_size, "
-            "parallel, cache_type_k, cache_type_v, flash_attn, jinja, n_gpu_layers, fit_target_mib, mmap, cpu_moe, cpu_moe_layers, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "parallel, cache_type_k, cache_type_v, flash_attn, mkl_fa, jinja, n_gpu_layers, fit_target_mib, mmap, cpu_moe, cpu_moe_layers, mtp, mtp_model, mtp_n_max, spec_draft_type_k, spec_draft_type_v, device, rope_scaling, rope_scale, yarn_orig_ctx, reasoning, reasoning_budget, reasoning_effort, extra_args, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (body.model_name, body.ctx_size, body.temp, body.threads, body.batch_size,
              body.ubatch_size, body.parallel, body.cache_type_k, body.cache_type_v,
-             1 if body.flash_attn else 0, 1 if body.jinja else 0, body.n_gpu_layers,
+             1 if body.flash_attn else 0, 1 if body.mkl_fa else 0, 1 if body.jinja else 0, body.n_gpu_layers,
              body.fit_target_mib or 1024,
              1 if body.mmap else 0, 1 if body.cpu_moe else 0, body.cpu_moe_layers or 0, 1 if body.mtp else 0, body.mtp_model or "",
              body.mtp_n_max or 3, body.spec_draft_type_k or "", body.spec_draft_type_v or "",
@@ -351,6 +354,8 @@ def update_preset(pid: int, body: PresetUpdate):
                 updates[field] = _normalize_device(v) if field == "device" else v
         if body.flash_attn is not None:
             updates["flash_attn"] = 1 if body.flash_attn else 0
+        if body.mkl_fa is not None:
+            updates["mkl_fa"] = 1 if body.mkl_fa else 0
         if body.jinja is not None:
             updates["jinja"] = 1 if body.jinja else 0
         if body.mmap is not None:

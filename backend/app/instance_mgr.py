@@ -745,7 +745,7 @@ def _check_health(port: int, sid: int | None = None) -> dict:
     return res
 
 
-def _env() -> dict:
+def _env(preset: dict | None = None) -> dict:
     """实例运行环境：完整 LD_LIBRARY_PATH（oneAPI）"""
     env = os.environ.copy()
     cur = env.get("LD_LIBRARY_PATH", "")
@@ -759,6 +759,8 @@ def _env() -> dict:
     # 默认关闭 host pinned memory（llama.cpp #26789）：iGPU 上触发 memcpy OOM
     # （UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY），核显/独显双 GPU 实测需置 0
     env["GGML_SYCL_ENABLE_HOST_PINNED_MEM"] = env.get("GGML_SYCL_ENABLE_HOST_PINNED_MEM", "0")
+    if preset is not None:
+        env["GGML_SYCL_ENABLE_MKL_FA"] = "1" if int(preset.get("mkl_fa", 1) or 0) else "0"
     return env
 
 
@@ -807,12 +809,13 @@ def start_instance(sid: int, name: str, model_path: str) -> dict:
                         pass
 
         args = _build_args(sid, name, model_path)
+        preset_for_env = _preset_dict(name) or {}
         log_dir = Path(settings.data_dir) / "instances"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{name}.log"
         logf = open(log_path, "a")
         proc = subprocess.Popen(
-            args, stdout=logf, stderr=subprocess.STDOUT, env=_env(),
+            args, stdout=logf, stderr=subprocess.STDOUT, env=_env(preset_for_env),
         )
         _instances[sid] = {"proc": proc, "port": port, "started_at": int(time.time()), "log_path": str(log_path)}
         logger.info("实例启动 sid=%s name=%s port=%d pid=%d", sid, name, port, proc.pid)

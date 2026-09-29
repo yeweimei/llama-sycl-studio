@@ -80,6 +80,7 @@ def init_db():
                 cache_type_k TEXT DEFAULT 'q8_0',
                 cache_type_v TEXT DEFAULT 'q8_0',
                 flash_attn INTEGER DEFAULT 1,
+                mkl_fa INTEGER DEFAULT 1,
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,
@@ -239,6 +240,8 @@ def init_db():
             conn.execute("ALTER TABLE model_presets ADD COLUMN reasoning_effort TEXT DEFAULT ''")
         if "fit_target_mib" not in preset_cols:
             conn.execute("ALTER TABLE model_presets ADD COLUMN fit_target_mib INTEGER DEFAULT 1024")
+        if "mkl_fa" not in preset_cols:
+            conn.execute("ALTER TABLE model_presets ADD COLUMN mkl_fa INTEGER DEFAULT 1")
         # 模板单套化（2026-08-26 晚：device 语义化后模板后端无关，去掉 backend 分套）
         # 旧库（UNIQUE(model_name, backend) 双后端分套）→ 重建为 UNIQUE(model_name) 单套，
         # 每模型保留 updated_at 最新的一套（其余参数由该套统一承载）
@@ -256,6 +259,7 @@ def init_db():
                 cache_type_k TEXT DEFAULT 'q8_0',
                 cache_type_v TEXT DEFAULT 'q8_0',
                 flash_attn INTEGER DEFAULT 1,
+                mkl_fa INTEGER DEFAULT 1,
                 jinja INTEGER DEFAULT 1,
                 n_gpu_layers INTEGER DEFAULT 99,
                 mmap INTEGER DEFAULT 1,

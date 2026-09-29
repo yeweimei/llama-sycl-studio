@@ -322,6 +322,10 @@
         <el-form-item label="Flash Attention">
           <el-switch v-model="editingPreset.flash_attn" />
         </el-form-item>
+        <el-form-item label="oneMKL FA">
+          <el-switch v-model="editingPreset.mkl_fa" />
+          <span style="margin-left:8px;color:#909399;font-size:12px">关闭可规避 A770 长上下文假死（保留 Flash Attn）</span>
+        </el-form-item>
         <el-form-item label="Jinja 模板">
           <el-switch v-model="editingPreset.jinja" />
         </el-form-item>
@@ -532,7 +536,7 @@ async function doCleanupOld() {
 const defaultPreset = {
   model_name: '', ctx_size: 8192, temp: 0.7, threads: 8, batch_size: 2048,
   ubatch_size: 512, parallel: 4, cache_type_k: 'q8_0', cache_type_v: 'q8_0',
-  flash_attn: true, jinja: true, n_gpu_layers: 99, fit_target_mib: 1024, mmap: true,
+  flash_attn: true, mkl_fa: true, jinja: true, n_gpu_layers: 99, fit_target_mib: 1024, mmap: true,
   cpu_moe: false, cpu_moe_layers: 0, mtp: false, mtp_model: '', mtp_n_max: 3,
 }
 

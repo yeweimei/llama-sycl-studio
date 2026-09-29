@@ -141,6 +141,15 @@
       </el-col>
     </el-row>
 
+    <el-row :gutter="16">
+      <el-col :span="12">
+        <el-form-item label="oneMKL FA">
+          <el-switch v-model="model.mkl_fa" />
+          <div class="form-tip" style="width:100%">关闭可规避 A770 + q8 KV 长 prefill 假死（保留 Flash Attn）</div>
+        </el-form-item>
+      </el-col>
+    </el-row>
+
     <!-- 长上下文缩放（YaRN） -->
     <el-divider content-position="left">
       <span style="cursor:pointer;user-select:none" @click="yarnOpen = !yarnOpen">
@@ -484,6 +493,7 @@ const DEFAULT_ARGS = {
   cache_type_k: 'q8_0',
   cache_type_v: 'q8_0',
   flash_attn: true,
+  mkl_fa: true,
   jinja: true,
   n_gpu_layers: 99,
   fit_target_mib: 1024,
