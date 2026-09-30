@@ -86,6 +86,8 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 ## 九、最近变更（新→旧）
 
+- **2026-09-30（A770M 长 prefill 假死定位 + 稳定版本回滚）**：**现象**：Qwen3.6-35B-A3B 系列（含 IQ3_XXS）在 A770M 上长上下文 prefill（>10k，尤其 30k 级）会「假死」——`/slots` 的 `n_prompt_tokens_processed` 停止前进、cancel 后仍 `is_processing=true`、`/health` 仍 200，只能杀实例恢复。**根因**：Intel Xe 驱动引擎异常（dmesg：`Engine memory CAT error` / `Engine reset` / `Timedout job ... in llama-server`），被 llama.cpp 的阻塞式 `urQueueFinish` 放大成整进程 wedge（gdb 栈：`ggml_sycl_mul_mat_id -> sycl queue_impl::wait -> urQueueFinish -> libze_intel_gpu`）。**oneMKL FA 触发**：默认 `GGML_SYCL_ENABLE_MKL_FA=1` 时，在「FA on + KV 量化(q8_0) + batch≥1024 + prompt≥1024」条件下自动启用 oneMKL GEMM 的 FA 路径（XMX 加速 prefill）；实测该路径在 A770M 上长 prefill 跑到 ~19.5k tokens 就触发 Xe reset 卡死。设 `GGML_SYCL_ENABLE_MKL_FA=0`（FA 保持 on）后，同一段 ~29.6k prompt 完整跑完（29,655 tokens，pp ~220 tok/s，无新 reset）。**产品化**：新增每模型 `mkl_fa` 开关（默认 1；关闭时 instance_mgr 注入 `GGML_SYCL_ENABLE_MKL_FA=0`），全链路见「九.Y」。**更优解（最终采用）**：IQ3_XXS 模型在 b11242 下即使 `mkl_fa=0` + `GGML_SYCL_FA_ONEDNN=0` 仍会在 ~4k～9k 触发 reset；已把引擎**回滚到 b11119**（llama-studio `POST /api/engine/rollback`），实测同一段 29,687 tokens prefill 完整跑完、无 Xe reset、~246 tok/s。当前 `active_version=b11119`，4 个 loaded 实例已自动重启生效。⚠️ 注意：回滚后 8132 因与其他 loaded 实例共享显存被 auto-fit 成 `--cpu-moe --n-gpu-layers 7`，需独占 GPU 才能拿满层数。
+
 - **2026-09-03**：推理参数面板新增 **CPU MoE 层数**控制（`cpu_moe_layers`，手动控制 MoE 专家层 offload CPU 的层数）。背景：`cpu_moe` 原来只有开/关（全部专家层放 CPU，`--cpu-moe`）；引擎 b10760 支持 `--n-cpu-moe N`（仅前 N 层专家权重放 CPU）。实现遵循 DEV-NOTES §1：三处同步（ParamForm 开关下方条件显示 `cpu_moe_layers` 数字输入 / Services.vue payload 枚举 + DEFAULT_PRESET / presets.py Create+Update+List 全链路 + PG 迁移）+ 双透传（instance_mgr `_build_args` + `_write_config_ini`）。**语义**：`cpu_moe` 主开关关=不启用；开且 `cpu_moe_layers=0/空`=全部专家层放 CPU（`--cpu-moe`，此前行为不变）；开且 `>0`=仅前 N 层（`--n-cpu-moe N`，省显存/平衡速度）。兼容：旧预设 `cpu_moe=1` 无层数 → 仍是 `--cpu-moe`。后端 `_empty_to_none` 容错空串（422 防护）+ 前端 normalize/emit 归一化空串→0。已本地验证 Create/Update 各种入参 + `_build_args` 四种组合（off/all/null/N=4）→ 正确产出 `--cpu-moe`/`--n-cpu-moe 4`，前端 build 通过且 bundle 含「CPU MoE 层数」。**未部署**，需 deploy nuc12 生效。
 - **2026-08-26（深夜）**：**监控/统计面板重构**（commit fe08f4f）：① instance_mgr 所有实例加 `--metrics`（暴露 /metrics）② 新增 `/api/perf/instances` 聚合 loaded 实例实时指标：decode/prefill t/s（瞬时 gauge + 累计均值双口径）、**MTP 投机接受率**（spec_decode counters）、请求处理中/排队、累计 tokens ③ Monitor.vue 新增「模型实时性能」表（每模型 decode/prefill/MTP接受率/请求/累计tokens）+「实时趋势」图（吞吐/显存/功耗三模式，5s 采样最近 60 点）④ Stats.vue 模型统计加 Prefill/Decode 平均吞吐列。⚠️ 踩坑：services 表无 port 列（用 `BASE_PORT+sid-1` 计算）；`llamacpp:tokens_predicted_total` 是生成 token 计数器（不是 predicted_tokens_total）。**同日实测**：Qwen3.8-9B decode 24.5 t/s / prefill 15.7 t/s 正确采集；embedding 类模型 decode=0 正常。
 
@@ -140,9 +142,36 @@ cd ~/projects/llama-sycl-studio && bash scripts/deploy.sh nuc12 --rebuild
 
 **升级机制备忘**：`POST /api/engine/upgrade` 下载→替换 /app→备份到 `BIN_DIR/{ver}/`→写 `active_version`；**真正生效靠容器重启时 entrypoint `cp -a BIN_DIR/{active}/. /app/`**。升级/回滚后必须**重启容器**才生效。`engine_last_upgrade` 存 epoch 秒，`/root/.llama-studio/bin/active_version` 是当前激活版本。
 
+## 九.Y、SYCL 长 prefill 假死：oneMKL FA 是什么、为什么要关（2026-09-30）
+
+**FA = Flash Attention**；oneMKL = Intel 数学库（Math Kernel Library，含 Intel GPU/XMX 优化的 GEMM）。llama.cpp SYCL 后端里 attention 有几条实现路径：
+
+1. native SYCL FA kernel（llama.cpp 自带 TILE/VEC 内核）；
+2. oneDNN fused SDPA（`GGML_SYCL_FA_ONEDNN`，默认 1）；
+3. **oneMKL FA**（`GGML_SYCL_ENABLE_MKL_FA`，默认 1）——用 oneMKL GEMM 加速 prefill 阶段、KV 量化时的 attention 矩阵乘，吃 XMX 算力。
+
+**自动生效条件**：`-fa on` + KV 量化（如 `--cache-type-k q8_0 --cache-type-v q8_0`）+ `--batch-size ≥ 1024` + prompt ≥ 1024 tokens。之前的 35B 配置刚好全中。
+
+**为什么在 A770M 上关掉**：这条 oneMKL 路径与当前 Xe 驱动/oneAPI 组合在长 prefill 下有兼容性问题，会触发 Xe 引擎异常（CAT error / Engine reset / Timedout job），表现就是「health 200 但推理卡死」。关闭方式：`GGML_SYCL_ENABLE_MKL_FA=0`；**这只关掉 oneMKL 加速子路径，Flash Attention 仍然 on**（`--flash-attn on` 保留），代价是 prefill 略慢（实测 pp 220 vs 228 tok/s，差距很小）。
+
+**面板开关**：model_presets 新增 `mkl_fa`（默认 1）。关闭 = 实例启动 env 注入 `GGML_SYCL_ENABLE_MKL_FA=0`，FA 保持开。改动：`database.py`（列+迁移）、`presets.py`（Create/Update/List/INSERT/UPDATE）、`instance_mgr._env()`（按 preset 注入）、`ParamForm.vue`/`Settings.vue`/`Services.vue`（开关 UI）。commit `ffa5838`。
+
+**相关环境变量速查**：
+- `GGML_SYCL_ENABLE_MKL_FA=0`：关 oneMKL FA（本次 workaround）；
+- `GGML_SYCL_FA_ONEDNN=0`：关 oneDNN fused SDPA（更彻底，仍保留 native FA）；
+- `GGML_SYCL_FA_ONEDNN_MAX_KV=N`：cap oneDNN SDPA 的 KV 长度，超过回退 native 内核；
+- `GGML_SYCL_ENABLE_FLASH_ATTN=0`：完全关 FA（注意：q8_0 V cache 不允许 FA off，需改 f16 KV）。
+
+**版本选择结论**：b11242 上 IQ3_XXS 即使 `mkl_fa=0` + `fa_onednn=0` 仍会 hang；**b11119 实测稳定**（29,687 tokens、无 Xe reset、~246 tok/s），已作为当前 active_version。b11224/b11234 尚未完整复测。
+
 ## 十、下一步待办
 
 - [x] ~~**下载完整性校验**（2026-08-25 Ornith 事件）~~ 已修复（0d6222c + 0a39c78），实测验证通过
 - [ ] TDAI L1-dedup Headers Timeout 优化（可选：调大等锁/接受降级）
 - [ ] 观察 TDAI L2 提取在 MTP 模型下的长期稳定性
 - [ ] 上游 issue/PR：TencentCloud/TencentDB-Agent-Memory（死循环防护 + thinking 适配，issue 草稿 `/tmp/tdai-issue.md`）
+- [x] ~~A770M 长 prefill 假死定位：oneMKL FA 触发 + `mkl_fa` 开关落地（commit ffa5838）~~ 已完成（2026-09-30）
+- [x] ~~引擎回滚 b11242 → b11119 并验证长 prefill 稳定~~ 已完成（2026-09-30）
+- [ ] 补测 b11224 / b11234 是否也能稳定跑长 prefill；确定「稳定版本」基线
+- [ ] 评估 `mkl_fa` 开关在 b11119 下是否仍需默认关闭（b11119 可能已不需要）
+- [ ] 上游 issue：A770M + q8_0 KV + oneMKL FA 长 prefill Xe reset（正文已存 NAS `2026-09-29/llama.cpp-issue-A770-oneMKL-FA.md`；GitHub token 缺 createIssue 权限，待授权）
